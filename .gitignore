@@ -17,3 +17,5 @@ dist
 *.njsproj
 *.sln
 Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
+
+Demos/Spikerbox/.venv
