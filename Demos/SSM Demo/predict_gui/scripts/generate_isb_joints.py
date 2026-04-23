@@ -263,6 +263,8 @@ def process_and_export(target_ply=None):
     final_hum_l = transform_mesh(hum_l_verts, ij_pt, hl_t_mat) + gh_offset_l
 
     # --- 4. EXPORT ---
+    tho_sc_r_glob = (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt))
+    tho_sc_l_glob = (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt))
     
     # Prepare markers for visualization
     markers.append({"pos": [0,0,0], "label": "IJ", "color": "yellow"})
@@ -272,38 +274,46 @@ def process_and_export(target_ply=None):
         "center": [0,0,0],
         "spread": 400,
         "bones": [
-            {"label": "Thorax", "color": "#90CFF0", "vertices": final_thorax.tolist(), "indices": tho_inds},
-            {"label": "R Clavicle", "color": "#C080FF", "vertices": final_clav_r.tolist(), "indices": cla_r_inds},
-            {"label": "L Clavicle", "color": "#FFB0D0", "vertices": final_clav_l.tolist(), "indices": cla_l_inds},
-            {"label": "R Scapula", "color": "#FFA040", "vertices": final_scap_r.tolist(), "indices": sca_r_inds},
-            {"label": "L Scapula", "color": "#FFE060", "vertices": final_scap_l.tolist(), "indices": sca_l_inds},
-            {"label": "R Humerus", "color": "#FF6060", "vertices": final_hum_r.tolist(), "indices": hum_r_inds},
-            {"label": "L Humerus", "color": "#FF6060", "vertices": final_hum_l.tolist(), "indices": hum_l_inds}
+            {"label": "Thorax", "color": "#90CFF0", "vertices": final_thorax.tolist(), "indices": tho_inds, "origin": [0,0,0]},
+            {"label": "R Clavicle", "color": "#C080FF", "vertices": final_clav_r.tolist(), "indices": cla_r_inds, "origin": tho_sc_r_glob.tolist()},
+            {"label": "L Clavicle", "color": "#FFB0D0", "vertices": final_clav_l.tolist(), "indices": cla_l_inds, "origin": tho_sc_l_glob.tolist()},
+            {"label": "R Scapula", "color": "#FFA040", "vertices": final_scap_r.tolist(), "indices": sca_r_inds, "origin": c_ac_r_glob.tolist()},
+            {"label": "L Scapula", "color": "#FFE060", "vertices": final_scap_l.tolist(), "indices": sca_l_inds, "origin": c_ac_l_glob.tolist()},
+            {"label": "R Humerus", "color": "#FF6060", "vertices": final_hum_r.tolist(), "indices": hum_r_inds, "origin": sca_gh_r_glob.tolist()},
+            {"label": "L Humerus", "color": "#FF6060", "vertices": final_hum_l.tolist(), "indices": hum_l_inds, "origin": sca_gh_l_glob.tolist()}
         ],
         "markers": markers,
         "anatomical_landmarks": {
             "right": {
-                "thorax_sc": (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt)).tolist(),
-                "clavicle_sc": (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt)).tolist(), # Overlap
+                "thorax_sc": tho_sc_r_glob.tolist(),
+                "thorax_ij": [0,0,0],
+                "thorax_px": (t_t_mat[:3, :3] @ (px_pt - ij_pt)).tolist(),
+                "thorax_c7": (t_t_mat[:3, :3] @ (c7_pt - ij_pt)).tolist(),
+                "thorax_t8": (t_t_mat[:3, :3] @ (t8_pt - ij_pt)).tolist(),
+                "clavicle_sc": tho_sc_r_glob.tolist(),
                 "clavicle_ac": c_ac_r_glob.tolist(),
                 "scapula_ac": c_ac_r_glob.tolist(),
             },
             "left": {
-                "thorax_sc": (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt)).tolist(),
-                "clavicle_sc": (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt)).tolist(),
+                "thorax_sc": tho_sc_l_glob.tolist(),
+                "thorax_ij": [0,0,0],
+                "thorax_px": (t_t_mat[:3, :3] @ (px_pt - ij_pt)).tolist(),
+                "thorax_c7": (t_t_mat[:3, :3] @ (c7_pt - ij_pt)).tolist(),
+                "thorax_t8": (t_t_mat[:3, :3] @ (t8_pt - ij_pt)).tolist(),
+                "clavicle_sc": tho_sc_l_glob.tolist(),
                 "clavicle_ac": c_ac_l_glob.tolist(),
                 "scapula_ac": c_ac_l_glob.tolist(),
             }
         },
         "isb_joints": {
             "right": {
-                "sc": (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt)).tolist(),
+                "sc": tho_sc_r_glob.tolist(),
                 "ac": c_ac_r_glob.tolist(),
                 "gh": sca_gh_r_glob.tolist(),
                 "angles": [0.0, 0.0, 0.0]
             },
             "left": {
-                "sc": (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt)).tolist(),
+                "sc": tho_sc_l_glob.tolist(),
                 "ac": c_ac_l_glob.tolist(),
                 "gh": sca_gh_l_glob.tolist(),
                 "angles": [0.0, 0.0, 0.0]
