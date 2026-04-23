@@ -28,12 +28,12 @@ const isKinematicVisible = ref(false);
 
 // Joint Coordinates (ISB Standards)
 const r_joint_coords = ref({ 
-  sc_abduction: 35.0, sc_elevation: 5.0, sc_upward: 15.0, 
+  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
   ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
   gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
 });
 const l_joint_coords = ref({ 
-  sc_abduction: 35.0, sc_elevation: 5.0, sc_upward: 15.0, 
+  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
   ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
   gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
 });
