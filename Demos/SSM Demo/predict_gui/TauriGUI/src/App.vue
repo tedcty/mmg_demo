@@ -106,13 +106,23 @@ let globalScene: THREE.Scene | null = null;
 let globalCamera: THREE.PerspectiveCamera | null = null;
 let globalControls: OrbitControls | null = null;
 let bonesGroup: THREE.Group | null = null;
+let ghostGroup: THREE.Group | null = null; // Group for the mean "ghost" overlap
 let isFirstLoad = true;
 
 // Comparison State
-const isViewingOriginal = ref(false);
+const isViewingOriginal = ref(true);
+const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
 let meanModelData: any = null;
 let predictedModelData: any = null;
+
+// Reference storage for ghost meshes
+const ghostMeshes = {
+    thorax: null as THREE.Mesh | null,
+    clavicle: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null },
+    scapula: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null },
+    humerus: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null }
+};
 
 async function loadBones(externalData: any = null) {
   if (!globalScene) return;
@@ -314,6 +324,44 @@ async function loadBones(externalData: any = null) {
         const r4 = createAnthroMarker(lms.scapula_ac, colors.scapula, scapulaMeshes[s_t]);
         anatomicalMarkers[s_t].scapula_ac = r4.marker; anatomicalLabels[s_t].scapula_ac = r4.sprite;
       });
+    }
+
+    // --- GHOST OVERLAP LOGIC ---
+    if (isOverlapEnabled.value && meanModelData) {
+        if (ghostGroup) {
+            globalScene.remove(ghostGroup);
+            ghostGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
+        }
+        ghostGroup = new THREE.Group();
+        globalScene.add(ghostGroup);
+
+        meanModelData.bones.forEach((bone: any) => {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(bone.vertices.length * 3);
+            for (let i = 0; i < bone.vertices.length; i++) {
+                positions[i*3] = bone.vertices[i][0];
+                positions[i*3+1] = bone.vertices[i][1];
+                positions[i*3+2] = bone.vertices[i][2];
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            if (bone.indices && bone.indices.length > 0) {
+                geom.setIndex(bone.indices);
+                geom.computeVertexNormals();
+                const mat = new THREE.MeshStandardMaterial({ color: "#4facfe", transparent: true, opacity: 0.15, wireframe: true, depthWrite: false });
+                const mesh = new THREE.Mesh(geom, mat);
+                ghostGroup!.add(mesh);
+                if (bone.label === "Thorax") ghostMeshes.thorax = mesh;
+                else if (bone.label === "R Clavicle") ghostMeshes.clavicle.right = mesh;
+                else if (bone.label === "L Clavicle") ghostMeshes.clavicle.left = mesh;
+                else if (bone.label === "R Scapula") ghostMeshes.scapula.right = mesh;
+                else if (bone.label === "L Scapula") ghostMeshes.scapula.left = mesh;
+                else if (bone.label === "R Humerus") ghostMeshes.humerus.right = mesh;
+                else if (bone.label === "L Humerus") ghostMeshes.humerus.left = mesh;
+            }
+        });
+    } else if (ghostGroup) {
+        globalScene.remove(ghostGroup);
+        ghostGroup = null;
     }
 
   } catch (err) {
@@ -533,6 +581,36 @@ onMounted(async () => {
 
       updateLabels(side, 'gh');
       updateOriginLabels();
+
+      // D. GHOST SYNC (If overlap enabled, apply same logic to ghost meshes)
+      if (isOverlapEnabled.value && meanModelData) {
+          const g_c = side === 'right' ? ghostMeshes.clavicle.right : ghostMeshes.clavicle.left;
+          const g_s = side === 'right' ? ghostMeshes.scapula.right : ghostMeshes.scapula.left;
+          const g_h = side === 'right' ? ghostMeshes.humerus.right : ghostMeshes.humerus.left;
+          if (g_c && g_s && g_h) {
+              const g_pivots = meanModelData.isb_joints[side];
+              const g_p = { sc: new THREE.Vector3(g_pivots.sc[0], g_pivots.sc[1], g_pivots.sc[2]), ac: new THREE.Vector3(g_pivots.ac[0], g_pivots.ac[1], g_pivots.ac[2]), gh: new THREE.Vector3(g_pivots.gh[0], g_pivots.gh[1], g_pivots.gh[2]) };
+              
+              [g_c, g_s, g_h].forEach(m => { m.quaternion.set(0,0,0,1); m.position.set(0,0,0); });
+
+              g_c.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_c.quaternion.premultiply(qSC);
+
+              const gac_W = g_p.ac.clone().sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_s.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_s.quaternion.premultiply(qSC);
+              g_s.position.sub(gac_W).applyQuaternion(qAC).add(gac_W);
+              g_s.quaternion.premultiply(qAC);
+
+              const ggh_W = g_p.gh.clone().sub(g_p.ac).applyQuaternion(qAC).add(g_p.ac).sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_h.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_h.quaternion.premultiply(qSC);
+              g_h.position.sub(gac_W).applyQuaternion(qAC).add(gac_W);
+              g_h.quaternion.premultiply(qAC);
+              g_h.position.sub(ggh_W).applyQuaternion(qGH).add(ggh_W);
+              g_h.quaternion.premultiply(qGH);
+          }
+      }
     };
 
     const animate = () => {
@@ -694,15 +772,15 @@ function toggleComparison() {
                     <div class="group-title">Sternoclavicular (SC)</div>
                     <div class="slider-row">
                       <label><span>Abduction</span> <span>{{ r_joint_coords.sc_abduction.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.sc_abduction" min="0" max="60" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.sc_abduction" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Elevation</span> <span>{{ r_joint_coords.sc_elevation.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.sc_elevation" min="-15" max="30" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.sc_elevation" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Upward Rot</span> <span>{{ r_joint_coords.sc_upward.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.sc_upward" min="-10" max="45" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.sc_upward" min="-90" max="90" step="0.5" />
                     </div>
                   </div>
 
@@ -710,15 +788,15 @@ function toggleComparison() {
                     <div class="group-title">Acromioclavicular (AC)</div>
                     <div class="slider-row">
                       <label><span>Internal Rot</span> <span>{{ r_joint_coords.ac_internal.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.ac_internal" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.ac_internal" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Upward Rot</span> <span>{{ r_joint_coords.ac_upward.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.ac_upward" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.ac_upward" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Posterior Tilt</span> <span>{{ r_joint_coords.ac_posterior.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.ac_posterior" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.ac_posterior" min="-90" max="90" step="0.5" />
                     </div>
                   </div>
 
@@ -726,11 +804,11 @@ function toggleComparison() {
                     <div class="group-title">Glenohumeral (GH)</div>
                     <div class="slider-row">
                       <label><span>Flexion</span> <span>{{ r_joint_coords.gh_flexion.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.gh_flexion" min="-30" max="120" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.gh_flexion" min="-60" max="180" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Abduction</span> <span>{{ r_joint_coords.gh_abduction.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="r_joint_coords.gh_abduction" min="-30" max="120" step="0.5" />
+                      <input type="range" v-model.number="r_joint_coords.gh_abduction" min="0" max="180" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Internal Rot</span> <span>{{ r_joint_coords.gh_internal.toFixed(1) }}°</span></label>
@@ -746,15 +824,15 @@ function toggleComparison() {
                     <div class="group-title">Sternoclavicular (SC)</div>
                     <div class="slider-row">
                       <label><span>Abduction</span> <span>{{ l_joint_coords.sc_abduction.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.sc_abduction" min="0" max="60" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.sc_abduction" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Elevation</span> <span>{{ l_joint_coords.sc_elevation.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.sc_elevation" min="-15" max="30" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.sc_elevation" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Upward Rot</span> <span>{{ l_joint_coords.sc_upward.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.sc_upward" min="-10" max="45" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.sc_upward" min="-90" max="90" step="0.5" />
                     </div>
                   </div>
 
@@ -762,15 +840,15 @@ function toggleComparison() {
                     <div class="group-title">Acromioclavicular (AC)</div>
                     <div class="slider-row">
                       <label><span>Internal Rot</span> <span>{{ l_joint_coords.ac_internal.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.ac_internal" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.ac_internal" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Upward Rot</span> <span>{{ l_joint_coords.ac_upward.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.ac_upward" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.ac_upward" min="-90" max="90" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Posterior Tilt</span> <span>{{ l_joint_coords.ac_posterior.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.ac_posterior" min="-30" max="30" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.ac_posterior" min="-90" max="90" step="0.5" />
                     </div>
                   </div>
 
@@ -778,11 +856,11 @@ function toggleComparison() {
                     <div class="group-title">Glenohumeral (GH)</div>
                     <div class="slider-row">
                       <label><span>Flexion</span> <span>{{ l_joint_coords.gh_flexion.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.gh_flexion" min="-30" max="120" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.gh_flexion" min="-60" max="180" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Abduction</span> <span>{{ l_joint_coords.gh_abduction.toFixed(1) }}°</span></label>
-                      <input type="range" v-model.number="l_joint_coords.gh_abduction" min="-30" max="120" step="0.5" />
+                      <input type="range" v-model.number="l_joint_coords.gh_abduction" min="0" max="180" step="0.5" />
                     </div>
                     <div class="slider-row">
                       <label><span>Internal Rot</span> <span>{{ l_joint_coords.gh_internal.toFixed(1) }}°</span></label>
@@ -1215,3 +1293,16 @@ input[type="range"] {
   background: rgba(72, 199, 116, 0.2);
 }
 </style>
+.overlap-btn {
+  background: rgba(79, 172, 254, 0.1) !important;
+  border-color: rgba(79, 172, 254, 0.3) !important;
+  color: #70c5ff !important;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.overlap-btn.active {
+  background: rgba(79, 172, 254, 0.3) !important;
+  border-color: #4facfe !important;
+  box-shadow: 0 0 15px rgba(79, 172, 254, 0.4);
+}
