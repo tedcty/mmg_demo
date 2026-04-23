@@ -3,8 +3,12 @@ import json
 import numpy as np
 import pandas as pd
 import vtk
+import copy
 from ptb.util.data import VTKMeshUtl
 from ptb.util.math.transformation import Cloud
+from scapulothoracic_constraint import ShoulderKinematicTree
+from scipy.spatial.transform import Rotation as R
+from scipy.interpolate import LSQBivariateSpline
 from scapulothoracic_constraint import solve_hierarchical_shoulder
 
 def sphere_fit(points):
@@ -262,9 +266,121 @@ def process_and_export(target_ply=None):
     
     final_hum_l = transform_mesh(hum_l_verts, ij_pt, hl_t_mat) + gh_offset_l
 
-    # --- 4. EXPORT ---
+    # Calculate Scapular Landmarks for Diagnostic
+    aa_r_glob = (transform_mesh([aa_pt], ij_pt, s_t_mat)[0] + ac_offset)
+    ts_r_glob = (transform_mesh([ts_pt], ij_pt, s_t_mat)[0] + ac_offset)
+    ai_r_glob = (transform_mesh([ai_pt], ij_pt, s_t_mat)[0] + ac_offset)
+    
+    aa_l_glob = (transform_mesh([aa_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l)
+    ts_l_glob = (transform_mesh([ts_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l)
+    ai_l_glob = (transform_mesh([ai_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l)
+
+    # --- 4. SCAPULOTHORACIC PROJECTION DIAGNOSTIC ---
+    print("Calculating Scapulothoracic Projection Markers...")
+    
     tho_sc_r_glob = (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt))
     tho_sc_l_glob = (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt))
+    
+    def project_scapula_to_thorax(side_label, tho_mesh, aa, ts, ai):
+        # 1. Calculate Scapula Centroid and Normal
+        centroid = (aa + ts + ai) / 3.0
+        
+        # Plane Normal pointing posteriorly
+        v1 = aa - ts
+        v2 = ai - ts
+        n = np.cross(v1, v2)
+        n_norm = np.linalg.norm(n)
+        if n_norm < 1e-6: return None
+        n /= n_norm
+        
+        # Ensure normal points posteriorly (Negative Z in JCS)
+        if n[2] > 0:
+            n = -n
+            
+        # 2. Fit Spline to Thorax (Glide Area)
+        is_pos_x = (centroid[0] > 0)
+        y_c7 = (t_t_mat[:3, :3] @ (c7_pt - ij_pt))[1]
+        y_t8 = (t_t_mat[:3, :3] @ (t8_pt - ij_pt))[1]
+        
+        print(f"  DIAG: side={side_label}, centroid={centroid.tolist()}")
+        print(f"  DIAG: tho_mesh bounds: x=[{tho_mesh[:,0].min():.1f}, {tho_mesh[:,0].max():.1f}], y=[{tho_mesh[:,1].min():.1f}, {tho_mesh[:,1].max():.1f}], z=[{tho_mesh[:,2].min():.1f}, {tho_mesh[:,2].max():.1f}]")
+        
+        # Determine side mask
+        side_mask = (tho_mesh[:, 0] > 0) if is_pos_x else (tho_mesh[:, 0] < 0)
+        # Posterior mask (try Z < 0 first, but check bounds)
+        post_mask = (tho_mesh[:, 2] < 50) # Very inclusive
+        
+        glide_mask = side_mask & post_mask & (tho_mesh[:, 1] > y_t8 - 150)
+            
+        glide_pts = tho_mesh[glide_mask]
+        print(f"  DIAG: glide_pts count={len(glide_pts)}")
+        
+        if len(glide_pts) > 50:
+            x_pts, y_pts, z_pts = glide_pts[:, 0], glide_pts[:, 1], glide_pts[:, 2]
+            
+            # knots must be within range
+            kx = np.linspace(x_pts.min(), x_pts.max(), 5)[1:-1]
+            ky = np.linspace(y_pts.min(), y_pts.max(), 5)[1:-1]
+            spline = LSQBivariateSpline(x_pts, y_pts, z_pts, kx, ky, kx=3, ky=3)
+            
+            # 3. Ray-Surface Intersection
+            # For a more robust approach, find the closest point in glide_pts to the ray
+            # then use that as t_guess
+            dists_to_ray = np.linalg.norm(np.cross(glide_pts - centroid, n), axis=1)
+            best_idx = np.argmin(dists_to_ray)
+            closest_pt_on_mesh = glide_pts[best_idx]
+            t_guess = np.dot(closest_pt_on_mesh - centroid, n)
+            
+            from scipy.optimize import fsolve
+            def intersect_func(t):
+                px = centroid[0] + t * n[0]
+                py = centroid[1] + t * n[1]
+                pz = centroid[2] + t * n[2]
+                sz = spline.ev(px, py)
+                return pz - sz
+            
+            t_sol, info, ier, msg = fsolve(intersect_func, t_guess, full_output=True)
+            if ier == 1:
+                t = t_sol[0]
+                projected_pt = centroid + t * n
+                print(f"  DIAG: Found intersection at t={t:.2f}, pt={projected_pt.tolist()}")
+                return projected_pt
+            else:
+                print(f"  DIAG: Intersection solver failed ({msg}). Using closest mesh point.")
+                return closest_pt_on_mesh
+        return None
+
+    # Right Side Projection
+    # Landmarks are already relative to IJ? 
+    # No, they are aa_r_glob. Let's make them relative for the solver.
+    proj_r = project_scapula_to_thorax("right", final_thorax - ij_pt, 
+                                     aa_r_glob - ij_pt, ts_r_glob - ij_pt, ai_r_glob - ij_pt)
+    if proj_r is not None:
+        markers.append({"pos": (proj_r + ij_pt).tolist(), "label": "R_Proj", "color": "cyan"})
+        
+    # Left Side Projection
+    proj_l = project_scapula_to_thorax("left", final_thorax - ij_pt, 
+                                     aa_l_glob - ij_pt, ts_l_glob - ij_pt, ai_l_glob - ij_pt)
+    if proj_l is not None:
+        markers.append({"pos": (proj_l + ij_pt).tolist(), "label": "L_Proj", "color": "cyan"})
+
+    # Initialize angles as zero for export
+    q_r = np.zeros(6)
+    q_l = np.zeros(6)
+
+    # --- 5. EXPORT ---
+    final_scap_r_rel = final_scap_r - ij_pt
+    final_hum_r_rel = final_hum_r - ij_pt
+    tho_sc_r_rel = tho_sc_r_glob # This was (mat @ (pt - ij)) which IS relative to ij
+    c_ac_r_rel = c_ac_r_glob - ij_pt
+    sca_gh_r_rel = sca_gh_r_glob - ij_pt
+    aa_r_rel = aa_r_glob - ij_pt
+    ts_r_rel = ts_r_glob - ij_pt
+    ai_r_rel = ai_r_glob - ij_pt
+    
+    # --- 5. EXPORT ---
+
+    # --- 4. EXPORT ---
     
     # Prepare markers for visualization
     markers.append({"pos": [0,0,0], "label": "IJ", "color": "yellow"})
@@ -316,13 +432,13 @@ def process_and_export(target_ply=None):
                 "sc": tho_sc_r_glob.tolist(),
                 "ac": c_ac_r_glob.tolist(),
                 "gh": sca_gh_r_glob.tolist(),
-                "angles": [0.0, 0.0, 0.0]
+                "angles": q_r.tolist()
             },
             "left": {
                 "sc": tho_sc_l_glob.tolist(),
                 "ac": c_ac_l_glob.tolist(),
                 "gh": sca_gh_l_glob.tolist(),
-                "angles": [0.0, 0.0, 0.0]
+                "angles": q_l.tolist()
             }
         }
     }
