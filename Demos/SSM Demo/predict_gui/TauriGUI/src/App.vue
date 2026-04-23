@@ -115,7 +115,9 @@ const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
+const isScapularPlaneEnabled = ref(false); // Control for scapular plane
 let highlightsGroup: THREE.Group | null = null; 
+let scapularPlaneGroup: THREE.Group | null = null; 
 let meanModelData: any = null;
 let predictedModelData: any = null;
 
@@ -464,6 +466,56 @@ async function loadBones(externalData: any = null) {
     } else if (highlightsGroup) {
         globalScene.remove(highlightsGroup);
         highlightsGroup = null;
+    }
+
+    // --- SCAPULAR PLANE VISUALIZATION ---
+    if (isScapularPlaneEnabled.value && activeData.anatomical_landmarks) {
+        if (scapularPlaneGroup) {
+            globalScene.remove(scapularPlaneGroup);
+            scapularPlaneGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
+        }
+        scapularPlaneGroup = new THREE.Group();
+        globalScene.add(scapularPlaneGroup);
+
+        ['right', 'left'].forEach((side) => {
+            const lms = activeData.anatomical_landmarks[side];
+            if (!lms.scapula_aa || !lms.scapula_ts || !lms.scapula_ai) return;
+
+            const aa = new THREE.Vector3().fromArray(lms.scapula_aa);
+            const ts = new THREE.Vector3().fromArray(lms.scapula_ts);
+            const ai = new THREE.Vector3().fromArray(lms.scapula_ai);
+
+            // Centroid
+            const centroid = new THREE.Vector3().add(aa).add(ts).add(ai).multiplyScalar(1/3);
+
+            // Plane Geometry
+            const geom = new THREE.BufferGeometry();
+            const vertices = new Float32Array([
+                aa.x, aa.y, aa.z,
+                ts.x, ts.y, ts.z,
+                ai.x, ai.y, ai.z
+            ]);
+            geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geom.computeVertexNormals();
+
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+            const plane = new THREE.Mesh(geom, mat);
+            scapularPlaneGroup!.add(plane);
+
+            // Normal Arrow
+            const v1 = new THREE.Vector3().subVectors(aa, ts);
+            const v2 = new THREE.Vector3().subVectors(ai, ts);
+            const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+            
+            // Ensure normal points "posteriorly" (negative Z)
+            if (normal.z > 0) normal.multiplyScalar(-1);
+
+            const arrow = new THREE.ArrowHelper(normal, centroid, 40, 0xffff00, 8, 4);
+            scapularPlaneGroup!.add(arrow);
+        });
+    } else if (scapularPlaneGroup) {
+        globalScene.remove(scapularPlaneGroup);
+        scapularPlaneGroup = null;
     }
 
     // --- GHOST OVERLAP LOGIC ---
@@ -1079,6 +1131,10 @@ function toggleComparison() {
                 <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
                   <input type="checkbox" v-model="isNormalsEnabled" @change="loadBones()" id="normalsToggle" />
                   <label for="normalsToggle">Show Surface Normals</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isScapularPlaneEnabled" @change="loadBones()" id="scapularPlaneToggle" />
+                  <label for="scapularPlaneToggle">Show Scapular Plane</label>
                 </div>
               </div>
 
