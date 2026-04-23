@@ -8,7 +8,11 @@ def main():
     os.environ['PATH'] = f"{cargo_path};{os.environ.get('PATH', '')}"
     
     # Locate the Tauri application directory (now a subfolder of this script)
-    gui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TauriGUI')
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    gui_dir = os.path.join(base_dir, 'TauriGUI')
+    
+    # Add scripts to path for internal imports
+    sys.path.append(os.path.join(base_dir, 'scripts'))
     
     print("====================================")
     print("Launching Consolidated Shoulder Predictor...")
@@ -16,6 +20,14 @@ def main():
     print("  Logic: scripts/predict_headless.py")
     print("====================================")
     
+    # Run initial assembly to ensure bones.json exists and is correct
+    try:
+        from scripts.generate_isb_joints import process_and_export
+        process_and_export()
+    except Exception as e:
+        print(f"Warning: Initial assembly failed: {e}")
+        print("Continuing to launch GUI...")
+
     # Launch Tauri using npm
     try:
         subprocess.run(["npm", "run", "tauri", "dev"], cwd=gui_dir, shell=True)
