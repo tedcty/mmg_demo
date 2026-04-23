@@ -68,12 +68,12 @@ const jointLabels = {
 
 // Anatomical Landmarks (Point-on-Bone)
 const anatomicalMarkers = {
-    right: { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined },
-    left:  { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined }
+    right: { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined, scapula_aa: null as THREE.Mesh | null | undefined, scapula_ts: null as THREE.Mesh | null | undefined, scapula_ai: null as THREE.Mesh | null | undefined },
+    left:  { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined, scapula_aa: null as THREE.Mesh | null | undefined, scapula_ts: null as THREE.Mesh | null | undefined, scapula_ai: null as THREE.Mesh | null | undefined }
 };
 const anatomicalLabels = {
-    right: { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined },
-    left:  { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined }
+    right: { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined, scapula_aa: null as THREE.Sprite | null | undefined, scapula_ts: null as THREE.Sprite | null | undefined, scapula_ai: null as THREE.Sprite | null | undefined },
+    left:  { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined, scapula_aa: null as THREE.Sprite | null | undefined, scapula_ts: null as THREE.Sprite | null | undefined, scapula_ai: null as THREE.Sprite | null | undefined }
 };
 
 // Local Frame Origin Markers (at 0,0,0 for each bone)
@@ -114,6 +114,7 @@ const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
+const isNormalsEnabled = ref(false); // Control for surface normals
 let highlightsGroup: THREE.Group | null = null; 
 let meanModelData: any = null;
 let predictedModelData: any = null;
@@ -145,6 +146,7 @@ async function loadBones(externalData: any = null) {
       meanModelData = JSON.parse(JSON.stringify(data));
     }
     predictedModelData = data;
+    hasPrediction.value = true;
     
     const activeData = isViewingOriginal.value ? meanModelData : predictedModelData;
     const center = activeData.center;
@@ -343,6 +345,12 @@ async function loadBones(externalData: any = null) {
         anatomicalMarkers[s_t].clavicle_ac = r3.marker; anatomicalLabels[s_t].clavicle_ac = r3.sprite;
         const r4 = createAnthroMarker(lms.scapula_ac, colors.scapula, scapulaMeshes[s_t]);
         anatomicalMarkers[s_t].scapula_ac = r4.marker; anatomicalLabels[s_t].scapula_ac = r4.sprite;
+        const raa = createAnthroMarker(lms.scapula_aa, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_aa = raa.marker; anatomicalLabels[s_t].scapula_aa = raa.sprite;
+        const rts = createAnthroMarker(lms.scapula_ts, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_ts = rts.marker; anatomicalLabels[s_t].scapula_ts = rts.sprite;
+        const rai = createAnthroMarker(lms.scapula_ai, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_ai = rai.marker; anatomicalLabels[s_t].scapula_ai = rai.sprite;
       });
     }
 
@@ -425,6 +433,30 @@ async function loadBones(externalData: any = null) {
             mesh.scale.copy(thoraxMesh.value.scale);
 
             highlightsGroup!.add(mesh);
+
+            // --- ADD NORMALS VISUALIZATION ---
+            if (isNormalsEnabled.value) {
+                // Sample a few normals to show surface direction
+                const posAttr = geom.getAttribute('position');
+                const normAttr = geom.getAttribute('normal');
+                const step = 20; // Every 20th vertex to avoid clutter
+                for (let i = 0; i < subIndices.length; i += step * 3) {
+                    const vIdx = subIndices[i];
+                    const pos = new THREE.Vector3().fromBufferAttribute(posAttr, vIdx);
+                    const norm = new THREE.Vector3().fromBufferAttribute(normAttr, vIdx);
+                    
+                    const arrow = new THREE.ArrowHelper(
+                        norm, 
+                        pos, 
+                        15, // Length 
+                        side === 'right' ? 0x00ff00 : 0x0000ff, // Color matches patch
+                        4,  // Head length
+                        2   // Head width
+                    );
+                    // Sync arrow with thorax transform if needed (since it's added to highlightsGroup)
+                    highlightsGroup!.add(arrow);
+                }
+            }
         };
 
         createFlushHighlight('right');
@@ -580,15 +612,18 @@ onMounted(async () => {
             const markers = anatomicalMarkers[side];
             const boneNames = { 
                 thorax_sc: "Thorax", thorax_ij: "Thorax", thorax_px: "Thorax", thorax_c7: "Thorax", thorax_t8: "Thorax",
-                clavicle_sc: "Clavicle", clavicle_ac: "Clavicle", scapula_ac: "Scapula" 
+                clavicle_sc: "Clavicle", clavicle_ac: "Clavicle", scapula_ac: "Scapula",
+                scapula_aa: "Scapula", scapula_ts: "Scapula", scapula_ai: "Scapula"
             };
             const jointNames = { 
                 thorax_sc: "SC", thorax_ij: "IJ", thorax_px: "PX", thorax_c7: "C7", thorax_t8: "T8",
-                clavicle_sc: "SC", clavicle_ac: "AC", scapula_ac: "AC" 
+                clavicle_sc: "SC", clavicle_ac: "AC", scapula_ac: "AC",
+                scapula_aa: "AA", scapula_ts: "TS", scapula_ai: "AI"
             };
             const colors = { 
                 thorax_sc: "#00FFFF", thorax_ij: "#FFFF00", thorax_px: "#FFFF00", thorax_c7: "#FFFF00", thorax_t8: "#FFFF00",
-                clavicle_sc: "#FFA500", clavicle_ac: "#FFA500", scapula_ac: "#FFFF00" 
+                clavicle_sc: "#FFA500", clavicle_ac: "#FFA500", scapula_ac: "#FFFF00",
+                scapula_aa: "#FFFF00", scapula_ts: "#FFFF00", scapula_ai: "#FFFF00"
             };
 
             Object.keys(lms).forEach(k => {
@@ -1035,7 +1070,19 @@ function toggleComparison() {
                 </div>
               </div>
 
-              <button :disabled="isPredicting" @click="runPrediction" class="run-btn">
+              <div class="card transparent-card" style="margin-top: 15px; border-color: #60A060;">
+                <h3 style="color: #60A060">🔍 Anatomical Guides</h3>
+                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isHighlightsEnabled" @change="loadBones()" id="highlightToggle" />
+                  <label for="highlightToggle">Highlight Glide Area</label>
+                </div>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isNormalsEnabled" @change="loadBones()" id="normalsToggle" />
+                  <label for="normalsToggle">Show Surface Normals</label>
+                </div>
+              </div>
+
+              <button :disabled="isPredicting" @click="runPrediction" class="run-btn" style="margin-top: 15px;">
                 <span v-if="!isPredicting">🚀 Run Prediction Pipeline</span>
                 <span v-else>🔄 Executing Model Generation...</span>
               </button>
@@ -1050,10 +1097,6 @@ function toggleComparison() {
                    <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
                    <span v-else>📏 Compare with Mean Model</span>
                 </button>
-                <div class="toggle-group" style="margin-top: 10px; color: white; display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" v-model="isHighlightsEnabled" @change="loadBones()" id="highlightToggle" />
-                  <label for="highlightToggle">Highlight Glide Area</label>
-                </div>
               </div>
             </div>
          </div>

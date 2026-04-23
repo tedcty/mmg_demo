@@ -293,6 +293,9 @@ def process_and_export(target_ply=None):
                 "clavicle_sc": tho_sc_r_glob.tolist(),
                 "clavicle_ac": c_ac_r_glob.tolist(),
                 "scapula_ac": c_ac_r_glob.tolist(),
+                "scapula_aa": (transform_mesh([aa_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
+                "scapula_ts": (transform_mesh([ts_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
+                "scapula_ai": (transform_mesh([ai_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
             },
             "left": {
                 "thorax_sc": tho_sc_l_glob.tolist(),
@@ -303,6 +306,9 @@ def process_and_export(target_ply=None):
                 "clavicle_sc": tho_sc_l_glob.tolist(),
                 "clavicle_ac": c_ac_l_glob.tolist(),
                 "scapula_ac": c_ac_l_glob.tolist(),
+                "scapula_aa": (transform_mesh([aa_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
+                "scapula_ts": (transform_mesh([ts_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
+                "scapula_ai": (transform_mesh([ai_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
             }
         },
         "isb_joints": {
