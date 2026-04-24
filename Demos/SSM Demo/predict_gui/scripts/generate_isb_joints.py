@@ -10,6 +10,7 @@ from scapulothoracic_constraint import ShoulderKinematicTree
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import LSQBivariateSpline
 from scapulothoracic_constraint import solve_hierarchical_shoulder
+from fabrik_solver import apply_fabrik_alignment
 
 def sphere_fit(points):
     p_mean = np.nanmean(points, axis=0)
@@ -68,7 +69,7 @@ def filter_bone_indices(all_verts, all_faces, maps_dir, filename):
             bone_faces.extend([old_to_new[f[0]], old_to_new[f[1]], old_to_new[f[2]]])
     return bone_verts, bone_faces
 
-def process_and_export(target_ply=None):
+def process_and_export(target_ply=None, fabrik_step=1):
     print("Starting Global ISB Assembly Pipeline (Recursive JCS)...")
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -128,6 +129,79 @@ def process_and_export(target_ply=None):
     # Global vectors for child bones to align to
     t_transformed_vectors = (t_t_mat[:3, :3] @ t_source).T 
     
+    # --- 2. ASSEMBLY SETUP ---
+    # Sphere fits for joint centers
+    rc_sc_tho = _get_sphere_center(current_case_arr, maps_dir, "tho_scj_r.csv")
+    rc_sc_tho_l = _get_sphere_center(current_case_arr, maps_dir, "tho_scj_l.csv")
+    
+    tho_sc_r_glob = (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt))
+    tho_sc_l_glob = (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt))
+
+    def project_scapula_to_thorax(tho_mesh, aa, ts, ai):
+        centroid = (aa + ts + ai) / 3.0
+        
+        # Diagnostic: Print landmark relative positions
+        px_glob = (t_t_mat[:3, :3] @ (px_pt - ij_pt))
+        t8_glob = (t_t_mat[:3, :3] @ (t8_pt - ij_pt))
+        print(f"  DIAG: PX_X={px_glob[0]:.1f}, T8_X={t8_glob[0]:.1f}")
+        
+        v1, v2 = aa - ts, ai - ts
+        n = np.cross(v1, v2)
+        n /= np.linalg.norm(n)
+        
+        # X negative is Posterior in this JCS (T8_X < PX_X).
+        # The scapula is often anterior in the seed, so we project posteriorly (negative X).
+        if n[0] > 0: n = -n
+        
+        x_mid = (tho_mesh[:, 0].min() + tho_mesh[:, 0].max()) / 2.0
+        z_mid = (tho_mesh[:, 2].min() + tho_mesh[:, 2].max()) / 2.0
+        y_t8 = (t_t_mat[:3, :3] @ (t8_pt - ij_pt))[1]
+        
+        # Filter for the correct side (Lateral Z) and posterior aspect (X < x_mid)
+        side_mask = (tho_mesh[:, 2] > z_mid) if (centroid[2] > z_mid) else (tho_mesh[:, 2] < z_mid)
+        # The posterior surface of the thorax is at the LOWER X values (negative X is Posterior).
+        post_mask = (tho_mesh[:, 0] < x_mid) 
+        glide_mask = side_mask & post_mask & (tho_mesh[:, 1] > y_t8 - 150)
+        
+        glide_pts = tho_mesh[glide_mask]
+        if len(glide_pts) < 50: return centroid # fallback
+        
+        # Spline fit for the glide area
+        # We'll use Y and Z as predictors for X (depth)
+        y_pts, z_pts, x_pts = glide_pts[:, 1], glide_pts[:, 2], glide_pts[:, 0]
+        ky = np.linspace(y_pts.min(), y_pts.max(), 5)[1:-1]
+        kz = np.linspace(z_pts.min(), z_pts.max(), 5)[1:-1]
+        spline = LSQBivariateSpline(y_pts, z_pts, x_pts, ky, kz)
+        
+        # Find intersection
+        # Pt = Centroid + t * n
+        # find t such that Pt[0] = spline.ev(Pt[1], Pt[2])
+        best_idx = np.argmin(np.linalg.norm(np.cross(glide_pts - centroid, n), axis=1))
+        t_guess = np.dot(glide_pts[best_idx] - centroid, n)
+        
+        from scipy.optimize import fsolve
+        def intersect_err(t):
+            px = centroid[0] + t * n[0]
+            py = centroid[1] + t * n[1]
+            pz = centroid[2] + t * n[2]
+            sx = spline.ev(py, pz)
+            return px - sx
+            
+        t_sol, info, ier, msg = fsolve(intersect_err, t_guess, full_output=True)
+        
+        projected_pt = centroid + t_sol[0] * n
+        
+        # Validation: Is the result actually on the posterior?
+        # If fsolve failed or the point is too far anterior, use fallback
+        if ier != 1 or projected_pt[0] > x_mid:
+            best_idx = np.argmin(np.linalg.norm(glide_pts - centroid, axis=1))
+            projected_pt = glide_pts[best_idx]
+            print(f"  FABRIK PROJ: Ray missed or hit anterior. Using closest posterior point at {projected_pt[0]:.1f}")
+        else:
+            print(f"  FABRIK PROJ: Ray hit posterior at X={projected_pt[0]:.1f}")
+            
+        return projected_pt
+    
     # --- 2. RIGHT SIDE ASSEMBLY ---
     
     # 2a. Clavicle
@@ -144,13 +218,12 @@ def process_and_export(target_ply=None):
     
     # Sphere fits for joint center
     rc_sc_cla = _get_sphere_center(current_case_arr, maps_dir, "cla_scj_r.csv")
-    rc_sc_tho = _get_sphere_center(current_case_arr, maps_dir, "tho_scj_r.csv")
     
     # Transform Clavicle to Global (Thorax) frame
     # 1. Align orientation to Thorax (global)
     c_t_mat = Cloud.transform_between_3x3_points_sets(c_source, t_target)
     # 2. Align SC joint centers
-    sc_offset = (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt)) - (c_t_mat[:3, :3] @ (rc_sc_cla - ij_pt))
+    sc_offset = tho_sc_r_glob - (c_t_mat[:3, :3] @ (rc_sc_cla - ij_pt))
     
     final_clav_r = transform_mesh(cla_r_verts, ij_pt, c_t_mat) + sc_offset
     c_ac_r_glob = transform_mesh([ac_r_pt], ij_pt, c_t_mat)[0] + sc_offset
@@ -175,7 +248,49 @@ def process_and_export(target_ply=None):
     # Align Scapula AC to Clavicle AC
     ac_offset = c_ac_r_glob - (s_t_mat[:3, :3] @ (sca_ac_r_pt - ij_pt))
     
-    final_scap_r = transform_mesh(sca_r_verts, ij_pt, s_t_mat) + ac_offset
+    # Seed positions for FABRIK
+    aa_glob_seed = (s_t_mat[:3, :3] @ (aa_pt - ij_pt)) + ac_offset
+    ts_glob_seed = (s_t_mat[:3, :3] @ (ts_pt - ij_pt)) + ac_offset
+    ai_glob_seed = (s_t_mat[:3, :3] @ (ai_pt - ij_pt)) + ac_offset
+    scap_mesh_seed = transform_mesh(sca_r_verts, ij_pt, s_t_mat) + ac_offset
+
+    print("  FABRIK: Optimizing Right Scapula Alignment...")
+    proj_r_target = project_scapula_to_thorax(final_thorax, aa_glob_seed, ts_glob_seed, ai_glob_seed)
+    
+    # Pass the initial JCS orientation to prevent flipping
+    rot_r_seed = R.from_matrix(s_t_mat[:3, :3])
+    
+    final_scap_r, ac_r_opt, rot_r_opt = apply_fabrik_alignment(
+        "right", final_thorax, tho_sc_r_glob, c_ac_r_glob,
+        aa_glob_seed, ts_glob_seed, ai_glob_seed, scap_mesh_seed, 
+        p_proj=proj_r_target, initial_rot=rot_r_seed, max_step=fabrik_step
+    )
+    
+    # 2d. Synchronize Clavicle to the new AC joint position
+    v_clav_old = c_ac_r_glob - tho_sc_r_glob
+    v_clav_new = ac_r_opt - tho_sc_r_glob
+    if np.linalg.norm(v_clav_new) > 1e-6 and np.linalg.norm(v_clav_old) > 1e-6:
+        # Rotate clavicle mesh around SC joint
+        rot_clav, _ = R.align_vectors([v_clav_new], [v_clav_old])
+        final_clav_r = rot_clav.apply(final_clav_r - tho_sc_r_glob) + tho_sc_r_glob
+    
+    # Update global AC and landmarks for child (Humerus) and diagnostics
+    c_ac_r_glob_old = c_ac_r_glob
+    c_ac_r_glob = ac_r_opt
+    
+    # If Step 0, rot_r_opt is identity, and ac_r_opt is c_ac_r_glob_old
+    aa_r_glob = rot_r_opt.apply(aa_glob_seed - c_ac_r_glob_old) + ac_r_opt
+    ts_r_glob = rot_r_opt.apply(ts_glob_seed - c_ac_r_glob_old) + ac_r_opt
+    ai_r_glob = rot_r_opt.apply(ai_glob_seed - c_ac_r_glob_old) + ac_r_opt
+    
+    # Compute corrected scapular plane normal (dorsal direction, away from ribs)
+    v1_scap = ai_r_glob - ts_r_glob
+    v2_scap = aa_r_glob - ts_r_glob
+    n_scap_r = np.cross(v1_scap, v2_scap)
+    n_scap_r /= np.linalg.norm(n_scap_r)
+    # Dorsal direction = away from ribs = posterior = negative X
+    if n_scap_r[0] > 0:
+        n_scap_r = -n_scap_r
     
     # 2c. Humerus
     hum_r_verts, hum_r_inds = filter_bone_indices(current_case_arr, all_faces, maps_dir, "R_hum.csv")
@@ -193,7 +308,10 @@ def process_and_export(target_ply=None):
     
     # GH joint on scapula side
     sca_gh_r_pt = _get_sphere_center(current_case_arr, maps_dir, "scap_ghj_r.csv")
-    sca_gh_r_glob = (s_t_mat[:3, :3] @ (sca_gh_r_pt - ij_pt)) + ac_offset
+    sca_gh_r_glob_seed = (s_t_mat[:3, :3] @ (sca_gh_r_pt - ij_pt)) + ac_offset
+    
+    # Update GH joint to follow solved Scapula
+    sca_gh_r_glob = rot_r_opt.apply(sca_gh_r_glob_seed - c_ac_r_glob_old) + ac_r_opt
     
     h_t_mat = Cloud.transform_between_3x3_points_sets(h_source, t_target)
     # Align Humerus GH to Scapula GH
@@ -267,9 +385,8 @@ def process_and_export(target_ply=None):
     final_hum_l = transform_mesh(hum_l_verts, ij_pt, hl_t_mat) + gh_offset_l
 
     # Calculate Scapular Landmarks for Diagnostic
-    aa_r_glob = (transform_mesh([aa_pt], ij_pt, s_t_mat)[0] + ac_offset)
-    ts_r_glob = (transform_mesh([ts_pt], ij_pt, s_t_mat)[0] + ac_offset)
-    ai_r_glob = (transform_mesh([ai_pt], ij_pt, s_t_mat)[0] + ac_offset)
+    # Landmarks for diagnostics (Right side already calculated via FABRIK)
+    # Left Side Assembly
     
     aa_l_glob = (transform_mesh([aa_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l)
     ts_l_glob = (transform_mesh([ts_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l)
@@ -278,91 +395,23 @@ def process_and_export(target_ply=None):
     # --- 4. SCAPULOTHORACIC PROJECTION DIAGNOSTIC ---
     print("Calculating Scapulothoracic Projection Markers...")
     
-    tho_sc_r_glob = (t_t_mat[:3, :3] @ (rc_sc_tho - ij_pt))
-    tho_sc_l_glob = (t_t_mat[:3, :3] @ (rc_sc_tho_l - ij_pt))
-    
-    def project_scapula_to_thorax(side_label, tho_mesh, aa, ts, ai):
-        # 1. Calculate Scapula Centroid and Normal
-        centroid = (aa + ts + ai) / 3.0
-        
-        # Plane Normal pointing posteriorly
-        v1 = aa - ts
-        v2 = ai - ts
-        n = np.cross(v1, v2)
-        n_norm = np.linalg.norm(n)
-        if n_norm < 1e-6: return None
-        n /= n_norm
-        
-        # Ensure normal points posteriorly (Negative Z in JCS)
-        if n[2] > 0:
-            n = -n
-            
-        # 2. Fit Spline to Thorax (Glide Area)
-        is_pos_x = (centroid[0] > 0)
-        y_c7 = (t_t_mat[:3, :3] @ (c7_pt - ij_pt))[1]
-        y_t8 = (t_t_mat[:3, :3] @ (t8_pt - ij_pt))[1]
-        
-        print(f"  DIAG: side={side_label}, centroid={centroid.tolist()}")
-        print(f"  DIAG: tho_mesh bounds: x=[{tho_mesh[:,0].min():.1f}, {tho_mesh[:,0].max():.1f}], y=[{tho_mesh[:,1].min():.1f}, {tho_mesh[:,1].max():.1f}], z=[{tho_mesh[:,2].min():.1f}, {tho_mesh[:,2].max():.1f}]")
-        
-        # Determine side mask
-        side_mask = (tho_mesh[:, 0] > 0) if is_pos_x else (tho_mesh[:, 0] < 0)
-        # Posterior mask (try Z < 0 first, but check bounds)
-        post_mask = (tho_mesh[:, 2] < 50) # Very inclusive
-        
-        glide_mask = side_mask & post_mask & (tho_mesh[:, 1] > y_t8 - 150)
-            
-        glide_pts = tho_mesh[glide_mask]
-        print(f"  DIAG: glide_pts count={len(glide_pts)}")
-        
-        if len(glide_pts) > 50:
-            x_pts, y_pts, z_pts = glide_pts[:, 0], glide_pts[:, 1], glide_pts[:, 2]
-            
-            # knots must be within range
-            kx = np.linspace(x_pts.min(), x_pts.max(), 5)[1:-1]
-            ky = np.linspace(y_pts.min(), y_pts.max(), 5)[1:-1]
-            spline = LSQBivariateSpline(x_pts, y_pts, z_pts, kx, ky, kx=3, ky=3)
-            
-            # 3. Ray-Surface Intersection
-            # For a more robust approach, find the closest point in glide_pts to the ray
-            # then use that as t_guess
-            dists_to_ray = np.linalg.norm(np.cross(glide_pts - centroid, n), axis=1)
-            best_idx = np.argmin(dists_to_ray)
-            closest_pt_on_mesh = glide_pts[best_idx]
-            t_guess = np.dot(closest_pt_on_mesh - centroid, n)
-            
-            from scipy.optimize import fsolve
-            def intersect_func(t):
-                px = centroid[0] + t * n[0]
-                py = centroid[1] + t * n[1]
-                pz = centroid[2] + t * n[2]
-                sz = spline.ev(px, py)
-                return pz - sz
-            
-            t_sol, info, ier, msg = fsolve(intersect_func, t_guess, full_output=True)
-            if ier == 1:
-                t = t_sol[0]
-                projected_pt = centroid + t * n
-                print(f"  DIAG: Found intersection at t={t:.2f}, pt={projected_pt.tolist()}")
-                return projected_pt
-            else:
-                print(f"  DIAG: Intersection solver failed ({msg}). Using closest mesh point.")
-                return closest_pt_on_mesh
-        return None
-
     # Right Side Projection
-    # Landmarks are already relative to IJ? 
-    # No, they are aa_r_glob. Let's make them relative for the solver.
-    proj_r = project_scapula_to_thorax("right", final_thorax - ij_pt, 
-                                     aa_r_glob - ij_pt, ts_r_glob - ij_pt, ai_r_glob - ij_pt)
-    if proj_r is not None:
-        markers.append({"pos": (proj_r + ij_pt).tolist(), "label": "R_Proj", "color": "cyan"})
+    if proj_r_target is not None:
+        markers.append({"pos": proj_r_target.tolist(), "label": "R_Proj", "color": "cyan"})
         
-    # Left Side Projection
-    proj_l = project_scapula_to_thorax("left", final_thorax - ij_pt, 
-                                     aa_l_glob - ij_pt, ts_l_glob - ij_pt, ai_l_glob - ij_pt)
+    # Left Side Projection (Diagnostic only)
+    proj_l = project_scapula_to_thorax(final_thorax, aa_l_glob, ts_l_glob, ai_l_glob)
     if proj_l is not None:
-        markers.append({"pos": (proj_l + ij_pt).tolist(), "label": "L_Proj", "color": "cyan"})
+        markers.append({"pos": proj_l.tolist(), "label": "L_Proj", "color": "cyan"})
+
+    # --- Right Scapular Plane Landmarks (FABRIK-solved) ---
+    markers.append({"pos": aa_r_glob.tolist(), "label": "R_AA", "color": "#FF4444"})
+    markers.append({"pos": ts_r_glob.tolist(), "label": "R_TS", "color": "#44FF44"})
+    markers.append({"pos": ai_r_glob.tolist(), "label": "R_AI", "color": "#4444FF"})
+    
+    # Scapular plane centroid
+    centroid_r_glob = (aa_r_glob + ts_r_glob + ai_r_glob) / 3.0
+    markers.append({"pos": centroid_r_glob.tolist(), "label": "R_Centroid", "color": "#FFFFFF"})
 
     # Initialize angles as zero for export
     q_r = np.zeros(6)
@@ -399,6 +448,21 @@ def process_and_export(target_ply=None):
             {"label": "L Humerus", "color": "#FF6060", "vertices": final_hum_l.tolist(), "indices": hum_l_inds, "origin": sca_gh_l_glob.tolist()}
         ],
         "markers": markers,
+        "scapular_planes": {
+            "right": {
+                "aa": aa_r_glob.tolist(),
+                "ts": ts_r_glob.tolist(),
+                "ai": ai_r_glob.tolist(),
+                "centroid": centroid_r_glob.tolist(),
+                "normal": n_scap_r.tolist()
+            },
+            "left": {
+                "aa": aa_l_glob.tolist(),
+                "ts": ts_l_glob.tolist(),
+                "ai": ai_l_glob.tolist(),
+                "centroid": ((aa_l_glob + ts_l_glob + ai_l_glob) / 3.0).tolist()
+            }
+        },
         "anatomical_landmarks": {
             "right": {
                 "thorax_sc": tho_sc_r_glob.tolist(),
@@ -409,9 +473,9 @@ def process_and_export(target_ply=None):
                 "clavicle_sc": tho_sc_r_glob.tolist(),
                 "clavicle_ac": c_ac_r_glob.tolist(),
                 "scapula_ac": c_ac_r_glob.tolist(),
-                "scapula_aa": (transform_mesh([aa_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
-                "scapula_ts": (transform_mesh([ts_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
-                "scapula_ai": (transform_mesh([ai_pt], ij_pt, s_t_mat)[0] + ac_offset).tolist(),
+                "scapula_aa": aa_r_glob.tolist(),
+                "scapula_ts": ts_r_glob.tolist(),
+                "scapula_ai": ai_r_glob.tolist(),
             },
             "left": {
                 "thorax_sc": tho_sc_l_glob.tolist(),
@@ -422,9 +486,9 @@ def process_and_export(target_ply=None):
                 "clavicle_sc": tho_sc_l_glob.tolist(),
                 "clavicle_ac": c_ac_l_glob.tolist(),
                 "scapula_ac": c_ac_l_glob.tolist(),
-                "scapula_aa": (transform_mesh([aa_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
-                "scapula_ts": (transform_mesh([ts_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
-                "scapula_ai": (transform_mesh([ai_l_pt], ij_pt, sl_t_mat)[0] + ac_offset_l).tolist(),
+                "scapula_aa": aa_l_glob.tolist(),
+                "scapula_ts": ts_l_glob.tolist(),
+                "scapula_ai": ai_l_glob.tolist(),
             }
         },
         "isb_joints": {

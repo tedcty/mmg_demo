@@ -25,6 +25,7 @@ const isPredicting = ref(false);
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
+const fabrikStep = ref(0);
 
 // Joint Coordinates (ISB Standards)
 const r_joint_coords = ref({ 
@@ -174,10 +175,9 @@ async function loadBones(externalData: any = null) {
         return null;
     };
 
-    const needsFullRecreation = !bonesGroup || activeData.bones.some((b: any) => {
-        const mesh = getMesh(b.label);
-        return !mesh || mesh.geometry.attributes.position.count !== b.vertices.length;
-    });
+    // Always do full recreation to ensure scapular planes, markers, and
+    // landmarks update correctly after FABRIK steps.
+    const needsFullRecreation = true;
 
     if (needsFullRecreation) {
       // --- FULL RECREATION ---
@@ -305,6 +305,65 @@ async function loadBones(externalData: any = null) {
             bonesGroup!.add(sphere);
         });
     }
+
+    // --- SCAPULAR PLANE TRIANGLES ---
+    if (needsFullRecreation && activeData.scapular_planes) {
+        ['right', 'left'].forEach((side) => {
+            const plane = activeData.scapular_planes[side];
+            if (!plane || !plane.aa || !plane.ts || !plane.ai) return;
+            
+            const aa = new THREE.Vector3().fromArray(plane.aa);
+            const ts = new THREE.Vector3().fromArray(plane.ts);
+            const ai = new THREE.Vector3().fromArray(plane.ai);
+            const cen = new THREE.Vector3().fromArray(plane.centroid);
+            
+            // Triangle mesh (semi-transparent)
+            const triGeom = new THREE.BufferGeometry();
+            const vertices = new Float32Array([
+                aa.x, aa.y, aa.z,
+                ts.x, ts.y, ts.z,
+                ai.x, ai.y, ai.z,
+            ]);
+            triGeom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            triGeom.computeVertexNormals();
+            const triMat = new THREE.MeshBasicMaterial({
+                color: side === 'right' ? 0xFF6600 : 0xFFCC00,
+                transparent: true,
+                opacity: 0.35,
+                side: THREE.DoubleSide,
+                depthTest: false,
+            });
+            const triMesh = new THREE.Mesh(triGeom, triMat);
+            triMesh.renderOrder = 999;
+            bonesGroup!.add(triMesh);
+
+            // Triangle edges (wireframe outline)
+            const edgeGeom = new THREE.BufferGeometry().setFromPoints([aa, ts, ai, aa]);
+            const edgeMat = new THREE.LineBasicMaterial({
+                color: side === 'right' ? 0xFF8800 : 0xFFDD44,
+                linewidth: 2,
+                depthTest: false,
+            });
+            const edgeLine = new THREE.Line(edgeGeom, edgeMat);
+            edgeLine.renderOrder = 1000;
+            bonesGroup!.add(edgeLine);
+
+            // Normal arrow from centroid (use pre-computed corrected normal)
+            let normal: THREE.Vector3;
+            if (plane.normal) {
+                normal = new THREE.Vector3().fromArray(plane.normal);
+            } else {
+                // Fallback: compute from cross product
+                const v1 = new THREE.Vector3().subVectors(aa, ts);
+                const v2 = new THREE.Vector3().subVectors(ai, ts);
+                normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+            }
+            const arrow = new THREE.ArrowHelper(normal, cen, 30, side === 'right' ? 0xFF4400 : 0xFFBB00, 8, 4);
+            (arrow as any).renderOrder = 1001;
+            bonesGroup!.add(arrow);
+        });
+    }
+
 
     if (needsFullRecreation && activeData.anatomical_landmarks) {
       ['right', 'left'].forEach((side) => {
@@ -858,7 +917,8 @@ async function runPrediction() {
         r_hum_epi_width: r_hum_epi_width.value,
         anthro_path: anthro_path.value,
         ssm_path: ssm_path.value,
-        out_path: out_path.value
+        out_path: out_path.value,
+        fabrik_step: 5
       }
     });
 
@@ -910,6 +970,45 @@ async function saveReport() {
     statusColor.value = "#f14668";
   }
   isSavingReport.value = false;
+}
+
+async function runFabrikStep() {
+  if (isPredicting.value) return;
+  
+  fabrikStep.value = (fabrikStep.value % 4) + 1;
+  isPredicting.value = true;
+  statusMessage.value = `Running FABRIK Step ${fabrikStep.value}...`;
+  statusColor.value = "#FFA040";
+
+  try {
+    const result = await invoke("run_prediction", {
+      args: {
+        sex: sex.value,
+        age: age.value,
+        height: height.value,
+        weight: weight.value,
+        r_clav_len: r_clav_len.value,
+        r_hum_len: r_hum_len.value,
+        r_hum_epi_width: r_hum_epi_width.value,
+        anthro_path: anthro_path.value,
+        ssm_path: ssm_path.value,
+        out_path: out_path.value,
+        fabrik_step: fabrikStep.value
+      }
+    });
+
+    const boneData = JSON.parse(result as string);
+    statusMessage.value = `FABRIK Step ${fabrikStep.value} Complete!`;
+    statusColor.value = "#48c774";
+    hasPrediction.value = true;
+    isViewingOriginal.value = false;
+    loadBones(boneData);
+  } catch (error) {
+    statusMessage.value = "Step Failed: " + error;
+    statusColor.value = "#f14668";
+  }
+
+  isPredicting.value = false;
 }
 
 function toggleComparison() {
@@ -1143,6 +1242,11 @@ function toggleComparison() {
                 <span v-else>🔄 Executing Model Generation...</span>
               </button>
 
+              <button :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
+                <span v-if="!isPredicting">🛠️ Run FABRIK Step {{ (fabrikStep % 5) + 1 }}</span>
+                <span v-else>⏳ Stepping...</span>
+              </button>
+
               <div v-if="statusMessage" class="status-box" :style="{ color: statusColor, borderColor: statusColor }">
                 <div class="status-label">Pipeline Output:</div>
                 {{ statusMessage }}
@@ -1348,6 +1452,14 @@ label {
   cursor: pointer;
   transition: all 0.2s;
   box-shadow: 0 10px 20px rgba(72, 199, 116, 0.2);
+}
+.step-btn {
+  margin-top: 10px;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  box-shadow: 0 10px 20px rgba(217, 119, 6, 0.2);
+}
+.step-btn:hover:not(:disabled) {
+  box-shadow: 0 12px 24px rgba(217, 119, 6, 0.3);
 }
 .run-btn:hover:not(:disabled) {
   transform: translateY(-2px);

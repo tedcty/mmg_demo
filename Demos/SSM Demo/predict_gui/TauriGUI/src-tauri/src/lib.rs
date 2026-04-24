@@ -16,6 +16,7 @@ pub struct PredictArgs {
     anthro_path: String,
     ssm_path: String,
     out_path: String,
+    fabrik_step: i32,
 }
 
 #[tauri::command]

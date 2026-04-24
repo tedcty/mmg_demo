@@ -98,7 +98,8 @@ def run_prediction(json_args_str):
         print("STATUS|Running Joint Assembly Pipeline...", flush=True)
         try:
             from generate_isb_joints import process_and_export
-            process_and_export(args['out_path'])
+            fabrik_step = args.get('fabrik_step', 1)
+            process_and_export(args['out_path'], fabrik_step=fabrik_step)
         except Exception as assembly_err:
             import traceback
             traceback.print_exc()
