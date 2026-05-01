@@ -12,7 +12,7 @@ from scipy.signal import butter, sosfilt
 # Configuration for data streaming
 # --------------------------------
 fs = 48000
-window_seconds = 4
+window_seconds = 3
 buffer_size = int(fs * window_seconds)
 device_idx = 1
 rms_win = 0.02
@@ -58,13 +58,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 bg_path = os.path.join(BASE_DIR, "resources", "background.png")
 bird_path = os.path.join(BASE_DIR, "resources", "bird.png")
 coin_path = os.path.join(BASE_DIR, "resources", "coin.png")
+penalty_path = os.path.join(BASE_DIR, "resources", "penalty.png")
 
-coin_active = False
-coin_start_time = 0.0
-coin_duration = window_seconds  # seconds
-coin_y = 0.0
-coin_x = 0.0
 bird_y = 0.0
+coin_active = penalty_active = False
+coin_start_time = penalty_start_time = 0.0
+coin_y = penalty_y = 0.0
+coin_x = penalty_x = 0.0
 
 X_HIT_THRESHOLD = 50    # how close to midline
 Y_HIT_THRESHOLD = 30    # vertical tolerance
@@ -227,6 +227,29 @@ def spawn_coin():
     coin_item.setPos(rect.right(), coin_y)
     coin_item.setVisible(True)
 
+# Penalty image
+penalty_img = QtGui.QPixmap(penalty_path)
+penalty_item = QtWidgets.QGraphicsPixmapItem(penalty_img)
+penalty_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+penalty_item.setVisible(False)
+penalty_item.setZValue(90)
+penalty_item.setOffset(-penalty_img.width() / 2, -penalty_img.height() / 2)
+
+win.scene().addItem(penalty_item)
+
+def spawn_penalty():
+    global penalty_active, penalty_start_time, penalty_y
+
+    rect = view.sceneBoundingRect()
+
+    penalty_y = rect.top() + np.random.rand() * rect.height()
+    penalty_start_time = time.time()
+    penalty_active = True
+
+    # Start just outside the right edge
+    penalty_item.setPos(rect.right(), penalty_y)
+    penalty_item.setVisible(True)
+
 main_widget.show()
 
 # ----------------------------
@@ -235,9 +258,10 @@ main_widget.show()
 def update():
     global calibration_active, mvc_value, baseline_value
     global zi
-    global coin_active, coin_x, bird_y, score
+    global bird_y, score, coin_active, coin_x, penalty_active, penalty_x
 
     if buffer:
+        # --- EMG processing ---
         data = np.array(buffer)
         # Apply bandpass filter
         filtered, zi = sosfilt(sos, data, zi=zi)
@@ -270,9 +294,10 @@ def update():
                 print(f"Baseline RMS: {baseline_value:.4f}")
                 print(f"MVC RMS: {mvc_value:.4f}")
 
-        # Normalize EMG data to MVC and correct for baseline
+        # Visualize either normalized RMS as cursor or absolute RMS as line plot
         display_y = y.copy()
         if calibrate_emg and mvc_value is not None and baseline_value is not None:
+            # --- # Normalize EMG data to MVC ---
             emg_corr = display_y - baseline_value
             emg_corr = np.maximum(emg_corr, 0)
             emg_norm = emg_corr / (mvc_value - baseline_value)
@@ -281,7 +306,7 @@ def update():
             n = min(len(display_y), cursor_smoothing_samples)
             cursor_value = np.mean(display_y[-n:])
 
-            # Update bird position
+            # --- Update bird position ---
             rect = view.sceneBoundingRect()
             bird_x = rect.center().x()
             bird_y = rect.top() + (1 - cursor_value) * rect.height()
@@ -292,7 +317,7 @@ def update():
             if coin_active:
                 rect = view.sceneBoundingRect()
                 elapsed = time.time() - coin_start_time
-                t = elapsed / coin_duration
+                t = elapsed / window_seconds
 
                 if t >= 1.0:
                     coin_active = False
@@ -303,7 +328,6 @@ def update():
                     coin_item.setPos(coin_x, coin_y)
 
                     # --- Collision detection ---
-                    rect = view.sceneBoundingRect()
                     midline_x = rect.center().x()
 
                     if abs(coin_x - midline_x) < X_HIT_THRESHOLD and abs(coin_y - bird_y) < Y_HIT_THRESHOLD:
@@ -313,13 +337,39 @@ def update():
                         score += 1
                         score_label.setText(f"Score: {score}")
 
-            if not coin_active:
-                spawn_coin()
+            # --- Update flying penalty ---
+            if penalty_active:
+                rect = view.sceneBoundingRect()
+                elapsed = time.time() - penalty_start_time
+                t = elapsed / window_seconds
+
+                if t >= 1.0:
+                    penalty_active = False
+                    penalty_item.setVisible(False)
+                else:
+                    x = rect.right() - t * rect.width()
+                    penalty_x = x
+                    penalty_item.setPos(penalty_x, penalty_y)
+
+                    # --- Collision detection ---
+                    midline_x = rect.center().x()
+
+                    if abs(penalty_x - midline_x) < X_HIT_THRESHOLD and abs(penalty_y - bird_y) < Y_HIT_THRESHOLD:
+                        # Collision detected
+                        penalty_active = False
+                        penalty_item.setVisible(False)
+                        score -= 1
+                        score_label.setText(f"Score: {score}")
+
+            if not coin_active and not penalty_active:
+                if np.random.rand() < 0.7:
+                    spawn_coin()
+                else:
+                    spawn_penalty()
 
         else:
             # Update line plot
             curve.setData(display_y)
-
 
 
 # Timer for real-time updates
