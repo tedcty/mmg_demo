@@ -1,14 +1,15 @@
+import os
 import sys
 import numpy as np
 import sounddevice as sd
 import pyqtgraph as pg
 import time
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
 from collections import deque
 from scipy.signal import butter, sosfilt
 
 # --------------------------------
-# Configuration fro data streaming
+# Configuration for data streaming
 # --------------------------------
 fs = 48000
 window_seconds = 4
@@ -50,6 +51,13 @@ baseline_value = None
 mvc_value = None
 calibrate_emg = False # Boolean about calibration applied to EMG data
 
+# ---------------------------------
+# Visuals
+# ---------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+bg_path = os.path.join(BASE_DIR, "resources", "background.png")
+bird_path = os.path.join(BASE_DIR, "resources", "bird.png")
+
 # ----------------------------
 # Audio callback
 # ----------------------------
@@ -72,65 +80,30 @@ app = QtWidgets.QApplication(sys.argv)
 
 # Main window widget
 main_widget = QtWidgets.QWidget()
-layout = QtWidgets.QVBoxLayout(main_widget)
+main_widget.resize(1000, 700)
+
+# Background Image
+bg_img = QtGui.QPixmap(bg_path)
+bg_label = QtWidgets.QLabel(main_widget)
+bg_label.setPixmap(bg_img)
+bg_label.setScaledContents(True)
+bg_label.setGeometry(main_widget.rect())
+bg_label.lower()  # send to back
+
+# Foreground widgets
+foreground = QtWidgets.QWidget(main_widget)
+foreground.setGeometry(main_widget.rect())
+foreground.raise_()  # bring to front
+foreground.setStyleSheet("background: transparent;")
+
+# Vertical layout
+layout = QtWidgets.QVBoxLayout(foreground)
+layout.setContentsMargins(10, 10, 10, 10)
+layout.setSpacing(8)
 
 # Button
 button = QtWidgets.QPushButton("Calibrate EMG")
 layout.addWidget(button)
-
-# Checkbox for calibration (EMG & baseline)
-checkbox = QtWidgets.QCheckBox("Use calibration")
-layout.addWidget(checkbox)
-
-def toggle_calibration(state):
-    global calibrate_emg
-    calibrate_emg = state == QtCore.Qt.Checked
-
-    if calibrate_emg:
-        # Switch to cursor mode
-        curve.setVisible(False)
-        cursor.setVisible(True)
-
-        # Normalized EMG → fixed range
-        plot.disableAutoRange(axis='y')
-        plot.setYRange(0, 1.2)
-    else:
-        # Switch back to line plot
-        cursor.setVisible(False)
-        curve.setVisible(True)
-
-        # Absolute EMG → auto range
-        plot.enableAutoRange(axis='y')
-
-checkbox.stateChanged.connect(toggle_calibration)
-
-# pyqtgraph widget
-win = pg.GraphicsLayoutWidget()
-layout.addWidget(win)
-
-# Plot inside pyqtgraph widget
-plot = win.addPlot()
-plot.getAxis('bottom').setVisible(False)
-plot.setLabel('left', 'Amplitude')
-plot.enableAutoRange(axis='y')
-
-# EMG line plot
-curve = plot.plot(pen='y')
-curve.setVisible(True)
-
-# EMG cursor (single moving point)
-cursor_x = buffer_size // 2  # fixed x-position (middle of plot)
-cursor = pg.ScatterPlotItem(
-    x=[cursor_x],
-    y=[0],
-    size=20,
-    brush=pg.mkBrush('y'),
-    pen=pg.mkPen(None)
-)
-cursor.setVisible(False)
-plot.addItem(cursor)
-
-main_widget.show()
 
 def start_calibration():
     global calibration_active, calibration_start_time
@@ -143,6 +116,63 @@ def start_calibration():
 
 button.clicked.connect(start_calibration)
 
+# Checkbox for calibration (EMG & baseline)
+checkbox = QtWidgets.QCheckBox("Use calibration")
+layout.addWidget(checkbox)
+
+def toggle_calibration(state):
+    global calibrate_emg
+    calibrate_emg = state == QtCore.Qt.Checked
+
+    if calibrate_emg:
+        # Switch to cursor mode
+        curve.setVisible(False)
+        bird_item.setVisible(True)
+
+        # Normalized EMG → fixed range
+        plot.disableAutoRange(axis='y')
+        plot.setYRange(0, 1.2)
+    else:
+        # Switch back to line plot
+        bird_item.setVisible(False)
+        curve.setVisible(True)
+
+        # Absolute EMG → auto range
+        plot.enableAutoRange(axis='y')
+
+checkbox.stateChanged.connect(toggle_calibration)
+
+# EMG Plot
+win = pg.GraphicsLayoutWidget()
+layout.addWidget(win)
+
+plot = win.addPlot()
+plot.getAxis('bottom').setVisible(False)
+plot.getAxis('left').setVisible(False)
+plot.enableAutoRange(axis='y')
+
+# Make pyqtgraph fully transparent
+win.setBackground(None)
+plot.getViewBox().setBackgroundColor(None)
+
+# EMG line plot
+curve = plot.plot(pen='y')
+curve.setVisible(True)
+
+# EMG cursor (bird image)
+bird_img = QtGui.QPixmap(bird_path)
+bird_width = bird_img.width()
+bird_height = bird_img.height()
+bird_item = QtWidgets.QGraphicsPixmapItem(bird_img)
+bird_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+bird_item.setVisible(False)
+bird_item.setZValue(100)
+
+view = plot.getViewBox()
+win.scene().addItem(bird_item)
+
+main_widget.show()
+
 # ----------------------------
 # Update function
 # ----------------------------
@@ -154,12 +184,10 @@ def update():
         data = np.array(buffer)
         # Apply bandpass filter
         filtered, zi = sosfilt(sos, data, zi=zi)
-        y = np.zeros(buffer_size)
-        y[-len(filtered):] = filtered
 
         # RMS envelope
         w = max(1, int(rms_win * fs))
-        rms = np.sqrt(np.convolve(data ** 2, np.ones(w) / w, mode="valid"))
+        rms = np.sqrt(np.convolve(filtered ** 2, np.ones(w) / w, mode="valid"))
         y = np.zeros(buffer_size)
         y[-len(rms):] = rms
 
@@ -195,11 +223,15 @@ def update():
 
             n = min(len(display_y), cursor_smoothing_samples)
             cursor_value = np.mean(display_y[-n:])
-            # Update cursor position
-            cursor.setData(
-                x=[cursor_x],
-                y=[cursor_value]
-            )
+
+            # Update bird position
+            rect = view.sceneBoundingRect()
+            bird_x = rect.center().x()
+            bird_y = rect.top() + (1 - cursor_value) * rect.height()
+
+            bird_item.setPos(bird_x-(bird_width/2), bird_y-bird_height) # Offset the y position such that feed of bird are on the floor
+
+
         else:
             # Update line plot
             curve.setData(display_y)
@@ -210,7 +242,5 @@ timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(20)  # update every 20 ms
 
-# ----------------------------
-# Run
-# ----------------------------
+# Run application
 sys.exit(app.exec_())
