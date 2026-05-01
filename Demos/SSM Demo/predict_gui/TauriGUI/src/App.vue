@@ -6,9 +6,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Paths
-const anthro_path = ref("C:\\Users\\rrag962\\Documents\\shapemodel\\model\\Shoulder 3\\Segmentations\\SSM\\PLSR\\anthro_data.csv");
-const ssm_path = ref("C:\\Users\\rrag962\\Documents\\shapemodel\\model\\Shoulder 3\\Segmentations\\SSM\\Combined\\shape_model");
-const out_path = ref("C:\\Users\\rrag962\\Documents\\shapemodel\\model\\Shoulder 3\\Segmentations\\EOS\\predicted_model.ply");
+const anthro_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\anthro_data.csv");
+const ssm_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\SSM_shape_model_103");
+const out_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\predicted_model.ply");
 
 // Patient Data
 const sex = ref("0");
@@ -26,10 +26,17 @@ const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
 
-// Scapulothoracic Joint State (4-DOF)
-// Default values from literature (Protraction/Abduction, Elevation, Upward Rot, Tilt/Winging)
-const r_st_coords = ref({ abduction: 35.0, elevation: 5.0, upward: 15.0, winging: 0.0 });
-const l_st_coords = ref({ abduction: 35.0, elevation: 5.0, upward: 15.0, winging: 0.0 });
+// Joint Coordinates (ISB Standards)
+const r_joint_coords = ref({ 
+  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
+  ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
+  gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
+});
+const l_joint_coords = ref({ 
+  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
+  ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
+  gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
+});
 
 // Mesh References for dynamic updates
 const thoraxMesh = ref<THREE.Mesh | null>(null);
@@ -59,6 +66,16 @@ const jointLabels = {
     left:  { sc: null as THREE.Sprite | null, ac: null as THREE.Sprite | null, gh: null as THREE.Sprite | null }
 };
 
+// Anatomical Landmarks (Point-on-Bone)
+const anatomicalMarkers = {
+    right: { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined, scapula_aa: null as THREE.Mesh | null | undefined, scapula_ts: null as THREE.Mesh | null | undefined, scapula_ai: null as THREE.Mesh | null | undefined },
+    left:  { thorax_sc: null as THREE.Mesh | null | undefined, thorax_ij: null as THREE.Mesh | null | undefined, thorax_px: null as THREE.Mesh | null | undefined, thorax_c7: null as THREE.Mesh | null | undefined, thorax_t8: null as THREE.Mesh | null | undefined, clavicle_sc: null as THREE.Mesh | null | undefined, clavicle_ac: null as THREE.Mesh | null | undefined, scapula_ac: null as THREE.Mesh | null | undefined, scapula_aa: null as THREE.Mesh | null | undefined, scapula_ts: null as THREE.Mesh | null | undefined, scapula_ai: null as THREE.Mesh | null | undefined }
+};
+const anatomicalLabels = {
+    right: { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined, scapula_aa: null as THREE.Sprite | null | undefined, scapula_ts: null as THREE.Sprite | null | undefined, scapula_ai: null as THREE.Sprite | null | undefined },
+    left:  { thorax_sc: null as THREE.Sprite | null | undefined, thorax_ij: null as THREE.Sprite | null | undefined, thorax_px: null as THREE.Sprite | null | undefined, thorax_c7: null as THREE.Sprite | null | undefined, thorax_t8: null as THREE.Sprite | null | undefined, clavicle_sc: null as THREE.Sprite | null | undefined, clavicle_ac: null as THREE.Sprite | null | undefined, scapula_ac: null as THREE.Sprite | null | undefined, scapula_aa: null as THREE.Sprite | null | undefined, scapula_ts: null as THREE.Sprite | null | undefined, scapula_ai: null as THREE.Sprite | null | undefined }
+};
+
 // Local Frame Origin Markers (at 0,0,0 for each bone)
 const originMarkers = {
     thorax: null as THREE.Mesh | null,
@@ -85,6 +102,464 @@ const initialPositions = {
 };
 
 const viewerContainer = ref<HTMLElement | null>(null);
+let globalScene: THREE.Scene | null = null;
+let globalCamera: THREE.PerspectiveCamera | null = null;
+let globalControls: OrbitControls | null = null;
+let bonesGroup: THREE.Group | null = null;
+let ghostGroup: THREE.Group | null = null; // Group for the mean "ghost" overlap
+let isFirstLoad = true;
+
+// Comparison State
+const isViewingOriginal = ref(true);
+const isOverlapEnabled = ref(false); // New: Overlap Mode state
+const hasPrediction = ref(false);
+const isHighlightsEnabled = ref(true); // Control for glide area visualization
+const isNormalsEnabled = ref(false); // Control for surface normals
+const isScapularPlaneEnabled = ref(false); // Control for scapular plane
+let highlightsGroup: THREE.Group | null = null; 
+let scapularPlaneGroup: THREE.Group | null = null; 
+let meanModelData: any = null;
+let predictedModelData: any = null;
+
+// Reference storage for ghost meshes
+const ghostMeshes = {
+    thorax: null as THREE.Mesh | null,
+    clavicle: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null },
+    scapula: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null },
+    humerus: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null }
+};
+
+async function loadBones(externalData: any = null) {
+  if (!globalScene) return;
+
+  try {
+    let data;
+    if (externalData) {
+      data = externalData;
+      console.log("Loading bones from injected Rust data...");
+    } else {
+      // Add cache-busting timestamp to ensure we get the fresh bones.json
+      const response = await fetch(`/bones.json?t=${Date.now()}`);
+      data = await response.json();
+      console.log("Loading bones from public/bones.json...");
+    }
+
+    if (!meanModelData) {
+      meanModelData = JSON.parse(JSON.stringify(data));
+    }
+    predictedModelData = data;
+    hasPrediction.value = true;
+    
+    const activeData = isViewingOriginal.value ? meanModelData : predictedModelData;
+    const center = activeData.center;
+    const spread = activeData.spread || 500;
+    
+    if (isFirstLoad && globalCamera && globalControls) {
+      const sceneCenter = new THREE.Vector3(center[0], center[1], center[2]);
+      globalControls.target.copy(sceneCenter);
+      globalCamera.position.set(sceneCenter.x + spread*1.8, sceneCenter.y + spread*0.5, sceneCenter.z + spread*1.8);
+      globalControls.update();
+      isFirstLoad = false;
+    }
+
+    // Determine if we need to recreate or just update
+    const getMesh = (label: string) => {
+        if (label === "Thorax") return thoraxMesh.value;
+        if (label === "R Clavicle") return clavicleMeshes.right;
+        if (label === "L Clavicle") return clavicleMeshes.left;
+        if (label === "R Scapula") return scapulaMeshes.right;
+        if (label === "L Scapula") return scapulaMeshes.left;
+        if (label === "R Humerus") return humerusMeshes.right;
+        if (label === "L Humerus") return humerusMeshes.left;
+        return null;
+    };
+
+    const needsFullRecreation = !bonesGroup || activeData.bones.some((b: any) => {
+        const mesh = getMesh(b.label);
+        return !mesh || mesh.geometry.attributes.position.count !== b.vertices.length;
+    });
+
+    if (needsFullRecreation) {
+      // --- FULL RECREATION ---
+      if (bonesGroup) {
+        globalScene.remove(bonesGroup);
+        bonesGroup.traverse((obj) => {
+          if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
+            obj.geometry.dispose();
+            if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
+            else obj.material.dispose();
+          }
+        });
+      }
+      bonesGroup = new THREE.Group();
+      globalScene.add(bonesGroup);
+
+      activeData.bones.forEach((bone: any) => {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(bone.vertices.length * 3);
+        for (let i = 0; i < bone.vertices.length; i++) {
+          positions[i*3] = bone.vertices[i][0];
+          positions[i*3+1] = bone.vertices[i][1];
+          positions[i*3+2] = bone.vertices[i][2];
+        }
+        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        let mesh: THREE.Mesh | THREE.Points;
+        if (bone.indices && bone.indices.length > 0) {
+            geom.setIndex(bone.indices);
+            geom.computeVertexNormals();
+            const mat = new THREE.MeshStandardMaterial({
+              color: isViewingOriginal.value ? "#88aaff" : bone.color,
+              roughness: 0.5, metalness: 0.1, transparent: true, opacity: 0.4, side: THREE.DoubleSide
+            });
+            mesh = new THREE.Mesh(geom, mat);
+        } else {
+            const mat = new THREE.PointsMaterial({ color: bone.color, size: 2.0, sizeAttenuation: true });
+            mesh = new THREE.Points(geom, mat);
+        }
+        
+        bonesGroup!.add(mesh);
+
+        const originGeom = new THREE.SphereGeometry(3, 16, 16);
+        const originMat = new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false });
+        const originSphere = new THREE.Mesh(originGeom, originMat);
+        originSphere.renderOrder = 1001;
+        if (bone.origin) {
+            originSphere.position.set(bone.origin[0], bone.origin[1], bone.origin[2]);
+        }
+        bonesGroup!.add(originSphere); // Add to bonesGroup directly so it stays at world pos
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 1024; canvas.height = 256;
+        const spriteMap = new THREE.CanvasTexture(canvas);
+        spriteMap.anisotropy = 16;
+        const spriteMat = new THREE.SpriteMaterial({ map: spriteMap, depthTest: false });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.scale.set(80, 20, 1);
+        sprite.renderOrder = 1002;
+        bonesGroup!.add(sprite);
+
+        if (bone.label === "Thorax") { thoraxMesh.value = mesh as THREE.Mesh; originMarkers.thorax = originSphere; originLabels.thorax = sprite; }
+        else if (bone.label === "R Clavicle") { clavicleMeshes.right = mesh as THREE.Mesh; originMarkers.clavicle.right = originSphere; originLabels.clavicle.right = sprite; initialQuats.clavicle.right.copy(mesh.quaternion); initialPositions.clavicle.right.copy(mesh.position); }
+        else if (bone.label === "L Clavicle") { clavicleMeshes.left = mesh as THREE.Mesh; originMarkers.clavicle.left = originSphere; originLabels.clavicle.left = sprite; initialQuats.clavicle.left.copy(mesh.quaternion); initialPositions.clavicle.left.copy(mesh.position); }
+        else if (bone.label === "R Scapula") { scapulaMeshes.right = mesh as THREE.Mesh; originMarkers.scapula.right = originSphere; originLabels.scapula.right = sprite; initialQuats.scapula.right.copy(mesh.quaternion); initialPositions.scapula.right.copy(mesh.position); }
+        else if (bone.label === "L Scapula") { scapulaMeshes.left = mesh as THREE.Mesh; originMarkers.scapula.left = originSphere; originLabels.scapula.left = sprite; initialQuats.scapula.left.copy(mesh.quaternion); initialPositions.scapula.left.copy(mesh.position); }
+        else if (bone.label === "R Humerus") { humerusMeshes.right = mesh as THREE.Mesh; originMarkers.humerus.right = originSphere; originLabels.humerus.right = sprite; initialQuats.humerus.right.copy(mesh.quaternion); initialPositions.humerus.right.copy(mesh.position); }
+        else if (bone.label === "L Humerus") { humerusMeshes.left = mesh as THREE.Mesh; originMarkers.humerus.left = originSphere; originLabels.humerus.left = sprite; initialQuats.humerus.left.copy(mesh.quaternion); initialPositions.humerus.left.copy(mesh.position); }
+      });
+    } else {
+      // --- SMOOTH UPDATE ---
+      activeData.bones.forEach((bone: any) => {
+          const mesh = getMesh(bone.label);
+          if (mesh) {
+              const posAttr = mesh.geometry.attributes.position;
+              for (let i = 0; i < bone.vertices.length; i++) {
+                  posAttr.setXYZ(i, bone.vertices[i][0], bone.vertices[i][1], bone.vertices[i][2]);
+              }
+              posAttr.needsUpdate = true;
+              mesh.geometry.computeVertexNormals();
+              if (mesh.material instanceof THREE.MeshStandardMaterial) {
+                  mesh.material.color.set(isViewingOriginal.value ? "#88aaff" : bone.color);
+                  mesh.material.opacity = isViewingOriginal.value ? 0.3 : 0.4;
+              }
+          }
+      });
+    }
+
+    // Always update joints, markers, and landmarks regardless of update mode
+    if (activeData.isb_joints) {
+      ['right', 'left'].forEach((side) => {
+        const jointData = activeData.isb_joints[side];
+        if (jointData) {
+          jointPivots[side as 'right'|'left'].sc.set(jointData.sc[0], jointData.sc[1], jointData.sc[2]);
+          jointPivots[side as 'right'|'left'].ac.set(jointData.ac[0], jointData.ac[1], jointData.ac[2]);
+          jointPivots[side as 'right'|'left'].gh.set(jointData.gh[0], jointData.gh[1], jointData.gh[2]);
+          
+          if (needsFullRecreation) {
+            const colors = { sc: 0xff4444, ac: 0x44ff44, gh: 0x4444ff };
+            ['sc', 'ac', 'gh'].forEach((joint) => {
+                const pMarker = new THREE.Mesh(new THREE.SphereGeometry(5.5, 16, 16), new THREE.MeshBasicMaterial({ color: colors[joint as 'sc'|'ac'|'gh'], depthTest: false, transparent: true, opacity: 0.3, wireframe: true }));
+                const cMarker = new THREE.Mesh(new THREE.SphereGeometry(2.5, 16, 16), new THREE.MeshBasicMaterial({ color: colors[joint as 'sc'|'ac'|'gh'], depthTest: false }));
+                const pivot = jointPivots[side as 'right'|'left'][joint as 'sc'|'ac'|'gh'];
+
+                if (joint === 'sc') {
+                    if (thoraxMesh.value) { const m = pMarker.clone(); m.position.copy(pivot); thoraxMesh.value.add(m); jointMarkersP[side as 'right'|'left'].sc = m; }
+                    if (clavicleMeshes[side as 'right'|'left']) { const m = cMarker.clone(); m.position.copy(pivot); clavicleMeshes[side as 'right'|'left']!.add(m); jointMarkersC[side as 'right'|'left'].sc = m; }
+                } else if (joint === 'ac') {
+                    if (clavicleMeshes[side as 'right'|'left']) { const m = pMarker.clone(); m.position.copy(pivot); clavicleMeshes[side as 'right'|'left']!.add(m); jointMarkersP[side as 'right'|'left'].ac = m; }
+                    if (scapulaMeshes[side as 'right'|'left']) { const m = cMarker.clone(); m.position.copy(pivot); scapulaMeshes[side as 'right'|'left']!.add(m); jointMarkersC[side as 'right'|'left'].ac = m; }
+                } else if (joint === 'gh') {
+                    if (scapulaMeshes[side as 'right'|'left']) { const m = pMarker.clone(); m.position.copy(pivot); scapulaMeshes[side as 'right'|'left']!.add(m); jointMarkersP[side as 'right'|'left'].gh = m; }
+                    if (humerusMeshes[side as 'right'|'left']) { const m = cMarker.clone(); m.position.copy(pivot); humerusMeshes[side as 'right'|'left']!.add(m); jointMarkersC[side as 'right'|'left'].gh = m; }
+                }
+            });
+          }
+        }
+      });
+    }
+
+    if (needsFullRecreation && activeData.markers) {
+        activeData.markers.forEach((marker: any) => {
+            const sphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32), new THREE.MeshStandardMaterial({ color: marker.color, roughness: 0.2 }));
+            sphere.position.set(marker.pos[0], marker.pos[1], marker.pos[2]);
+            bonesGroup!.add(sphere);
+        });
+    }
+
+    if (needsFullRecreation && activeData.anatomical_landmarks) {
+      ['right', 'left'].forEach((side) => {
+        const lms = activeData.anatomical_landmarks[side];
+        const colors = { thorax: 0x00FFFF, clavicle: 0xFFA500, scapula: 0xFFFF00 };
+        const s_t = side as 'right' | 'left';
+        
+        const createAnthroMarker = (pos: number[], color: number, parent: THREE.Mesh | null) => {
+          if (!parent) return { marker: null, label: null };
+          const mesh = new THREE.Mesh(new THREE.SphereGeometry(3.5, 16, 16), new THREE.MeshBasicMaterial({ color: color, depthTest: false }));
+          mesh.position.set(pos[0], pos[1], pos[2]);
+          mesh.renderOrder = 1010;
+          parent.add(mesh);
+          const canvas = document.createElement('canvas');
+          canvas.width = 1024;
+          canvas.height = 256;
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.anisotropy = 16; 
+          const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+          sprite.scale.set(80, 20, 1);
+          sprite.renderOrder = 1011;
+          bonesGroup!.add(sprite);
+          return { marker: mesh, sprite: sprite };
+        };
+
+        const r1 = createAnthroMarker(lms.thorax_sc, colors.thorax, thoraxMesh.value);
+        anatomicalMarkers[s_t].thorax_sc = r1.marker; anatomicalLabels[s_t].thorax_sc = r1.sprite;
+        const ri = createAnthroMarker(lms.thorax_ij, colors.thorax, thoraxMesh.value);
+        anatomicalMarkers[s_t].thorax_ij = ri.marker; anatomicalLabels[s_t].thorax_ij = ri.sprite;
+        const rp = createAnthroMarker(lms.thorax_px, colors.thorax, thoraxMesh.value);
+        anatomicalMarkers[s_t].thorax_px = rp.marker; anatomicalLabels[s_t].thorax_px = rp.sprite;
+        const rc7 = createAnthroMarker(lms.thorax_c7, colors.thorax, thoraxMesh.value);
+        anatomicalMarkers[s_t].thorax_c7 = rc7.marker; anatomicalLabels[s_t].thorax_c7 = rc7.sprite;
+        const rt8 = createAnthroMarker(lms.thorax_t8, colors.thorax, thoraxMesh.value);
+        anatomicalMarkers[s_t].thorax_t8 = rt8.marker; anatomicalLabels[s_t].thorax_t8 = rt8.sprite;
+
+        const r2 = createAnthroMarker(lms.clavicle_sc, colors.clavicle, clavicleMeshes[s_t]);
+        anatomicalMarkers[s_t].clavicle_sc = r2.marker; anatomicalLabels[s_t].clavicle_sc = r2.sprite;
+        const r3 = createAnthroMarker(lms.clavicle_ac, colors.clavicle, clavicleMeshes[s_t]);
+        anatomicalMarkers[s_t].clavicle_ac = r3.marker; anatomicalLabels[s_t].clavicle_ac = r3.sprite;
+        const r4 = createAnthroMarker(lms.scapula_ac, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_ac = r4.marker; anatomicalLabels[s_t].scapula_ac = r4.sprite;
+        const raa = createAnthroMarker(lms.scapula_aa, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_aa = raa.marker; anatomicalLabels[s_t].scapula_aa = raa.sprite;
+        const rts = createAnthroMarker(lms.scapula_ts, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_ts = rts.marker; anatomicalLabels[s_t].scapula_ts = rts.sprite;
+        const rai = createAnthroMarker(lms.scapula_ai, colors.scapula, scapulaMeshes[s_t]);
+        anatomicalMarkers[s_t].scapula_ai = rai.marker; anatomicalLabels[s_t].scapula_ai = rai.sprite;
+      });
+    }
+
+    // --- THORAX POSTERIOR HIGHLIGHTS ---
+    if (isHighlightsEnabled.value) {
+        if (highlightsGroup) {
+            globalScene.remove(highlightsGroup);
+            highlightsGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
+        }
+        highlightsGroup = new THREE.Group();
+        globalScene.add(highlightsGroup);
+
+        // Create highlight patches that are perfectly flush with the thorax mesh
+        // We do this by extracting a subset of the thorax vertices/faces in the glide zone
+        const createFlushHighlight = (side: 'right' | 'left') => {
+            const thoraxB = activeData.bones.find((b: any) => b.label === "Thorax");
+            if (!thoraxB || !thoraxMesh.value) return;
+
+            const lms = activeData.anatomical_landmarks[side];
+            if (!lms || !lms.thorax_c7 || !lms.thorax_t8) return;
+
+            const c7 = new THREE.Vector3().fromArray(lms.thorax_c7);
+            const t8 = new THREE.Vector3().fromArray(lms.thorax_t8);
+            
+            // Define the zone center: Lateral to the spinal line between C7 and T8
+            const spineMid = new THREE.Vector3().lerpVectors(c7, t8, 0.45);
+            const zoneCenter = spineMid.clone();
+            // Move lateral to the spine (World Z is Left +, so Right is -)
+            zoneCenter.z += (side === 'right' ? -95 : 95);
+            
+            const verts = thoraxB.vertices;
+            const indices = thoraxB.indices;
+            
+            const subIndices: number[] = [];
+            const radiusSq = 110 * 110; 
+
+            // Iterate through thorax faces and keep those near the zone center
+            for (let i = 0; i < indices.length; i += 3) {
+                const v1 = verts[indices[i]];
+                const dx = v1[0] - zoneCenter.x;
+                const dy = v1[1] - zoneCenter.y;
+                const dz = v1[2] - zoneCenter.z;
+                
+                if (dx*dx + dy*dy + dz*dz < radiusSq) {
+                    subIndices.push(indices[i], indices[i+1], indices[i+2]);
+                }
+            }
+
+            if (subIndices.length === 0) return;
+
+            const geom = new THREE.BufferGeometry();
+            // Flattening huge vertex arrays can be expensive, but needed for BufferAttribute
+            const flatVerts = new Float32Array(verts.length * 3);
+            for(let j=0; j<verts.length; j++) {
+                flatVerts[j*3] = verts[j][0];
+                flatVerts[j*3+1] = verts[j][1];
+                flatVerts[j*3+2] = verts[j][2];
+            }
+
+            geom.setAttribute('position', new THREE.BufferAttribute(flatVerts, 3));
+            geom.setIndex(subIndices);
+            geom.computeVertexNormals();
+
+            const mat = new THREE.MeshBasicMaterial({
+                color: side === 'right' ? 0x00ff00 : 0x0000ff, // Right: Green, Left: Blue
+                transparent: true,
+                opacity: 0.6,
+                side: THREE.DoubleSide,
+                polygonOffset: true,
+                polygonOffsetFactor: -1,
+                polygonOffsetUnits: -1
+            });
+
+            const mesh = new THREE.Mesh(geom, mat);
+            mesh.name = `highlight_${side}`;
+            
+            // Sync with parent thorax
+            mesh.position.copy(thoraxMesh.value.position);
+            mesh.quaternion.copy(thoraxMesh.value.quaternion);
+            mesh.scale.copy(thoraxMesh.value.scale);
+
+            highlightsGroup!.add(mesh);
+
+            // --- ADD NORMALS VISUALIZATION ---
+            if (isNormalsEnabled.value) {
+                // Sample a few normals to show surface direction
+                const posAttr = geom.getAttribute('position');
+                const normAttr = geom.getAttribute('normal');
+                const step = 20; // Every 20th vertex to avoid clutter
+                for (let i = 0; i < subIndices.length; i += step * 3) {
+                    const vIdx = subIndices[i];
+                    const pos = new THREE.Vector3().fromBufferAttribute(posAttr, vIdx);
+                    const norm = new THREE.Vector3().fromBufferAttribute(normAttr, vIdx);
+                    
+                    const arrow = new THREE.ArrowHelper(
+                        norm, 
+                        pos, 
+                        15, // Length 
+                        side === 'right' ? 0x00ff00 : 0x0000ff, // Color matches patch
+                        4,  // Head length
+                        2   // Head width
+                    );
+                    // Sync arrow with thorax transform if needed (since it's added to highlightsGroup)
+                    highlightsGroup!.add(arrow);
+                }
+            }
+        };
+
+        createFlushHighlight('right');
+        createFlushHighlight('left');
+    } else if (highlightsGroup) {
+        globalScene.remove(highlightsGroup);
+        highlightsGroup = null;
+    }
+
+    // --- SCAPULAR PLANE VISUALIZATION ---
+    if (isScapularPlaneEnabled.value && activeData.anatomical_landmarks) {
+        if (scapularPlaneGroup) {
+            globalScene.remove(scapularPlaneGroup);
+            scapularPlaneGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
+        }
+        scapularPlaneGroup = new THREE.Group();
+        globalScene.add(scapularPlaneGroup);
+
+        ['right', 'left'].forEach((side) => {
+            const lms = activeData.anatomical_landmarks[side];
+            if (!lms.scapula_aa || !lms.scapula_ts || !lms.scapula_ai) return;
+
+            const aa = new THREE.Vector3().fromArray(lms.scapula_aa);
+            const ts = new THREE.Vector3().fromArray(lms.scapula_ts);
+            const ai = new THREE.Vector3().fromArray(lms.scapula_ai);
+
+            // Centroid
+            const centroid = new THREE.Vector3().add(aa).add(ts).add(ai).multiplyScalar(1/3);
+
+            // Plane Geometry
+            const geom = new THREE.BufferGeometry();
+            const vertices = new Float32Array([
+                aa.x, aa.y, aa.z,
+                ts.x, ts.y, ts.z,
+                ai.x, ai.y, ai.z
+            ]);
+            geom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            geom.computeVertexNormals();
+
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+            const plane = new THREE.Mesh(geom, mat);
+            scapularPlaneGroup!.add(plane);
+
+            // Normal Arrow
+            const v1 = new THREE.Vector3().subVectors(aa, ts);
+            const v2 = new THREE.Vector3().subVectors(ai, ts);
+            const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+            
+            // Ensure normal points "posteriorly" (negative Z)
+            if (normal.z > 0) normal.multiplyScalar(-1);
+
+            const arrow = new THREE.ArrowHelper(normal, centroid, 40, 0xffff00, 8, 4);
+            scapularPlaneGroup!.add(arrow);
+        });
+    } else if (scapularPlaneGroup) {
+        globalScene.remove(scapularPlaneGroup);
+        scapularPlaneGroup = null;
+    }
+
+    // --- GHOST OVERLAP LOGIC ---
+    if (isOverlapEnabled.value && meanModelData) {
+        if (ghostGroup) {
+            globalScene.remove(ghostGroup);
+            ghostGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
+        }
+        ghostGroup = new THREE.Group();
+        globalScene.add(ghostGroup);
+
+        meanModelData.bones.forEach((bone: any) => {
+            const geom = new THREE.BufferGeometry();
+            const positions = new Float32Array(bone.vertices.length * 3);
+            for (let i = 0; i < bone.vertices.length; i++) {
+                positions[i*3] = bone.vertices[i][0];
+                positions[i*3+1] = bone.vertices[i][1];
+                positions[i*3+2] = bone.vertices[i][2];
+            }
+            geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            if (bone.indices && bone.indices.length > 0) {
+                geom.setIndex(bone.indices);
+                geom.computeVertexNormals();
+                const mat = new THREE.MeshStandardMaterial({ color: "#4facfe", transparent: true, opacity: 0.15, wireframe: true, depthWrite: false });
+                const mesh = new THREE.Mesh(geom, mat);
+                ghostGroup!.add(mesh);
+                if (bone.label === "Thorax") ghostMeshes.thorax = mesh;
+                else if (bone.label === "R Clavicle") ghostMeshes.clavicle.right = mesh;
+                else if (bone.label === "L Clavicle") ghostMeshes.clavicle.left = mesh;
+                else if (bone.label === "R Scapula") ghostMeshes.scapula.right = mesh;
+                else if (bone.label === "L Scapula") ghostMeshes.scapula.left = mesh;
+                else if (bone.label === "R Humerus") ghostMeshes.humerus.right = mesh;
+                else if (bone.label === "L Humerus") ghostMeshes.humerus.left = mesh;
+            }
+        });
+    } else if (ghostGroup) {
+        globalScene.remove(ghostGroup);
+        ghostGroup = null;
+    }
+
+  } catch (err) {
+    console.error("Failed to load bones.json", err);
+  }
+}
 
 onMounted(async () => {
   // Listen for Python stdout chunks
@@ -128,225 +603,10 @@ onMounted(async () => {
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
 
-    try {
-      const response = await fetch('/bones.json');
-      const data = await response.json();
-
-      const center = data.center;
-      const spread = data.spread;
-      
-      const sceneCenter = new THREE.Vector3(center[0], center[1], center[2]);
-      controls.target.copy(sceneCenter);
-      camera.position.set(sceneCenter.x + spread*1.8, sceneCenter.y + spread*0.5, sceneCenter.z + spread*1.8);
-      controls.update();
-
-      data.bones.forEach((bone: any) => {
-        const geom = new THREE.BufferGeometry();
-        
-        const positions = new Float32Array(bone.vertices.length * 3);
-        for (let i = 0; i < bone.vertices.length; i++) {
-          positions[i*3]   = bone.vertices[i][0];
-          positions[i*3+1] = bone.vertices[i][1];
-          positions[i*3+2] = bone.vertices[i][2];
-        }
-        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        
-        let mesh: THREE.Object3D;
-        if (bone.indices && bone.indices.length > 0) {
-            geom.setIndex(bone.indices);
-            geom.computeVertexNormals();
-            const mat = new THREE.MeshStandardMaterial({
-              color: bone.color,
-              roughness: 0.5,
-              metalness: 0.1,
-              transparent: true,
-              opacity: 0.4,
-              side: THREE.DoubleSide
-            });
-            mesh = new THREE.Mesh(geom, mat);
-        } else {
-            const mat = new THREE.PointsMaterial({
-              color: bone.color,
-              size: 2.0,
-              sizeAttenuation: true
-            });
-            mesh = new THREE.Points(geom, mat);
-        }
-        
-        scene.add(mesh);
-
-        // Add Local Origin Sphere (Gold)
-        const originGeom = new THREE.SphereGeometry(3, 16, 16);
-        const originMat = new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false }); // Gold
-        const originSphere = new THREE.Mesh(originGeom, originMat);
-        originSphere.renderOrder = 1001;
-        mesh.add(originSphere);
-
-        // Add Origin Label
-        const canvas = document.createElement('canvas');
-        canvas.width = 256; canvas.height = 64;
-        const spriteMap = new THREE.CanvasTexture(canvas);
-        const spriteMat = new THREE.SpriteMaterial({ map: spriteMap, depthTest: false });
-        const sprite = new THREE.Sprite(spriteMat);
-        sprite.scale.set(60, 15, 1);
-        sprite.renderOrder = 1002;
-        scene.add(sprite);
-
-        // Store Bone References and Origin Markers
-        if (bone.label === "Thorax") {
-          thoraxMesh.value = mesh as THREE.Mesh;
-          originMarkers.thorax = originSphere;
-          originLabels.thorax = sprite;
-        } else if (bone.label === "R Clavicle") {
-          clavicleMeshes.right = mesh as THREE.Mesh;
-          originMarkers.clavicle.right = originSphere;
-          originLabels.clavicle.right = sprite;
-          initialQuats.clavicle.right.copy(mesh.quaternion);
-          initialPositions.clavicle.right.copy(mesh.position);
-        } else if (bone.label === "L Clavicle") {
-          clavicleMeshes.left = mesh as THREE.Mesh;
-          originMarkers.clavicle.left = originSphere;
-          originLabels.clavicle.left = sprite;
-          initialQuats.clavicle.left.copy(mesh.quaternion);
-          initialPositions.clavicle.left.copy(mesh.position);
-        } else if (bone.label === "R Scapula") {
-          scapulaMeshes.right = mesh as THREE.Mesh;
-          originMarkers.scapula.right = originSphere;
-          originLabels.scapula.right = sprite;
-          initialQuats.scapula.right.copy(mesh.quaternion);
-          initialPositions.scapula.right.copy(mesh.position);
-        } else if (bone.label === "L Scapula") {
-          scapulaMeshes.left = mesh as THREE.Mesh;
-          originMarkers.scapula.left = originSphere;
-          originLabels.scapula.left = sprite;
-          initialQuats.scapula.left.copy(mesh.quaternion);
-          initialPositions.scapula.left.copy(mesh.position);
-        } else if (bone.label === "R Humerus") {
-          humerusMeshes.right = mesh as THREE.Mesh;
-          originMarkers.humerus.right = originSphere;
-          originLabels.humerus.right = sprite;
-          initialQuats.humerus.right.copy(mesh.quaternion);
-          initialPositions.humerus.right.copy(mesh.position);
-        } else if (bone.label === "L Humerus") {
-          humerusMeshes.left = mesh as THREE.Mesh;
-          originMarkers.humerus.left = originSphere;
-          originLabels.humerus.left = sprite;
-          initialQuats.humerus.left.copy(mesh.quaternion);
-          initialPositions.humerus.left.copy(mesh.position);
-        }
-      });
-
-      // Extract Joint Data (Full S-A-G Chain)
-      if (data.isb_joints) {
-        ['right', 'left'].forEach((side) => {
-          const jointData = data.isb_joints[side];
-          if (jointData) {
-            jointPivots[side as 'right'|'left'].sc.set(jointData.sc[0], jointData.sc[1], jointData.sc[2]);
-            jointPivots[side as 'right'|'left'].ac.set(jointData.ac[0], jointData.ac[1], jointData.ac[2]);
-            jointPivots[side as 'right'|'left'].gh.set(jointData.gh[0], jointData.gh[1], jointData.gh[2]);
-            
-            const a = jointData.angles;
-            if (side === 'right') r_st_coords.value = { abduction: a[0], elevation: a[1], upward: a[2], winging: 0 };
-            else l_st_coords.value = { abduction: a[0], elevation: a[1], upward: a[2], winging: 0 };
-
-            // Initialize Visual Joint Markers (Rigid Attachment Mode)
-            const colors = { sc: 0xff4444, ac: 0x44ff44, gh: 0x4444ff };
-            ['sc', 'ac', 'gh'].forEach((joint) => {
-                // Helper to create diagnostic sphere
-                const createMarker = (isParent: boolean) => {
-                    const geom = new THREE.SphereGeometry(isParent ? 5.5 : 2.5, 16, 16);
-                    const mat = new THREE.MeshBasicMaterial({ 
-                        color: colors[joint as 'sc'|'ac'|'gh'], 
-                        depthTest: false, 
-                        transparent: true, 
-                        opacity: isParent ? 0.3 : 1.0,
-                        wireframe: isParent 
-                    });
-                    const m = new THREE.Mesh(geom, mat);
-                    m.renderOrder = isParent ? 998 : 999;
-                    return m;
-                };
-
-                const pMarker = createMarker(true);
-                const cMarker = createMarker(false);
-                const pivot = jointPivots[side as 'right'|'left'][joint as 'sc'|'ac'|'gh'];
-
-                // Explicit Parent/Child Assignment
-                if (joint === 'sc') {
-                    if (thoraxMesh.value) {
-                         const m = pMarker.clone(); m.position.copy(pivot);
-                         thoraxMesh.value.add(m);
-                         jointMarkersP[side as 'right'|'left'].sc = m;
-                    }
-                    if (clavicleMeshes[side as 'right'|'left']) {
-                         const m = cMarker.clone(); m.position.copy(pivot);
-                         clavicleMeshes[side as 'right'|'left']!.add(m);
-                         jointMarkersC[side as 'right'|'left'].sc = m;
-                    }
-                } else if (joint === 'ac') {
-                    if (clavicleMeshes[side as 'right'|'left']) {
-                         const m = pMarker.clone(); m.position.copy(pivot);
-                         clavicleMeshes[side as 'right'|'left']!.add(m);
-                         jointMarkersP[side as 'right'|'left'].ac = m;
-                    }
-                    if (scapulaMeshes[side as 'right'|'left']) {
-                         const m = cMarker.clone(); m.position.copy(pivot);
-                         scapulaMeshes[side as 'right'|'left']!.add(m);
-                         jointMarkersC[side as 'right'|'left'].ac = m;
-                    }
-                } else if (joint === 'gh') {
-                    if (scapulaMeshes[side as 'right'|'left']) {
-                         const m = pMarker.clone(); m.position.copy(pivot);
-                         scapulaMeshes[side as 'right'|'left']!.add(m);
-                         jointMarkersP[side as 'right'|'left'].gh = m;
-                    }
-                    if (humerusMeshes[side as 'right'|'left']) {
-                         const m = cMarker.clone(); m.position.copy(pivot);
-                         humerusMeshes[side as 'right'|'left']!.add(m);
-                         jointMarkersC[side as 'right'|'left'].gh = m;
-                    }
-                }
-
-                // Create Label Sprite (Standalone follows World Pos)
-                const canvas = document.createElement('canvas');
-                canvas.width = 256; canvas.height = 64;
-                const spriteMap = new THREE.CanvasTexture(canvas);
-                const spriteMat = new THREE.SpriteMaterial({ map: spriteMap, depthTest: false });
-                const sprite = new THREE.Sprite(spriteMat);
-                sprite.scale.set(60, 15, 1);
-                sprite.renderOrder = 1000;
-                scene.add(sprite);
-                jointLabels[side as 'right'|'left'][joint as 'sc'|'ac'|'gh'] = sprite;
-            });
-          }
-        });
-      }
-      // Render Markers
-      if (data.markers) {
-        data.markers.forEach((marker: any) => {
-          const sphereGeom = new THREE.SphereGeometry(6, 32, 32);
-          const sphereMat = new THREE.MeshStandardMaterial({ color: marker.color, roughness: 0.2 });
-          const sphere = new THREE.Mesh(sphereGeom, sphereMat);
-          sphere.position.set(marker.pos[0], marker.pos[1], marker.pos[2]);
-          scene.add(sphere);
-        });
-      }
-
-      // Render Axes (Arrows)
-      if (data.axes) {
-        data.axes.forEach((axis: any) => {
-          const dir = new THREE.Vector3(axis.dir[0], axis.dir[1], axis.dir[2]);
-          dir.normalize();
-          const origin = new THREE.Vector3(axis.start[0], axis.start[1], axis.start[2]);
-          const length = 40;
-          const arrowHelper = new THREE.ArrowHelper(dir, origin, length, axis.color, 8, 4);
-          scene.add(arrowHelper);
-        });
-      }
-
-    } catch (err) {
-      console.error("Failed to load bones.json", err);
-    }
+    globalScene = scene;
+    globalCamera = camera;
+    globalControls = controls;
+    loadBones();
 
     const updateLabels = (side: 'right' | 'left', joint: 'sc' | 'ac' | 'gh') => {
         const markerC = jointMarkersC[side][joint];
@@ -357,15 +617,16 @@ onMounted(async () => {
             markerC.getWorldPosition(worldPos);
             
             label.position.copy(worldPos).add(new THREE.Vector3(15, 12, 0));
-            const ctx = (label.material.map as THREE.CanvasTexture).image.getContext('2d');
+            const canvas = (label.material.map as THREE.CanvasTexture).image;
+            const ctx = canvas.getContext('2d');
             if (ctx) {
-                ctx.clearRect(0, 0, 256, 64);
+                ctx.clearRect(0, 0, 1024, 256);
                 ctx.fillStyle = 'rgba(0,0,0,0.6)';
-                ctx.fillRect(0, 0, 256, 64);
-                ctx.font = 'bold 22px Inter, sans-serif';
+                ctx.fillRect(0, 0, 1024, 256);
+                ctx.font = 'bold 80px Inter, sans-serif';
                 ctx.fillStyle = joint === 'sc' ? '#ff6666' : (joint === 'ac' ? '#66ff66' : '#80bfff');
                 const text = `${joint.toUpperCase()} [${Math.round(worldPos.x)},${Math.round(worldPos.y)},${Math.round(worldPos.z)}]`;
-                ctx.fillText(text, 10, 40);
+                ctx.fillText(text, 40, 160);
                 label.material.map!.needsUpdate = true;
             }
         }
@@ -377,15 +638,16 @@ onMounted(async () => {
             const worldPos = new THREE.Vector3();
             marker.getWorldPosition(worldPos);
             label.position.copy(worldPos).add(new THREE.Vector3(-15, -12, 0));
-            const ctx = (label.material.map as THREE.CanvasTexture).image.getContext('2d');
+            const canvas = (label.material.map as THREE.CanvasTexture).image;
+            const ctx = canvas.getContext('2d');
             if (ctx) {
-                ctx.clearRect(0, 0, 256, 64);
+                ctx.clearRect(0, 0, 1024, 256);
                 ctx.fillStyle = 'rgba(0,0,0,0.6)';
-                ctx.fillRect(0, 0, 256, 64);
-                ctx.font = 'bold 18px Inter, sans-serif';
+                ctx.fillRect(0, 0, 1024, 256);
+                ctx.font = 'bold 64px Inter, sans-serif';
                 ctx.fillStyle = '#FFD700';
                 const text = `${name} [${Math.round(worldPos.x)},${Math.round(worldPos.y)},${Math.round(worldPos.z)}]`;
-                ctx.fillText(text, 10, 40);
+                ctx.fillText(text, 40, 160);
                 label.material.map!.needsUpdate = true;
             }
         };
@@ -396,6 +658,48 @@ onMounted(async () => {
             up(originLabels.clavicle[side], originMarkers.clavicle[side], `${side.toUpperCase()} Clav Origin`);
             up(originLabels.scapula[side], originMarkers.scapula[side], `${side.toUpperCase()} Scap Origin`);
             up(originLabels.humerus[side], originMarkers.humerus[side], `${side.toUpperCase()} Hum Origin`);
+
+            // Update Anatomical Labels
+            const lms = anatomicalLabels[side];
+            const markers = anatomicalMarkers[side];
+            const boneNames = { 
+                thorax_sc: "Thorax", thorax_ij: "Thorax", thorax_px: "Thorax", thorax_c7: "Thorax", thorax_t8: "Thorax",
+                clavicle_sc: "Clavicle", clavicle_ac: "Clavicle", scapula_ac: "Scapula",
+                scapula_aa: "Scapula", scapula_ts: "Scapula", scapula_ai: "Scapula"
+            };
+            const jointNames = { 
+                thorax_sc: "SC", thorax_ij: "IJ", thorax_px: "PX", thorax_c7: "C7", thorax_t8: "T8",
+                clavicle_sc: "SC", clavicle_ac: "AC", scapula_ac: "AC",
+                scapula_aa: "AA", scapula_ts: "TS", scapula_ai: "AI"
+            };
+            const colors = { 
+                thorax_sc: "#00FFFF", thorax_ij: "#FFFF00", thorax_px: "#FFFF00", thorax_c7: "#FFFF00", thorax_t8: "#FFFF00",
+                clavicle_sc: "#FFA500", clavicle_ac: "#FFA500", scapula_ac: "#FFFF00",
+                scapula_aa: "#FFFF00", scapula_ts: "#FFFF00", scapula_ai: "#FFFF00"
+            };
+
+            Object.keys(lms).forEach(k => {
+                const key = k as keyof typeof lms;
+                const label = lms[key];
+                const marker = markers[key];
+                if (label && marker) {
+                    const worldPos = new THREE.Vector3();
+                    marker.getWorldPosition(worldPos);
+                    label.position.copy(worldPos).add(new THREE.Vector3(0, 10, 0));
+                    const canvas = (label.material.map as THREE.CanvasTexture).image;
+                    const ctx = canvas.getContext('2d');
+                    if (ctx) {
+                        ctx.clearRect(0, 0, 1024, 256);
+                        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                        ctx.fillRect(0, 0, 1024, 256);
+                        ctx.font = 'bold 72px Inter, sans-serif';
+                        ctx.fillStyle = colors[key];
+                        const text = `${jointNames[key]} (${boneNames[key]})`;
+                        ctx.fillText(text, 40, 160);
+                        label.material.map!.needsUpdate = true;
+                    }
+                }
+            });
         });
     };
 
@@ -405,30 +709,46 @@ onMounted(async () => {
       const hMesh = humerusMeshes[side];
       if (!cMesh || !sMesh || !hMesh) return;
 
-      const coords = side === 'right' ? r_st_coords.value : l_st_coords.value;
+      const coords = side === 'right' ? r_joint_coords.value : l_joint_coords.value;
       const pivots = jointPivots[side];
       
       // 1. Reset all bones to Zero-Pose (The ISB-aligned mean mesh)
       const allBones = [cMesh, sMesh, hMesh];
       allBones.forEach(b => {
-        b.quaternion.copy(new THREE.Quaternion()); // Identity
+        b.quaternion.set(0, 0, 0, 1); // Identity
         b.position.set(0,0,0); // Relative to world 0
       });
 
-      // 2. Define Joint Rotation Quaternions (Currently focusing on SC Refinement)
+      // 2. Define Joint Rotation Quaternions (ISB Standards)
       const qSC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.elevation),
-        THREE.MathUtils.degToRad(-coords.abduction), 
-        THREE.MathUtils.degToRad(coords.upward),
+        THREE.MathUtils.degToRad(coords.sc_elevation),
+        THREE.MathUtils.degToRad(-coords.sc_abduction), 
+        THREE.MathUtils.degToRad(coords.sc_upward),
         'YXZ'
       ));
-      
-      // Note: We could add AC/GH sliders here. For now, we use Python's identity for internal joints.
-      const qAC = new THREE.Quaternion(); 
-      const qGH = new THREE.Quaternion();
+
+      const qAC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(coords.ac_upward),
+        THREE.MathUtils.degToRad(coords.ac_internal),
+        THREE.MathUtils.degToRad(coords.ac_posterior),
+        'YXZ'
+      ));
+
+      const qGH = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(coords.gh_flexion),
+        THREE.MathUtils.degToRad(coords.gh_abduction),
+        THREE.MathUtils.degToRad(coords.gh_internal),
+        'YXZ'
+      ));
 
       // 3. Recursive Transform Application
       
+      // A. SC JOINT (Thorax vs Clavicle)
+      cMesh.position.sub(pivots.sc);
+      cMesh.position.applyQuaternion(qSC);
+      cMesh.position.add(pivots.sc);
+      cMesh.quaternion.premultiply(qSC);
+
       updateLabels(side, 'sc');
 
       // B. AC JOINT (Clavicle vs Scapula)
@@ -468,6 +788,36 @@ onMounted(async () => {
 
       updateLabels(side, 'gh');
       updateOriginLabels();
+
+      // D. GHOST SYNC (If overlap enabled, apply same logic to ghost meshes)
+      if (isOverlapEnabled.value && meanModelData) {
+          const g_c = side === 'right' ? ghostMeshes.clavicle.right : ghostMeshes.clavicle.left;
+          const g_s = side === 'right' ? ghostMeshes.scapula.right : ghostMeshes.scapula.left;
+          const g_h = side === 'right' ? ghostMeshes.humerus.right : ghostMeshes.humerus.left;
+          if (g_c && g_s && g_h) {
+              const g_pivots = meanModelData.isb_joints[side];
+              const g_p = { sc: new THREE.Vector3(g_pivots.sc[0], g_pivots.sc[1], g_pivots.sc[2]), ac: new THREE.Vector3(g_pivots.ac[0], g_pivots.ac[1], g_pivots.ac[2]), gh: new THREE.Vector3(g_pivots.gh[0], g_pivots.gh[1], g_pivots.gh[2]) };
+              
+              [g_c, g_s, g_h].forEach(m => { m.quaternion.set(0,0,0,1); m.position.set(0,0,0); });
+
+              g_c.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_c.quaternion.premultiply(qSC);
+
+              const gac_W = g_p.ac.clone().sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_s.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_s.quaternion.premultiply(qSC);
+              g_s.position.sub(gac_W).applyQuaternion(qAC).add(gac_W);
+              g_s.quaternion.premultiply(qAC);
+
+              const ggh_W = g_p.gh.clone().sub(g_p.ac).applyQuaternion(qAC).add(g_p.ac).sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_h.position.sub(g_p.sc).applyQuaternion(qSC).add(g_p.sc);
+              g_h.quaternion.premultiply(qSC);
+              g_h.position.sub(gac_W).applyQuaternion(qAC).add(gac_W);
+              g_h.quaternion.premultiply(qAC);
+              g_h.position.sub(ggh_W).applyQuaternion(qGH).add(ggh_W);
+              g_h.quaternion.premultiply(qGH);
+          }
+      }
     };
 
     const animate = () => {
@@ -512,8 +862,19 @@ async function runPrediction() {
       }
     });
 
-    statusMessage.value = "Done: " + result;
-    statusColor.value = "#48c774";
+    // Result is now the JSON string of bones.json
+    try {
+      const boneData = JSON.parse(result as string);
+      statusMessage.value = "Prediction Complete! Rendering...";
+      statusColor.value = "#48c774";
+      hasPrediction.value = true;
+      isViewingOriginal.value = false;
+      loadBones(boneData);
+    } catch (e) {
+      statusMessage.value = "Prediction Success, but failed to parse bone data.";
+      statusColor.value = "#f14668";
+      console.error(e);
+    }
   } catch (error) {
     statusMessage.value = "Failed: " + error;
     statusColor.value = "#f14668";
@@ -538,8 +899,8 @@ async function saveReport() {
             height: height.value,
             weight: weight.value,
         },
-        right_st: r_st_coords.value,
-        left_st: l_st_coords.value,
+        right_st: r_joint_coords.value,
+        left_st: l_joint_coords.value,
       }
     });
     statusMessage.value = result as string;
@@ -550,18 +911,32 @@ async function saveReport() {
   }
   isSavingReport.value = false;
 }
+
+function toggleComparison() {
+  isViewingOriginal.value = !isViewingOriginal.value;
+  loadBones();
+}
 </script>
 
 <template>
   <div class="container">
-    <div class="left-pane">
-       <div class="viewer-wrapper">
-          <div class="floating-frame" ref="viewerContainer">
-            <!-- Three.js Canvas -->
-          </div>
-          <div class="frame-reflection"></div>
-       </div>
-    </div>
+     <div class="left-pane">
+        <div class="viewer-wrapper">
+           <div class="floating-frame" ref="viewerContainer">
+             <!-- Three.js Canvas -->
+           </div>
+           
+           <!-- Viewport Overlay Label -->
+           <div class="viewport-label animate-in">
+              <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
+              <span class="label-text">
+                {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? 'Predicted Patient-Specific Mesh' : 'Initial Model') }}
+              </span>
+           </div>
+
+           <div class="frame-reflection"></div>
+        </div>
+     </div>
 
     <div class="right-pane">
       <div class="viewer-wrapper">
@@ -592,38 +967,112 @@ async function saveReport() {
               <button @click="isSettingsVisible = false" class="secondary-btn">Close</button>
             </div>
 
-            <div v-else-if="isKinematicVisible" class="settings-view animate-in">
+            <div v-else-if="isKinematicVisible" class="settings-view animate-in kinematic-scroll">
               <div class="card transparent-card">
                 <h3 style="color: #FFA040">🦴 Kinematic Refinement</h3>
-                <p class="hint">Adjust Scapulothoracic (ST) joint coordinates around the AC pivot.</p>
+                <p class="hint">Adjust joint coordinates along the recursive chain.</p>
+                
                 <div class="joint-group">
                   <div class="side-label">Right Shoulder</div>
-                  <div class="slider-row">
-                    <label><span>Abduction</span> <span>{{ r_st_coords.abduction.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="r_st_coords.abduction" min="0" max="60" step="0.5" />
+                  
+                  <div class="sub-group">
+                    <div class="group-title">Sternoclavicular (SC)</div>
+                    <div class="slider-row">
+                      <label><span>Abduction</span> <span>{{ r_joint_coords.sc_abduction.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.sc_abduction" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Elevation</span> <span>{{ r_joint_coords.sc_elevation.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.sc_elevation" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Upward Rot</span> <span>{{ r_joint_coords.sc_upward.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.sc_upward" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
-                  <div class="slider-row">
-                    <label><span>Elevation</span> <span>{{ r_st_coords.elevation.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="r_st_coords.elevation" min="-15" max="30" step="0.5" />
+
+                  <div class="sub-group">
+                    <div class="group-title">Acromioclavicular (AC)</div>
+                    <div class="slider-row">
+                      <label><span>Internal Rot</span> <span>{{ r_joint_coords.ac_internal.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.ac_internal" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Upward Rot</span> <span>{{ r_joint_coords.ac_upward.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.ac_upward" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Posterior Tilt</span> <span>{{ r_joint_coords.ac_posterior.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.ac_posterior" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
-                  <div class="slider-row">
-                    <label><span>Upward Rot</span> <span>{{ r_st_coords.upward.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="r_st_coords.upward" min="-10" max="45" step="0.5" />
+
+                  <div class="sub-group">
+                    <div class="group-title">Glenohumeral (GH)</div>
+                    <div class="slider-row">
+                      <label><span>Flexion</span> <span>{{ r_joint_coords.gh_flexion.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.gh_flexion" min="-60" max="180" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Abduction</span> <span>{{ r_joint_coords.gh_abduction.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.gh_abduction" min="0" max="180" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Internal Rot</span> <span>{{ r_joint_coords.gh_internal.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="r_joint_coords.gh_internal" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
                 </div>
+
                 <div class="joint-group" style="margin-top: 20px">
                   <div class="side-label">Left Shoulder</div>
-                  <div class="slider-row">
-                    <label><span>Abduction</span> <span>{{ l_st_coords.abduction.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="l_st_coords.abduction" min="0" max="60" step="0.5" />
+                  
+                  <div class="sub-group">
+                    <div class="group-title">Sternoclavicular (SC)</div>
+                    <div class="slider-row">
+                      <label><span>Abduction</span> <span>{{ l_joint_coords.sc_abduction.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.sc_abduction" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Elevation</span> <span>{{ l_joint_coords.sc_elevation.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.sc_elevation" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Upward Rot</span> <span>{{ l_joint_coords.sc_upward.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.sc_upward" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
-                  <div class="slider-row">
-                    <label><span>Elevation</span> <span>{{ l_st_coords.elevation.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="l_st_coords.elevation" min="-15" max="30" step="0.5" />
+
+                  <div class="sub-group">
+                    <div class="group-title">Acromioclavicular (AC)</div>
+                    <div class="slider-row">
+                      <label><span>Internal Rot</span> <span>{{ l_joint_coords.ac_internal.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.ac_internal" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Upward Rot</span> <span>{{ l_joint_coords.ac_upward.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.ac_upward" min="-90" max="90" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Posterior Tilt</span> <span>{{ l_joint_coords.ac_posterior.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.ac_posterior" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
-                  <div class="slider-row">
-                    <label><span>Upward Rot</span> <span>{{ l_st_coords.upward.toFixed(1) }}°</span></label>
-                    <input type="range" v-model.number="l_st_coords.upward" min="-10" max="45" step="0.5" />
+
+                  <div class="sub-group">
+                    <div class="group-title">Glenohumeral (GH)</div>
+                    <div class="slider-row">
+                      <label><span>Flexion</span> <span>{{ l_joint_coords.gh_flexion.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.gh_flexion" min="-60" max="180" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Abduction</span> <span>{{ l_joint_coords.gh_abduction.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.gh_abduction" min="0" max="180" step="0.5" />
+                    </div>
+                    <div class="slider-row">
+                      <label><span>Internal Rot</span> <span>{{ l_joint_coords.gh_internal.toFixed(1) }}°</span></label>
+                      <input type="range" v-model.number="l_joint_coords.gh_internal" min="-90" max="90" step="0.5" />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -673,7 +1122,23 @@ async function saveReport() {
                 </div>
               </div>
 
-              <button :disabled="isPredicting" @click="runPrediction" class="run-btn">
+              <div class="card transparent-card" style="margin-top: 15px; border-color: #60A060;">
+                <h3 style="color: #60A060">🔍 Anatomical Guides</h3>
+                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isHighlightsEnabled" @change="loadBones()" id="highlightToggle" />
+                  <label for="highlightToggle">Highlight Glide Area</label>
+                </div>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isNormalsEnabled" @change="loadBones()" id="normalsToggle" />
+                  <label for="normalsToggle">Show Surface Normals</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isScapularPlaneEnabled" @change="loadBones()" id="scapularPlaneToggle" />
+                  <label for="scapularPlaneToggle">Show Scapular Plane</label>
+                </div>
+              </div>
+
+              <button :disabled="isPredicting" @click="runPrediction" class="run-btn" style="margin-top: 15px;">
                 <span v-if="!isPredicting">🚀 Run Prediction Pipeline</span>
                 <span v-else>🔄 Executing Model Generation...</span>
               </button>
@@ -681,6 +1146,13 @@ async function saveReport() {
               <div v-if="statusMessage" class="status-box" :style="{ color: statusColor, borderColor: statusColor }">
                 <div class="status-label">Pipeline Output:</div>
                 {{ statusMessage }}
+              </div>
+
+              <div v-if="hasPrediction" class="comparison-toggle animate-in">
+                <button @click="toggleComparison" class="comparison-btn" :class="{ original: isViewingOriginal }">
+                   <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
+                   <span v-else>📏 Compare with Mean Model</span>
+                </button>
               </div>
             </div>
          </div>
@@ -775,7 +1247,7 @@ html, body, #app {
 }
 .main-view, .settings-view {
   padding: 15px 25px;
-  overflow: hidden; /* Lock scrolling */
+  overflow-y: auto; /* Allow scrolling */
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -948,6 +1420,22 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.sub-group {
+  margin-top: 15px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  padding-top: 10px;
+}
+.group-title {
+  font-size: 0.7rem;
+  color: #FFA040;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-weight: bold;
+}
+.kinematic-scroll {
+  max-height: calc(100vh - 120px);
+}
+
 .footer-actions {
   margin-top: 10px;
   display: flex;
@@ -961,4 +1449,83 @@ input[type="range"] {
 .save-btn:hover:not(:disabled) {
   box-shadow: 0 12px 24px rgba(59, 130, 246, 0.3);
 }
+
+.viewport-label {
+  position: absolute;
+  top: 30px;
+  left: 30px;
+  padding: 10px 20px;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 10;
+  pointer-events: none;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.label-text {
+  color: #f8fafc;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.05rem;
+  text-transform: uppercase;
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #94a3b8;
+  box-shadow: 0 0 10px rgba(148, 163, 184, 0.4);
+  transition: all 0.3s ease;
+}
+
+.status-indicator.active {
+  background: #3b82f6;
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.8);
+}
+
+.comparison-toggle {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+.comparison-btn {
+  width: 100%;
+  padding: 12px;
+  background: rgba(255, 160, 64, 0.1);
+  border: 1px solid rgba(255, 160, 64, 0.3);
+  color: #FFA040;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.comparison-btn:hover {
+  background: rgba(255, 160, 64, 0.2);
+}
+.comparison-btn.original {
+  background: rgba(72, 199, 116, 0.1);
+  border-color: rgba(72, 199, 116, 0.3);
+  color: #48c774;
+}
+.comparison-btn.original:hover {
+  background: rgba(72, 199, 116, 0.2);
+}
 </style>
+.overlap-btn {
+  background: rgba(79, 172, 254, 0.1) !important;
+  border-color: rgba(79, 172, 254, 0.3) !important;
+  color: #70c5ff !important;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.overlap-btn.active {
+  background: rgba(79, 172, 254, 0.3) !important;
+  border-color: #4facfe !important;
+  box-shadow: 0 0 15px rgba(79, 172, 254, 0.4);
+}

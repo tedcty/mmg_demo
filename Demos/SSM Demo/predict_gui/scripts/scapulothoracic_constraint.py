@@ -11,7 +11,13 @@ and utilizes a simultaneous 9-DOF optimization pass to satisfy the Scapulothorac
 import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial.transform import Rotation as R
+from scipy.interpolate import LSQBivariateSpline
 
+
+def soft_cost(x, delta=10.0):
+    """Huber-like cost to prevent gradient explosion."""
+    abs_x = np.abs(x)
+    return np.where(abs_x < delta, 0.5 * x**2, delta * (abs_x - 0.5 * delta))
 
 class ShoulderKinematicTree:
     """
@@ -27,37 +33,92 @@ class ShoulderKinematicTree:
         self.is_left = is_left
         self.thorax_center = np.mean(thorax_pts, axis=0)
         self.thorax_pts = thorax_pts
-        self.posterior_axis = np.array([0.0, 0.0, 1.0])
         
         # Local Offsets (Fixed relative to bone origins)
         self.sc_pivot_global = None  # Setup during prediction
         self.ac_pivot_local = None   # AC relative to SC local frame
         self.gh_pivot_local = None   # GH relative to AC local frame
         
+        # Local Scapular Landmarks (Relative to AC pivot)
+        self.scap_lms_local = {} 
+        
         # Bone Mesh Prototypes (Zero-rotation pose)
         self.clavicle_mesh = None
         self.scapula_mesh = None
         self.humerus_mesh = None
         
-        self.ellipsoid_axes = None
-        self.ellipsoid_rot = None
-        self._fit_ellipsoid(thorax_pts)
+        # NURBS-like B-Spline Surface
+        self.spline = None
+        self._fit_spline(thorax_pts)
 
-    def _fit_ellipsoid(self, points):
-        """Fits a prolate ellipsoid to the filtered thorax vertices."""
-        centered = points - self.thorax_center
-        _, s, vh = np.linalg.svd(centered, full_matrices=False)
-        axes_lengths = 2 * np.sqrt(s**2 / max(len(points) - 1, 1))
-        self.ellipsoid_rot = vh.T
-        axes_sorted = np.sort(axes_lengths)
-        a = (axes_sorted[0] + axes_sorted[1]) / 2
-        c = axes_sorted[2]
-        self.ellipsoid_axes = np.array([a * 0.9, a * 0.9, c * 0.9])
+    def set_local_landmarks(self, aa, ts, ai, ac_global):
+        """Caches landmarks in the scapula local frame (AC = 0,0,0)."""
+        self.scap_lms_local = {
+            'aa': aa - ac_global,
+            'ts': ts - ac_global,
+            'ai': ai - ac_global
+        }
+        print(f"DEBUG: Local landmarks cached. Centroid: {np.mean(list(self.scap_lms_local.values()), axis=0)}")
 
-    def get_ellipsoid_distance(self, pts):
-        """Normalized squared distance. < 1 = inside."""
-        local = (self.ellipsoid_rot.T @ (pts - self.thorax_center).T).T
-        return np.sum((local / self.ellipsoid_axes)**2, axis=1)
+    def _fit_spline(self, points):
+        """Fits a smooth B-Spline surface to the thorax glide area."""
+        # Use X, Y as independent variables, Z as the height
+        x = points[:, 0]
+        y = points[:, 1]
+        z = points[:, 2]
+        
+        # Create knots for the spline
+        kx = np.linspace(x.min(), x.max(), 5)
+        ky = np.linspace(y.min(), y.max(), 5)
+        
+        # Fit a least-squares bivariate spline
+        self.spline = LSQBivariateSpline(x, y, z, kx[1:-1], ky[1:-1], kx=3, ky=3)
+        print(f"DEBUG: NURBS Spline Surface fitted to {len(points)} points.")
+
+    def get_spline_distance(self, pts):
+        """Calculates distance from points to the Spline surface."""
+        # Target Z = spline(X, Y)
+        z_target = self.spline.ev(pts[:, 0], pts[:, 1])
+        # Vertical distance is the primary constraint for scapular glide
+        return pts[:, 2] - z_target
+
+    def get_spline_normal(self, pts):
+        """Calculates the analytical surface normal of the Spline."""
+        # Normal is [-df/dx, -df/dy, 1]
+        dfdx = self.spline.ev(pts[:, 0], pts[:, 1], dx=1, dy=0)
+        dfdy = self.spline.ev(pts[:, 0], pts[:, 1], dx=0, dy=1)
+        
+        normals = np.zeros((len(pts), 3))
+        normals[:, 0] = -dfdx
+        normals[:, 1] = -dfdy
+        normals[:, 2] = 1.0
+        
+        # Normalize
+        norms = np.linalg.norm(normals, axis=1, keepdims=True)
+        return normals / norms
+
+    def forward_kinematics_6dof(self, q):
+        """
+        Calculates global bone positions based on 6 DOFs (SC + AC).
+        q = [scY, scX, scZ, acY, acX, acZ] (all in degrees)
+        """
+        # 1. SC Joint (Thorax -> Clavicle)
+        # Rotation order YXZ per ISB standards
+        R_sc = R.from_euler('YXZ', q[0:3], degrees=True).as_matrix()
+        
+        # Global AC pivot
+        ac_p_global = (R_sc @ self.ac_pivot_local.T).T + self.sc_pivot_global
+        
+        # 2. AC Joint (Clavicle -> Scapula)
+        R_ac_local = R.from_euler('YXZ', q[3:6], degrees=True).as_matrix()
+        R_ac_global = R_sc @ R_ac_local
+        
+        # Transform Scapular Landmarks
+        lms_world = {}
+        for key, local_vec in self.scap_lms_local.items():
+            lms_world[key] = (R_ac_global @ local_vec.T).T + ac_p_global
+            
+        return lms_world, ac_p_global, R_ac_global
 
     def forward_kinematics(self, q):
         """
@@ -83,6 +144,77 @@ class ShoulderKinematicTree:
         hum_transformed = (R_gh @ (self.humerus_mesh - gh_pivot_global).T).T + gh_pivot_global
         
         return clav_transformed, scap_transformed, hum_transformed, ac_pivot_global, gh_pivot_global
+
+    def optimize_6dof(self, initial_q):
+        """
+        Solves for the 6 DOFs that satisfy the ST contact and normal alignment.
+        """
+        # Start from Neutral
+        initial_q = np.zeros(6) 
+
+        def objective(q):
+            lms_world, ac_p, R_ac_global = self.forward_kinematics_6dof(q)
+            
+            # 1. Scapular Features in World Space
+            aa = lms_world['aa']
+            ts = lms_world['ts']
+            ai = lms_world['ai']
+            all_pts = np.array([aa, ts, ai])
+            centroid = np.mean(all_pts, axis=0)
+            
+            # Plane Normal (XS axis per ISB, inverted to point posteriorly)
+            v1 = aa - ts
+            v2 = ai - ts
+            scap_normal = np.cross(v1, v2)
+            scap_norm_val = np.linalg.norm(scap_normal)
+            if scap_norm_val < 1e-6:
+                return 1e12 # Degenerate triangle
+            scap_normal /= scap_norm_val
+            
+            # 2. Thorax Surface Target
+            # Distance: z - spline(x,y)
+            dists = self.get_spline_distance(all_pts)
+            
+            # Normalize costs: 
+            # Position diff (mm) vs Normal diff (unitless)
+            # We want 1mm of error to be roughly equal to 0.01 of normal alignment error
+            cost_dist = np.sum(soft_cost(dists, delta=5.0)) * 10.0
+            
+            # Alignment: (1 - abs(dot)) ranges from 0 to 1
+            tho_normal = self.get_spline_normal(centroid.reshape(1,3))[0]
+            alignment = np.dot(scap_normal, tho_normal)
+            cost_align = (1.0 - abs(alignment))**2 * 500.0
+            
+            # 3. Regularization (Minimize rotation from neutral)
+            cost_reg = np.sum(q**2) * 0.001
+            
+            return cost_dist + cost_align + cost_reg
+
+        # Initial Debug
+        lms_init, _, _ = self.forward_kinematics_6dof(initial_q)
+        pts_init = np.array([lms_init['aa'], lms_init['ts'], lms_init['ai']])
+        dists_init = self.get_spline_distance(pts_init)
+        print(f"DEBUG: Optimization Start. Initial Dists: {dists_init}")
+        
+        # Joint Limits: Based on anatomical ranges (degrees)
+        # SC: Retraction (-20, 40), Elevation (-10, 40), Axial (-30, 30)
+        # AC: Internal (0, 60), Upward (-20, 40), Tilt (-30, 30)
+        bounds = [
+            (-40, 40), (-20, 40), (-30, 30),  # SC
+            (-20, 80), (-40, 40), (-40, 40)   # AC
+        ]
+        
+        # Optimization run
+        # We'll try L-BFGS-B with tight bounds
+        res = minimize(objective, initial_q, method='L-BFGS-B', bounds=bounds,
+                       options={'maxiter': 500, 'ftol': 1e-8})
+        
+        # If it hits bounds and cost is still high, try a few seeds?
+        # But for now, let's see where L-BFGS-B lands.
+        
+        final_cost = objective(res.x)
+        print(f"DEBUG: Optimization End. Final Cost: {final_cost:.2f}")
+        return res.x
 
     def optimize_9dof(self, initial_q, sc_target, ac_target, gh_target):
         """
