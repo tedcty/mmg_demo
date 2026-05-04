@@ -3,8 +3,10 @@ import subprocess
 import sys
 import shutil
 
-def run_command(command, cwd=None, shell=True):
+def run_command(command, cwd=None, shell=None):
     print(f"Running: {' '.join(command) if isinstance(command, list) else command}")
+    if shell is None:
+        shell = not isinstance(command, list)
     try:
         subprocess.run(command, cwd=cwd, shell=shell, check=True)
         return True
@@ -56,14 +58,14 @@ def setup():
 
     # 3. Setup Conda Environment (Optional Step)
     print("\n[3/3] Python Environment (thmd2)...")
-    env_name = "thmd2"
+    env_name = "demo"
     
     # Check if conda is available
     if not shutil.which("conda"):
         print("WARNING: 'conda' not found. You will need to manually ensure the 'thmd2' environment exists.")
     else:
         print(f"To create or update the environment, run:")
-        print(f"  conda create -n {env_name} python=3.10")
+        print(f"  conda create -n {env_name} python=3.12")
         print(f"  conda activate {env_name}")
         print(f"  pip install numpy pandas scikit-learn vtk gias3 ptb")
         

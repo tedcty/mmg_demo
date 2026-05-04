@@ -1,17 +1,18 @@
+import os
 import sys
 import numpy as np
 import sounddevice as sd
 import pyqtgraph as pg
 import time
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtWidgets, QtGui
 from collections import deque
 from scipy.signal import butter, sosfilt
 
 # --------------------------------
-# Configuration fro data streaming
+# Configuration for data streaming
 # --------------------------------
 fs = 48000
-window_seconds = 4
+window_seconds = 3
 buffer_size = int(fs * window_seconds)
 device_idx = 1
 rms_win = 0.02
@@ -50,6 +51,26 @@ baseline_value = None
 mvc_value = None
 calibrate_emg = False # Boolean about calibration applied to EMG data
 
+# ---------------------------------
+# Visuals
+# ---------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+bg_path = os.path.join(BASE_DIR, "resources", "background.png")
+bird_path = os.path.join(BASE_DIR, "resources", "bird.png")
+coin_path = os.path.join(BASE_DIR, "resources", "coin.png")
+penalty_path = os.path.join(BASE_DIR, "resources", "penalty.png")
+
+bird_y = 0.0
+coin_active = penalty_active = False
+coin_start_time = penalty_start_time = 0.0
+coin_y = penalty_y = 0.0
+coin_x = penalty_x = 0.0
+
+X_HIT_THRESHOLD = 50    # how close to midline
+Y_HIT_THRESHOLD = 30    # vertical tolerance
+
+score = 0
+
 # ----------------------------
 # Audio callback
 # ----------------------------
@@ -72,65 +93,32 @@ app = QtWidgets.QApplication(sys.argv)
 
 # Main window widget
 main_widget = QtWidgets.QWidget()
-layout = QtWidgets.QVBoxLayout(main_widget)
+main_widget.resize(1000, 700)
+
+# Background Image
+bg_img = QtGui.QPixmap(bg_path)
+bg_label = QtWidgets.QLabel(main_widget)
+bg_label.setPixmap(bg_img)
+bg_label.setScaledContents(True)
+bg_label.setGeometry(main_widget.rect())
+bg_label.lower()  # send to back
+
+# Foreground widgets
+foreground = QtWidgets.QWidget(main_widget)
+foreground.setGeometry(main_widget.rect())
+foreground.raise_()  # bring to front
+foreground.setStyleSheet("background: transparent;")
+
+# Layout
+layout = QtWidgets.QVBoxLayout(foreground)
+layout.setContentsMargins(10, 10, 10, 10)
+layout.setSpacing(8)
+top_bar = QtWidgets.QHBoxLayout()
+top_bar.setSpacing(12)
 
 # Button
 button = QtWidgets.QPushButton("Calibrate EMG")
-layout.addWidget(button)
-
-# Checkbox for calibration (EMG & baseline)
-checkbox = QtWidgets.QCheckBox("Use calibration")
-layout.addWidget(checkbox)
-
-def toggle_calibration(state):
-    global calibrate_emg
-    calibrate_emg = state == QtCore.Qt.Checked
-
-    if calibrate_emg:
-        # Switch to cursor mode
-        curve.setVisible(False)
-        cursor.setVisible(True)
-
-        # Normalized EMG → fixed range
-        plot.disableAutoRange(axis='y')
-        plot.setYRange(0, 1.2)
-    else:
-        # Switch back to line plot
-        cursor.setVisible(False)
-        curve.setVisible(True)
-
-        # Absolute EMG → auto range
-        plot.enableAutoRange(axis='y')
-
-checkbox.stateChanged.connect(toggle_calibration)
-
-# pyqtgraph widget
-win = pg.GraphicsLayoutWidget()
-layout.addWidget(win)
-
-# Plot inside pyqtgraph widget
-plot = win.addPlot()
-plot.getAxis('bottom').setVisible(False)
-plot.setLabel('left', 'Amplitude')
-plot.enableAutoRange(axis='y')
-
-# EMG line plot
-curve = plot.plot(pen='y')
-curve.setVisible(True)
-
-# EMG cursor (single moving point)
-cursor_x = buffer_size // 2  # fixed x-position (middle of plot)
-cursor = pg.ScatterPlotItem(
-    x=[cursor_x],
-    y=[0],
-    size=20,
-    brush=pg.mkBrush('y'),
-    pen=pg.mkPen(None)
-)
-cursor.setVisible(False)
-plot.addItem(cursor)
-
-main_widget.show()
+top_bar.addWidget(button)
 
 def start_calibration():
     global calibration_active, calibration_start_time
@@ -143,23 +131,144 @@ def start_calibration():
 
 button.clicked.connect(start_calibration)
 
+# Checkbox for calibration (EMG & baseline)
+checkbox = QtWidgets.QCheckBox("Use calibration")
+top_bar.addWidget(checkbox)
+
+def toggle_calibration(state):
+    global calibrate_emg, coin_active
+    calibrate_emg = state == QtCore.Qt.Checked
+
+    if calibrate_emg:
+        # Switch to cursor mode
+        curve.setVisible(False)
+        bird_item.setVisible(True)
+        coin_active = True
+
+        # Normalized EMG → fixed range
+        plot.disableAutoRange(axis='y')
+        plot.setYRange(0, 1.2)
+    else:
+        # Switch back to line plot
+        bird_item.setVisible(False)
+        curve.setVisible(True)
+        coin_active = False
+
+        # Absolute EMG → auto range
+        plot.enableAutoRange(axis='y')
+
+checkbox.stateChanged.connect(toggle_calibration)
+
+# Score display
+score_label = QtWidgets.QLabel("Score: 0")
+score_label.setStyleSheet("""
+QLabel {
+    color: white;
+    font-size: 20px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 120);
+    padding: 6px 10px;
+    border-radius: 6px;
+}
+""")
+top_bar.addStretch()
+top_bar.addWidget(score_label)
+
+layout.addLayout(top_bar)
+
+# EMG Plot
+win = pg.GraphicsLayoutWidget()
+layout.addWidget(win)
+
+plot = win.addPlot()
+plot.getAxis('bottom').setVisible(False)
+plot.getAxis('left').setVisible(False)
+plot.enableAutoRange(axis='y')
+
+# Make pyqtgraph fully transparent
+win.setBackground(None)
+plot.getViewBox().setBackgroundColor(None)
+
+# EMG line plot
+curve = plot.plot(pen='y')
+curve.setVisible(True)
+
+# EMG cursor (bird image)
+bird_img = QtGui.QPixmap(bird_path)
+bird_item = QtWidgets.QGraphicsPixmapItem(bird_img)
+bird_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+bird_item.setVisible(False)
+bird_item.setZValue(100)
+bird_item.setOffset(-bird_img.width() / 2, -bird_img.height()) # This offsets the height of the bird such that bird is standing on the floor at 0
+
+view = plot.getViewBox()
+win.scene().addItem(bird_item)
+
+# Coin image
+coin_img = QtGui.QPixmap(coin_path)
+coin_item = QtWidgets.QGraphicsPixmapItem(coin_img)
+coin_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+coin_item.setVisible(False)
+coin_item.setZValue(90)
+coin_item.setOffset(-coin_img.width() / 2, -coin_img.height() / 2)
+
+win.scene().addItem(coin_item)
+
+def spawn_coin():
+    global coin_active, coin_start_time, coin_y
+
+    rect = view.sceneBoundingRect()
+
+    coin_y = rect.top() + np.random.rand() * rect.height()
+    coin_start_time = time.time()
+    coin_active = True
+
+    # Start just outside the right edge
+    coin_item.setPos(rect.right(), coin_y)
+    coin_item.setVisible(True)
+
+# Penalty image
+penalty_img = QtGui.QPixmap(penalty_path)
+penalty_item = QtWidgets.QGraphicsPixmapItem(penalty_img)
+penalty_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+penalty_item.setVisible(False)
+penalty_item.setZValue(90)
+penalty_item.setOffset(-penalty_img.width() / 2, -penalty_img.height() / 2)
+
+win.scene().addItem(penalty_item)
+
+def spawn_penalty():
+    global penalty_active, penalty_start_time, penalty_y
+
+    rect = view.sceneBoundingRect()
+
+    penalty_y = rect.top() + np.random.rand() * rect.height()
+    penalty_start_time = time.time()
+    penalty_active = True
+
+    # Start just outside the right edge
+    penalty_item.setPos(rect.right(), penalty_y)
+    penalty_item.setVisible(True)
+
+main_widget.show()
+
 # ----------------------------
 # Update function
 # ----------------------------
 def update():
     global calibration_active, mvc_value, baseline_value
     global zi
+    global bird_y, score, coin_active, coin_x, penalty_active, penalty_x
 
     if buffer:
+        # --- EMG processing ---
         data = np.array(buffer)
         # Apply bandpass filter
         filtered, zi = sosfilt(sos, data, zi=zi)
-        y = np.zeros(buffer_size)
-        y[-len(filtered):] = filtered
 
         # RMS envelope
         w = max(1, int(rms_win * fs))
-        rms = np.sqrt(np.convolve(data ** 2, np.ones(w) / w, mode="valid"))
+        rms = np.sqrt(np.convolve(filtered ** 2, np.ones(w) / w, mode="valid"))
         y = np.zeros(buffer_size)
         y[-len(rms):] = rms
 
@@ -185,9 +294,10 @@ def update():
                 print(f"Baseline RMS: {baseline_value:.4f}")
                 print(f"MVC RMS: {mvc_value:.4f}")
 
-        # Normalize EMG data to MVC and correct for baseline
+        # Visualize either normalized RMS as cursor or absolute RMS as line plot
         display_y = y.copy()
         if calibrate_emg and mvc_value is not None and baseline_value is not None:
+            # --- # Normalize EMG data to MVC ---
             emg_corr = display_y - baseline_value
             emg_corr = np.maximum(emg_corr, 0)
             emg_norm = emg_corr / (mvc_value - baseline_value)
@@ -195,11 +305,68 @@ def update():
 
             n = min(len(display_y), cursor_smoothing_samples)
             cursor_value = np.mean(display_y[-n:])
-            # Update cursor position
-            cursor.setData(
-                x=[cursor_x],
-                y=[cursor_value]
-            )
+
+            # --- Update bird position ---
+            rect = view.sceneBoundingRect()
+            bird_x = rect.center().x()
+            bird_y = rect.top() + (1 - cursor_value) * rect.height()
+
+            bird_item.setPos(bird_x, bird_y)
+
+            # --- Update flying coin ---
+            if coin_active:
+                rect = view.sceneBoundingRect()
+                elapsed = time.time() - coin_start_time
+                t = elapsed / window_seconds
+
+                if t >= 1.0:
+                    coin_active = False
+                    coin_item.setVisible(False)
+                else:
+                    x = rect.right() - t * rect.width()
+                    coin_x = x
+                    coin_item.setPos(coin_x, coin_y)
+
+                    # --- Collision detection ---
+                    midline_x = rect.center().x()
+
+                    if abs(coin_x - midline_x) < X_HIT_THRESHOLD and abs(coin_y - bird_y) < Y_HIT_THRESHOLD:
+                        # Collision detected
+                        coin_active = False
+                        coin_item.setVisible(False)
+                        score += 1
+                        score_label.setText(f"Score: {score}")
+
+            # --- Update flying penalty ---
+            if penalty_active:
+                rect = view.sceneBoundingRect()
+                elapsed = time.time() - penalty_start_time
+                t = elapsed / window_seconds
+
+                if t >= 1.0:
+                    penalty_active = False
+                    penalty_item.setVisible(False)
+                else:
+                    x = rect.right() - t * rect.width()
+                    penalty_x = x
+                    penalty_item.setPos(penalty_x, penalty_y)
+
+                    # --- Collision detection ---
+                    midline_x = rect.center().x()
+
+                    if abs(penalty_x - midline_x) < X_HIT_THRESHOLD and abs(penalty_y - bird_y) < Y_HIT_THRESHOLD:
+                        # Collision detected
+                        penalty_active = False
+                        penalty_item.setVisible(False)
+                        score -= 1
+                        score_label.setText(f"Score: {score}")
+
+            if not coin_active and not penalty_active:
+                if np.random.rand() < 0.7:
+                    spawn_coin()
+                else:
+                    spawn_penalty()
+
         else:
             # Update line plot
             curve.setData(display_y)
@@ -210,7 +377,5 @@ timer = QtCore.QTimer()
 timer.timeout.connect(update)
 timer.start(20)  # update every 20 ms
 
-# ----------------------------
-# Run
-# ----------------------------
+# Run application
 sys.exit(app.exec_())
