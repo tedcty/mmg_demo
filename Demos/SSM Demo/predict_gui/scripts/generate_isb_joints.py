@@ -55,6 +55,12 @@ def extract_faces(polydata):
             faces.append((int(idList.GetId(0)), int(idList.GetId(1)), int(idList.GetId(2))))
     return faces
 
+def load_muscle_cloud(case_verts, fpath):
+    if not os.path.exists(fpath):
+        return None
+    idm = pd.read_csv(fpath)['idm'].to_list()
+    return [case_verts[idx].tolist() for idx in idm]
+
 def filter_bone_indices(all_verts, all_faces, maps_dir, filename):
     fpath = os.path.join(maps_dir, filename)
     if not os.path.exists(fpath):
@@ -253,6 +259,11 @@ def process_and_export(target_ply=None, fabrik_step=1):
     ts_glob_seed = (s_t_mat[:3, :3] @ (ts_pt - ij_pt)) + ac_offset
     ai_glob_seed = (s_t_mat[:3, :3] @ (ai_pt - ij_pt)) + ac_offset
     scap_mesh_seed = transform_mesh(sca_r_verts, ij_pt, s_t_mat) + ac_offset
+    
+    # Load and transform Subscapularis point cloud (ID 69)
+    subscap_r_path = os.path.join(res_dir, "MAS_103", "Scapula_right", "69_NodeNo_2.csv")
+    subscap_r_pts = load_muscle_cloud(current_case_arr, subscap_r_path)
+    subscap_r_seed = transform_mesh(subscap_r_pts, ij_pt, s_t_mat) + ac_offset if subscap_r_pts else None
 
     print("  FABRIK: Optimizing Right Scapula Alignment...")
     proj_r_target = project_scapula_to_thorax(final_thorax, aa_glob_seed, ts_glob_seed, ai_glob_seed)
@@ -265,6 +276,14 @@ def process_and_export(target_ply=None, fabrik_step=1):
         aa_glob_seed, ts_glob_seed, ai_glob_seed, scap_mesh_seed, 
         p_proj=proj_r_target, initial_rot=rot_r_seed, max_step=fabrik_step
     )
+    
+    # Store old AC joint for transformations
+    c_ac_r_glob_old = c_ac_r_glob
+    
+    # Apply same rotation to subscapularis points
+    final_subscap_r = None
+    if subscap_r_seed is not None:
+        final_subscap_r = rot_r_opt.apply(subscap_r_seed - c_ac_r_glob_old) + ac_r_opt
     
     # 2d. Synchronize Clavicle to the new AC joint position
     v_clav_old = c_ac_r_glob - tho_sc_r_glob
@@ -362,6 +381,11 @@ def process_and_export(target_ply=None, fabrik_step=1):
     
     final_scap_l = transform_mesh(sca_l_verts, ij_pt, sl_t_mat) + ac_offset_l
     
+    # Left subscapularis
+    subscap_l_path = os.path.join(res_dir, "MAS_103", "Scapula_left", "69_NodeNo_2.csv")
+    subscap_l_pts = load_muscle_cloud(current_case_arr, subscap_l_path)
+    final_subscap_l = transform_mesh(subscap_l_pts, ij_pt, sl_t_mat) + ac_offset_l if subscap_l_pts else None
+    
     # 3c. Humerus
     hum_l_verts, hum_l_inds = filter_bone_indices(current_case_arr, all_faces, maps_dir, "L_hum.csv")
     gh_l_pt = _get_sphere_center(current_case_arr, maps_dir, "hum_ghj_l.csv")
@@ -444,6 +468,8 @@ def process_and_export(target_ply=None, fabrik_step=1):
             {"label": "L Clavicle", "color": "#FFB0D0", "vertices": final_clav_l.tolist(), "indices": cla_l_inds, "origin": tho_sc_l_glob.tolist()},
             {"label": "R Scapula", "color": "#FFA040", "vertices": final_scap_r.tolist(), "indices": sca_r_inds, "origin": c_ac_r_glob.tolist()},
             {"label": "L Scapula", "color": "#FFE060", "vertices": final_scap_l.tolist(), "indices": sca_l_inds, "origin": c_ac_l_glob.tolist()},
+            {"label": "R Subscapularis", "color": "#FF4444", "vertices": final_subscap_r.tolist() if final_subscap_r is not None else [], "indices": [], "origin": c_ac_r_glob.tolist()},
+            {"label": "L Subscapularis", "color": "#FF4444", "vertices": final_subscap_l.tolist() if final_subscap_l is not None else [], "indices": [], "origin": c_ac_l_glob.tolist()},
             {"label": "R Humerus", "color": "#FF6060", "vertices": final_hum_r.tolist(), "indices": hum_r_inds, "origin": sca_gh_r_glob.tolist()},
             {"label": "L Humerus", "color": "#FF6060", "vertices": final_hum_l.tolist(), "indices": hum_l_inds, "origin": sca_gh_l_glob.tolist()}
         ],

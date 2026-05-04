@@ -43,6 +43,7 @@ const l_joint_coords = ref({
 const thoraxMesh = ref<THREE.Mesh | null>(null);
 const clavicleMeshes = { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null };
 const scapulaMeshes = { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null };
+const subscapMeshes = { right: null as THREE.Points | null, left: null as THREE.Points | null };
 const humerusMeshes = { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null };
 
 // Original Joint Definitions from Python
@@ -117,6 +118,7 @@ const hasPrediction = ref(false);
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
+const isLabelsEnabled = ref(true); // Control for coordinate labels
 let highlightsGroup: THREE.Group | null = null; 
 let scapularPlaneGroup: THREE.Group | null = null; 
 let meanModelData: any = null;
@@ -208,9 +210,10 @@ async function loadBones(externalData: any = null) {
         if (bone.indices && bone.indices.length > 0) {
             geom.setIndex(bone.indices);
             geom.computeVertexNormals();
+            const opac = bone.label === "Thorax" ? 0.1 : 0.55;
             const mat = new THREE.MeshStandardMaterial({
               color: isViewingOriginal.value ? "#88aaff" : bone.color,
-              roughness: 0.5, metalness: 0.1, transparent: true, opacity: 0.4, side: THREE.DoubleSide
+              roughness: 0.5, metalness: 0.1, transparent: true, opacity: opac, side: THREE.DoubleSide
             });
             mesh = new THREE.Mesh(geom, mat);
         } else {
@@ -244,9 +247,15 @@ async function loadBones(externalData: any = null) {
         else if (bone.label === "L Clavicle") { clavicleMeshes.left = mesh as THREE.Mesh; originMarkers.clavicle.left = originSphere; originLabels.clavicle.left = sprite; initialQuats.clavicle.left.copy(mesh.quaternion); initialPositions.clavicle.left.copy(mesh.position); }
         else if (bone.label === "R Scapula") { scapulaMeshes.right = mesh as THREE.Mesh; originMarkers.scapula.right = originSphere; originLabels.scapula.right = sprite; initialQuats.scapula.right.copy(mesh.quaternion); initialPositions.scapula.right.copy(mesh.position); }
         else if (bone.label === "L Scapula") { scapulaMeshes.left = mesh as THREE.Mesh; originMarkers.scapula.left = originSphere; originLabels.scapula.left = sprite; initialQuats.scapula.left.copy(mesh.quaternion); initialPositions.scapula.left.copy(mesh.position); }
+        else if (bone.label === "R Subscapularis") { subscapMeshes.right = mesh as THREE.Points; }
+        else if (bone.label === "L Subscapularis") { subscapMeshes.left = mesh as THREE.Points; }
         else if (bone.label === "R Humerus") { humerusMeshes.right = mesh as THREE.Mesh; originMarkers.humerus.right = originSphere; originLabels.humerus.right = sprite; initialQuats.humerus.right.copy(mesh.quaternion); initialPositions.humerus.right.copy(mesh.position); }
         else if (bone.label === "L Humerus") { humerusMeshes.left = mesh as THREE.Mesh; originMarkers.humerus.left = originSphere; originLabels.humerus.left = sprite; initialQuats.humerus.left.copy(mesh.quaternion); initialPositions.humerus.left.copy(mesh.position); }
       });
+
+      // Post-process: parent subscapularis to scapula so it moves with it
+      if (subscapMeshes.right && scapulaMeshes.right) { scapulaMeshes.right.add(subscapMeshes.right); }
+      if (subscapMeshes.left && scapulaMeshes.left) { scapulaMeshes.left.add(subscapMeshes.left); }
     } else {
       // --- SMOOTH UPDATE ---
       activeData.bones.forEach((bone: any) => {
@@ -260,7 +269,7 @@ async function loadBones(externalData: any = null) {
               mesh.geometry.computeVertexNormals();
               if (mesh.material instanceof THREE.MeshStandardMaterial) {
                   mesh.material.color.set(isViewingOriginal.value ? "#88aaff" : bone.color);
-                  mesh.material.opacity = isViewingOriginal.value ? 0.3 : 0.4;
+                  mesh.material.opacity = bone.label === "Thorax" ? 0.1 : 0.55;
               }
           }
       });
@@ -671,6 +680,8 @@ onMounted(async () => {
         const markerC = jointMarkersC[side][joint];
         const label = jointLabels[side][joint];
         if (markerC && label) {
+            label.visible = isLabelsEnabled.value;
+            if (!label.visible) return;
             // Get World Position of the child marker
             const worldPos = new THREE.Vector3();
             markerC.getWorldPosition(worldPos);
@@ -694,6 +705,8 @@ onMounted(async () => {
     const updateOriginLabels = () => {
         const up = (label: THREE.Sprite | null, marker: THREE.Mesh | null, name: string) => {
             if (!label || !marker) return;
+            label.visible = isLabelsEnabled.value;
+            if (!label.visible) return;
             const worldPos = new THREE.Vector3();
             marker.getWorldPosition(worldPos);
             label.position.copy(worldPos).add(new THREE.Vector3(-15, -12, 0));
@@ -742,6 +755,8 @@ onMounted(async () => {
                 const label = lms[key];
                 const marker = markers[key];
                 if (label && marker) {
+                    label.visible = isLabelsEnabled.value;
+                    if (!label.visible) return;
                     const worldPos = new THREE.Vector3();
                     marker.getWorldPosition(worldPos);
                     label.position.copy(worldPos).add(new THREE.Vector3(0, 10, 0));
@@ -1234,6 +1249,10 @@ function toggleComparison() {
                 <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
                   <input type="checkbox" v-model="isScapularPlaneEnabled" @change="loadBones()" id="scapularPlaneToggle" />
                   <label for="scapularPlaneToggle">Show Scapular Plane</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isLabelsEnabled" id="labelsToggle" />
+                  <label for="labelsToggle">Show Coordinate Labels</label>
                 </div>
               </div>
 

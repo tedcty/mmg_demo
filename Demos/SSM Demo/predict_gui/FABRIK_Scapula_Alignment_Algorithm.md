@@ -9,6 +9,7 @@ This algorithm should start from the initial assembled position of the bones.
 *   **AC Joint ($J_{AC}$)**: Acromioclavicular joint, connecting the clavicle and scapula.
 *   **Scapula Centroid ($C_{scap}$)**: The geometric center of the scapular plane, defined as the average of landmarks **AA** (Angulus Acromialis), **TS** (Trigonum Spinae), and **AI** (Angulus Inferior).
 *   **Scapula Plane Normal ($\mathbf{n}_{scap}$)**: The unit vector perpendicular to the plane defined by AA, TS, and AI, oriented so it points **away** from the subscapularis fossa (i.e., toward the dorsal/posterior surface of the scapula). This matches the convention of $\mathbf{n}_{thor}$, so that $\mathbf{n}_{scap} \parallel \mathbf{n}_{thor}$ means the subscapularis face is correctly oriented toward the ribs.
+*   **Subscapularis Point Cloud**: In the `MAS_103` dataset, the subscapularis attachment site corresponds to point cloud ID **69** (`69_NodeNo_2.csv` / `69_NodeNo_2.ply`).
 *   **Thorax Normal ($\mathbf{n}_{thor}$)**: The outward surface normal of the thoracic ribcage at a specific point, pointing posteriorly (away from the ribs, toward the scapula).
 *   **Projected Point ($P_{proj}$)**: The target intersection point on the thorax surface calculated by projecting $C_{scap}$ along $\mathbf{n}_{scap}$ toward the ribcage.
 
