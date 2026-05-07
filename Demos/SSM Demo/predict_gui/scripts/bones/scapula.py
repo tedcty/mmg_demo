@@ -1,0 +1,238 @@
+"""Scapula — the most complex bone in the assembly.
+
+Runs the full 4-step FABRIK pipeline on both sides
+(FabrikScapulaSolver is imported directly from fabrik_solver).
+
+`assemble_simple` is retained as a JCS-only fallback.
+"""
+from __future__ import annotations
+import os
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+from ptb.util.math.transformation import Cloud
+from .base_bone import BoneBase
+from .thorax import Thorax
+from .clavicle import Clavicle
+
+
+class Scapula(BoneBase):
+
+    def __init__(self, side: str):
+        super().__init__(side=side)
+        self.label = f"{'R' if side == 'right' else 'L'} Scapula"
+        self.color = "#FFA040" if side == "right" else "#FFE060"
+
+        # World-space anatomical landmarks (set after assemble)
+        self.aa: np.ndarray = np.zeros(3)
+        self.ts: np.ndarray = np.zeros(3)
+        self.ai: np.ndarray = np.zeros(3)
+        self.cp: np.ndarray = np.zeros(3)  # Coracoid Process (CAP)
+        self.ac_joint: np.ndarray = np.zeros(3)
+        self.gh_joint_seed: np.ndarray = np.zeros(3)  # GH on scapula side
+        self.plane_normal: np.ndarray = np.array([-1., 0., 0.])
+
+        # Solved rotation (used by Humerus to follow GH)
+        self.solved_rot: R = R.identity()
+        self._ac_seed: np.ndarray = np.zeros(3)   # AC before FABRIK
+
+        # Subscapularis cloud
+        self.subscapularis: np.ndarray | None = None
+
+    # ── Loading ───────────────────────────────────────────────────────────────
+
+    def load(
+        self,
+        case_arr: np.ndarray,
+        all_faces: list,
+        maps_dir: str,
+        res_dir: str,
+    ) -> "Scapula":
+        s = self.side
+        prefix = "r" if s == "right" else "l"
+        bone_csv = "R_scap.csv" if s == "right" else "L_scap.csv"
+
+        verts, inds = self.filter_bone_indices(case_arr, all_faces, maps_dir, bone_csv)
+        self._raw_verts = verts
+        self.indices    = inds
+
+        self._aa_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_aa.csv")
+        self._ai_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_ai.csv")
+        self._ts_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_ts.csv")
+        self._cp_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_cap.csv")
+        self._gh_raw = self.get_sphere_center(case_arr, maps_dir, f"scap_ghj_{prefix}.csv")
+
+        # Subscapularis cloud (ID 69)
+        subscap_dir  = "Scapula_right" if s == "right" else "Scapula_left"
+        subscap_path = os.path.join(res_dir, "MAS_103", subscap_dir, "69_NodeNo_2.csv")
+        self._subscap_raw = self.load_muscle_cloud(case_arr, subscap_path)
+        return self
+
+    # ── JCS ───────────────────────────────────────────────────────────────────
+
+    def _build_jcs_matrix(self, thorax: Thorax) -> np.ndarray:
+        """Compute scapula JCS (xs, ys, zs) and return the 4×4 transform.
+
+        The AA-TS-AI triangle has opposite chirality between sides, so the
+        cross-product axis flips sign. We flip zs and the cross-product
+        operands for the LEFT side so its source frame ends up aligned with
+        world identity (same convention as Clavicle.assemble and the
+        reference articulatingTest6th implementation).
+        """
+        aa, ai, ts = self._aa_raw, self._ai_raw, self._ts_raw
+        if self.side == "right":
+            zs = (aa - ts) / np.linalg.norm(aa - ts)
+            xs = np.cross(ai - aa, ts - aa)
+        else:
+            zs = (ts - aa) / np.linalg.norm(ts - aa)
+            xs = np.cross(ts - aa, ai - aa)
+        xs /= np.linalg.norm(xs)
+        ys = np.cross(zs, xs)
+        s_source = np.array([xs, ys, zs]).T
+        s_mat = Cloud.transform_between_3x3_points_sets(s_source, np.eye(3))
+
+        return s_mat
+
+    # ── Assembly (no FABRIK — left side) ─────────────────────────────────────
+
+    def assemble_simple(self, thorax: Thorax, clavicle: Clavicle) -> "Scapula":
+        """Simple JCS seed assembly (used for the left scapula)."""
+        ij    = thorax.ij_pt
+        s_mat = self._build_jcs_matrix(thorax)
+
+        ac_offset = clavicle.ac_joint - (s_mat[:3, :3] @ (self._aa_raw - ij))
+
+        self.vertices = self.transform_mesh(self._raw_verts, ij, s_mat) + ac_offset
+        self.aa       = self.transform_mesh([self._aa_raw], ij, s_mat)[0] + ac_offset
+        self.ts       = self.transform_mesh([self._ts_raw], ij, s_mat)[0] + ac_offset
+        self.ai       = self.transform_mesh([self._ai_raw], ij, s_mat)[0] + ac_offset
+        self.cp       = self.transform_mesh([self._cp_raw], ij, s_mat)[0] + ac_offset
+        self.ac_joint = clavicle.ac_joint.copy()
+        self.origin   = self.ac_joint.copy()
+
+        # GH on scapula side
+        self.gh_joint_seed = (s_mat[:3, :3] @ (self._gh_raw - ij)) + ac_offset
+
+        # Subscapularis
+        if self._subscap_raw is not None:
+            self.subscapularis = self.transform_mesh(self._subscap_raw, ij, s_mat) + ac_offset
+
+        self._compute_plane_normal()
+        return self
+
+    # ── Assembly with FABRIK (right side) ─────────────────────────────────────
+
+    def assemble_fabrik(
+        self,
+        thorax: Thorax,
+        clavicle: Clavicle,
+        fabrik_step: int = 4,
+    ) -> "Scapula":
+        """Full FABRIK pipeline assembly (used for the right scapula)."""
+        # Import here to keep the module dependency explicit
+        from fabrik_solver import FabrikScapulaSolver
+
+        ij    = thorax.ij_pt
+        s_mat = self._build_jcs_matrix(thorax)
+        ac_seed = clavicle.ac_joint.copy()
+
+        ac_offset    = ac_seed - (s_mat[:3, :3] @ (self._aa_raw - ij))
+        aa_seed      = (s_mat[:3, :3] @ (self._aa_raw - ij)) + ac_offset
+        ts_seed      = (s_mat[:3, :3] @ (self._ts_raw - ij)) + ac_offset
+        ai_seed      = (s_mat[:3, :3] @ (self._ai_raw - ij)) + ac_offset
+        centroid_seed = (aa_seed + ts_seed + ai_seed) / 3.0
+        mesh_seed    = self.transform_mesh(self._raw_verts, ij, s_mat) + ac_offset
+        gh_seed      = (s_mat[:3, :3] @ (self._gh_raw - ij)) + ac_offset
+        cp_seed      = (s_mat[:3, :3] @ (self._cp_raw - ij)) + ac_offset
+
+        subscap_seed = None
+        if self._subscap_raw is not None:
+            subscap_seed = self.transform_mesh(self._subscap_raw, ij, s_mat) + ac_offset
+
+        # Projection target on posterior ribcage
+        p_proj = thorax.project_scapula(aa_seed, ts_seed, ai_seed, self.side)
+
+        # Run FABRIK
+        solver   = FabrikScapulaSolver(thorax.vertices, clavicle.sc_joint)
+        lms_local = {
+            'aa': aa_seed - ac_seed,
+            'ts': ts_seed - ac_seed,
+            'ai': ai_seed - ac_seed,
+        }
+        # lms_local vectors are in world-offset space (world minus ac_seed), so the
+        # solver's initial rotation must be identity — the local frame IS world.
+        # Using R.from_matrix(s_mat) caused double-rotation for the left side
+        # (seed_rot_L ≠ identity) while accidentally working for the right side
+        # (seed_rot_R ≈ identity because the right JCS aligns with world axes).
+        rot_seed = R.identity()
+        ac_sol, cen_sol, rot_sol = solver.solve_alignment(
+            ac_seed, centroid_seed, lms_local, None, p_proj,
+            subscap_seed=subscap_seed,
+            initial_rot=rot_seed,
+            max_step=fabrik_step,
+        )
+
+        # Apply solved rotation to mesh and landmarks
+        self._ac_seed  = ac_seed
+        self.solved_rot = rot_sol
+
+        def _apply(pt: np.ndarray) -> np.ndarray:
+            return rot_sol.apply(pt - ac_seed) + ac_sol
+
+        self.vertices  = rot_sol.apply(mesh_seed - ac_seed) + ac_sol
+        self.aa        = _apply(aa_seed)
+        self.ts        = _apply(ts_seed)
+        self.ai        = _apply(ai_seed)
+        self.cp        = _apply(cp_seed)
+        self.ac_joint  = ac_sol.copy()
+        self.origin    = ac_sol.copy()
+        self.gh_joint_seed = _apply(gh_seed)
+
+        # --- CORACOID CLEARANCE CHECK ---
+        p_cp_surf, n_cp_surf = solver.get_surface_info(self.cp)
+        cp_clearance = np.dot(self.cp - p_cp_surf, n_cp_surf)
+        print(f"  FABRIK: Coracoid (CAP) clearance from thorax = {cp_clearance:.1f}mm")
+        if cp_clearance < 0:
+            print("  FABRIK WARNING: Coracoid is PENETRATING the thorax!")
+
+        if subscap_seed is not None:
+            self.subscapularis = rot_sol.apply(subscap_seed - ac_seed) + ac_sol
+
+        self._compute_plane_normal()
+        return self
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _compute_plane_normal(self) -> None:
+        n = np.cross(self.ai - self.ts, self.aa - self.ts)
+        n /= np.linalg.norm(n)
+        if n[0] > 0:
+            n = -n
+        self.plane_normal = n
+
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+
+    def get_diagnostic_markers(self) -> list[dict]:
+        p = "R" if self.side == "right" else "L"
+        return [
+            {"pos": self.aa.tolist(), "label": f"{p}_AA", "color": "#FF4444"},
+            {"pos": self.ts.tolist(), "label": f"{p}_TS", "color": "#44FF44"},
+            {"pos": self.ai.tolist(), "label": f"{p}_AI", "color": "#4444FF"},
+            {"pos": ((self.aa + self.ts + self.ai) / 3).tolist(), "label": f"{p}_Centroid", "color": "#FFFFFF"},
+        ]
+
+    def scapular_plane_dict(self) -> dict:
+        return {
+            "aa":       self.aa.tolist(),
+            "ts":       self.ts.tolist(),
+            "ai":       self.ai.tolist(),
+            "centroid": ((self.aa + self.ts + self.ai) / 3).tolist(),
+            "normal":   self.plane_normal.tolist(),
+        }
+
+    def landmark_globals(self) -> dict:
+        return {
+            "scapula_ac": self.ac_joint.tolist(),
+            "scapula_aa": self.aa.tolist(),
+            "scapula_ts": self.ts.tolist(),
+            "scapula_ai": self.ai.tolist(),
+        }

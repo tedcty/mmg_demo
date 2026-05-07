@@ -25,7 +25,7 @@ const isPredicting = ref(false);
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
-const fabrikStep = ref(0);
+
 
 // Joint Coordinates (ISB Standards)
 const r_joint_coords = ref({ 
@@ -575,8 +575,12 @@ async function loadBones(externalData: any = null) {
             const v2 = new THREE.Vector3().subVectors(ai, ts);
             const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
             
-            // Ensure normal points "posteriorly" (negative Z)
-            if (normal.z > 0) normal.multiplyScalar(-1);
+            // Ensure normal points posteriorly. In the thorax JCS the
+            // anterior–posterior axis is X (posterior = −X). Using Z here
+            // worked for the right scapula by coincidence but inverted the
+            // left, because the AA-TS-AI triangle has opposite chirality
+            // between sides.
+            if (normal.x > 0) normal.multiplyScalar(-1);
 
             const arrow = new THREE.ArrowHelper(normal, centroid, 40, 0xffff00, 8, 4);
             scapularPlaneGroup!.add(arrow);
@@ -933,7 +937,7 @@ async function runPrediction() {
         anthro_path: anthro_path.value,
         ssm_path: ssm_path.value,
         out_path: out_path.value,
-        fabrik_step: 5
+        fabrik_step: 4
       }
     });
 
@@ -989,10 +993,9 @@ async function saveReport() {
 
 async function runFabrikStep() {
   if (isPredicting.value) return;
-  
-  fabrikStep.value = (fabrikStep.value % 4) + 1;
+
   isPredicting.value = true;
-  statusMessage.value = `Running FABRIK Step ${fabrikStep.value}...`;
+  statusMessage.value = "Running FABRIK...";
   statusColor.value = "#FFA040";
 
   try {
@@ -1008,18 +1011,18 @@ async function runFabrikStep() {
         anthro_path: anthro_path.value,
         ssm_path: ssm_path.value,
         out_path: out_path.value,
-        fabrik_step: fabrikStep.value
+        fabrik_step: 4
       }
     });
 
     const boneData = JSON.parse(result as string);
-    statusMessage.value = `FABRIK Step ${fabrikStep.value} Complete!`;
+    statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
     hasPrediction.value = true;
     isViewingOriginal.value = false;
     loadBones(boneData);
   } catch (error) {
-    statusMessage.value = "Step Failed: " + error;
+    statusMessage.value = "FABRIK Failed: " + error;
     statusColor.value = "#f14668";
   }
 
@@ -1262,8 +1265,8 @@ function toggleComparison() {
               </button>
 
               <button :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
-                <span v-if="!isPredicting">🛠️ Run FABRIK Step {{ (fabrikStep % 5) + 1 }}</span>
-                <span v-else>⏳ Stepping...</span>
+                <span v-if="!isPredicting">🛠️ Run FABRIK</span>
+                <span v-else>⏳ Running...</span>
               </button>
 
               <div v-if="statusMessage" class="status-box" :style="{ color: statusColor, borderColor: statusColor }">

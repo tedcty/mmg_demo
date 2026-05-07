@@ -7,6 +7,12 @@ def run_command(command, cwd=None, shell=None):
     print(f"Running: {' '.join(command) if isinstance(command, list) else command}")
     if shell is None:
         shell = not isinstance(command, list)
+    # On Windows, resolve .cmd/.bat shims (npm, yarn, etc.) to a full path
+    # since CreateProcess doesn't honor PATHEXT when shell=False.
+    if isinstance(command, list) and not shell and os.name == "nt":
+        resolved = shutil.which(command[0])
+        if resolved:
+            command = [resolved, *command[1:]]
     try:
         subprocess.run(command, cwd=cwd, shell=shell, check=True)
         return True
@@ -58,7 +64,7 @@ def setup():
 
     # 3. Setup Conda Environment (Optional Step)
     print("\n[3/3] Python Environment (thmd2)...")
-    env_name = "demo"
+    env_name = "agent"
     
     # Check if conda is available
     if not shutil.which("conda"):

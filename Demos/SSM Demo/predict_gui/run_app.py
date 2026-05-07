@@ -4,8 +4,8 @@ import sys
 
 def main():
     # Automatically inject the Rust path into environment variables for the current session
-    cargo_path = os.path.join(os.environ.get('HOME', ''), '.cargo', 'bin')
-    os.environ['PATH'] = f"{cargo_path}:{os.environ.get('PATH', '')}"
+    cargo_path = os.path.join(os.path.expanduser('~'), '.cargo', 'bin')
+    os.environ['PATH'] = f"{cargo_path}{os.pathsep}{os.environ.get('PATH', '')}"
     
     # Locate the Tauri application directory (now a subfolder of this script)
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,8 +29,9 @@ def main():
         print("Continuing to launch GUI...")
 
     # Launch Tauri using npm
+    npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
     try:
-        subprocess.run(["npm", "run", "tauri", "--", "dev"], cwd=gui_dir, check=True)
+        subprocess.run([npm_cmd, "run", "tauri", "--", "dev"], cwd=gui_dir, check=True)
     except KeyboardInterrupt:
         print("\nExiting GUI.")
     except Exception as e:

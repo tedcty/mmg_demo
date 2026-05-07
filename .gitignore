@@ -19,3 +19,6 @@ dist
 Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
 
 Demos/Spikerbox/.venv
+Demos/SSM Demo/predict_gui/debug
+.theia
+.claude
