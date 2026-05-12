@@ -114,37 +114,59 @@ class Thorax(BoneBase):
         z_mid = (mesh[:, 2].min() + mesh[:, 2].max()) / 2.0
         y_t8  = t8_g[1]
 
-        # Laterally-bounded posterior zone (80–220 mm from midline)
+        # Laterally-bounded posterior zone. Try progressively wider bands
+        # but always keep the same-side sign so we never anchor to the wrong wall.
         side_sign = 1.0 if side == "right" else -1.0
-        z_min = z_mid + side_sign * 80.0
-        z_max = z_mid + side_sign * 220.0
+        post_mask = mesh[:, 0] < x_mid - 20
 
-        if side_sign > 0:
-            side_mask = (mesh[:, 2] > z_min) & (mesh[:, 2] < z_max)
-        else:
-            side_mask = (mesh[:, 2] < z_min) & (mesh[:, 2] > z_max)
+        def _side_mask(inner_mm, outer_mm):
+            lo = z_mid + side_sign * inner_mm
+            hi = z_mid + side_sign * outer_mm
+            if side_sign > 0:
+                return (mesh[:, 2] > lo) & (mesh[:, 2] < hi)
+            else:
+                return (mesh[:, 2] < lo) & (mesh[:, 2] > hi)
 
-        post_mask  = mesh[:, 0] < x_mid - 20
-        glide_mask = side_mask & post_mask & (mesh[:, 1] > y_t8 - 150)
-        glide_pts  = mesh[glide_mask]
+        glide_pts = None
+        for inner, outer in [(80, 220), (50, 250), (20, 300)]:
+            mask = _side_mask(inner, outer) & post_mask & (mesh[:, 1] > y_t8 - 150)
+            pts  = mesh[mask]
+            if len(pts) >= 50:
+                glide_pts = pts
+                break
 
-        if len(glide_pts) < 50:
-            print("  FABRIK WARNING: Medial glide filter too strict – fallback.")
-            glide_mask = (mesh[:, 0] < x_mid) & (mesh[:, 1] > y_t8 - 150)
-            glide_pts  = mesh[glide_mask]
+        if glide_pts is None:
+            # Last resort: broad same-side posterior zone, no height lower-bound
+            mask = _side_mask(10, 300) & (mesh[:, 0] < x_mid)
+            glide_pts = mesh[mask]
             if len(glide_pts) < 10:
+                print("  FABRIK WARNING: Cannot find anchor – using centroid.")
                 return centroid
 
-        # Height-consistent anchor: most posterior point at centroid Y
-        y_dist       = np.abs(glide_pts[:, 1] - centroid[1])
-        height_mask  = y_dist < 20.0
-        candidates   = glide_pts[height_mask] if np.any(height_mask) else glide_pts
-        best_idx     = np.argmin(candidates[:, 0])
-        projected_pt = candidates[best_idx]
+        # Anatomy-driven anchor height: place the anchor so the scapula's
+        # inferior angle (AI) ends up at approximately T7–T8 level in neutral.
+        centroid_above_ai = centroid[1] - ai[1]
+        target_centroid_y = y_t8 + 20.0 + centroid_above_ai
+
+        # Try height bands of increasing width; if all fail pick closest-in-Y
+        # (not most-posterior) to avoid anchoring at the bottom of the ribcage.
+        candidates = None
+        for window in [30.0, 60.0, 120.0]:
+            hm = np.abs(glide_pts[:, 1] - target_centroid_y) < window
+            if np.any(hm):
+                candidates = glide_pts[hm]
+                break
+
+        if candidates is not None:
+            best_idx = np.argmin(candidates[:, 0])   # most posterior within band
+        else:
+            best_idx = np.argmin(np.abs(glide_pts[:, 1] - target_centroid_y))
+
+        projected_pt = glide_pts[best_idx] if candidates is None else candidates[best_idx]
 
         print(
-            f"  FABRIK PROJ: Anchored at "
-            f"Y={projected_pt[1]:.1f}, X={projected_pt[0]:.1f}, Z={projected_pt[2]:.1f}"
+            f"  FABRIK PROJ ({side}): target_Y={target_centroid_y:.1f} (T8={y_t8:.1f}), "
+            f"anchored Y={projected_pt[1]:.1f} X={projected_pt[0]:.1f} Z={projected_pt[2]:.1f}"
         )
         return projected_pt
 

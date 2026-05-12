@@ -152,7 +152,22 @@ class Scapula(BoneBase):
         p_proj = thorax.project_scapula(aa_seed, ts_seed, ai_seed, self.side)
 
         # Run FABRIK
-        solver   = FabrikScapulaSolver(thorax.vertices, clavicle.sc_joint)
+        solver = FabrikScapulaSolver(thorax.vertices, clavicle.sc_joint)
+
+        # Validate anchor: must be on the correct side and within 120 mm of
+        # the seed centroid in Y.  A bad anchor (wrong side or wildly too low)
+        # causes FABRIK to chase the wrong wall and dislocate the chain.
+        expected_z_sign = 1.0 if self.side == "right" else -1.0
+        anchor_z_ok = (p_proj[2] * expected_z_sign) > 0
+        anchor_y_ok = abs(p_proj[1] - centroid_seed[1]) < 120.0
+        if not anchor_z_ok or not anchor_y_ok:
+            print(
+                f"  FABRIK WARNING ({self.side}): anchor failed validation "
+                f"(z_ok={anchor_z_ok}, y_ok={anchor_y_ok}, "
+                f"anchor_Y={p_proj[1]:.1f}, seed_Y={centroid_seed[1]:.1f}). "
+                f"Falling back to centroid projection."
+            )
+            p_proj, _ = solver.get_surface_info(centroid_seed)
         lms_local = {
             'aa': aa_seed - ac_seed,
             'ts': ts_seed - ac_seed,
@@ -170,6 +185,21 @@ class Scapula(BoneBase):
             initial_rot=rot_seed,
             max_step=fabrik_step,
         )
+
+        # SANITY CLAMP: FABRIK should never move AC more than 60 mm in Y or
+        # 80 mm total from the seed.  If it does, the chain has gone unstable
+        # (bad anchor / runaway bubble translation) and we fall back to the
+        # JCS seed pose to avoid visible dislocation.
+        d_total = float(np.linalg.norm(ac_sol - ac_seed))
+        d_y     = float(abs(ac_sol[1] - ac_seed[1]))
+        if d_y > 60.0 or d_total > 80.0:
+            print(
+                f"  FABRIK SANITY ({self.side}): ac_sol drifted too far "
+                f"(|Δy|={d_y:.1f}mm, |Δ|={d_total:.1f}mm). Falling back to seed pose."
+            )
+            ac_sol  = ac_seed.copy()
+            cen_sol = centroid_seed.copy()
+            rot_sol = R.identity()
 
         # Apply solved rotation to mesh and landmarks
         self._ac_seed  = ac_seed

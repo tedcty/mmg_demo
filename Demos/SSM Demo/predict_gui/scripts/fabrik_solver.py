@@ -13,13 +13,16 @@ class FabrikScapulaSolver:
     the closest point of the cloud to the thorax must equal SUBSCAP_BUBBLE_MM.
     """
 
-    SUBSCAP_BUBBLE_MM = 10.0   # target min clearance: subscap cloud → thorax
+    SUBSCAP_BUBBLE_MM = 3.0    # target min clearance: subscap cloud → thorax
+                               # (in-vivo bursa is 2-5mm; subscap muscle compresses)
     MEDIAL_CLEARANCE  = 5.0    # legacy fallback (no subscap cloud)
 
     def __init__(self, thorax_mesh, sc_joint):
         self.sc_joint    = np.array(sc_joint,    dtype=float)
         self.thorax_mesh = np.array(thorax_mesh, dtype=float)
         self.spline      = None
+        # Right SC is at positive Z in ISB frame; left at negative Z.
+        self.side_sign   = 1.0 if self.sc_joint[2] >= 0 else -1.0
         self._fit_thorax_surface()
 
     # ── Surface fitting ──────────────────────────────────────────────────────
@@ -28,7 +31,9 @@ class FabrikScapulaSolver:
         """Fits B-Spline X=f(Y,Z) to the posterior thorax glide area."""
         pts   = self.thorax_mesh
         x_mid = (pts[:, 0].min() + pts[:, 0].max()) / 2.0
-        y_min = pts[:, 1].min() + (pts[:, 1].max() - pts[:, 1].min()) * 0.2
+        # Use 5% cutoff (was 20%) so the B-spline surface extends down to T8
+        # level and can correctly anchor the scapula inferior angle.
+        y_min = pts[:, 1].min() + (pts[:, 1].max() - pts[:, 1].min()) * 0.05
         mask  = (pts[:, 0] < x_mid + 20) & (pts[:, 1] > y_min)
         glide = pts[mask]
         if len(glide) < 100:
@@ -230,19 +235,22 @@ class FabrikScapulaSolver:
         # ══════════════════════════════════════════════════════════════════════
         _, n_thor_2 = self.get_surface_info(cen)
         
-        # FIX A: Verticalize the target normal (zero out Y) to prevent "shelf" pose
+        # Zero out the Y (superior) component of the thorax normal to prevent
+        # the scapula from aligning to the upward-facing shoulder shelf surface.
+        # Without this, the spline normal at high Y values points superiorly,
+        # which rotates the scapula flat/horizontal.
         n_thor_2_flat = n_thor_2.copy()
         n_thor_2_flat[1] = 0.0
         nlen = np.linalg.norm(n_thor_2_flat)
         if nlen > 1e-6:
             n_thor_2_flat /= nlen
         else:
-            n_thor_2_flat = n_thor_2 # fallback
-            
+            n_thor_2_flat = n_thor_2
+
         n_scap = n_scap_world()
         print(f"  DIAG Step 2: n_scap={[f'{x:.3f}' for x in n_scap]}, "
               f"n_thor_flat={[f'{x:.3f}' for x in n_thor_2_flat]}")
-              
+
         delta_2, _ = R.align_vectors([n_thor_2_flat], [n_scap])
         rotate_ac(delta_2)
 
@@ -299,10 +307,12 @@ class FabrikScapulaSolver:
 
             def bubble_cost(params):
                 td, rd = params
-                
-                # 1. HARD ANGULAR LIMITS: Force search to stay within ±40 degrees
-                if abs(td) > 40.0 or abs(rd) > 40.0:
-                    return 1e9 
+
+                # 1. HARD ANGULAR LIMITS: Force search to stay within ±25 degrees
+                # (tightened from ±40 — larger rotations made the final bubble
+                # translation runaway).
+                if abs(td) > 25.0 or abs(rd) > 25.0:
+                    return 1e9
 
                 trial = (R.from_rotvec(np.radians(td)*tilt_axis) *
                          R.from_rotvec(np.radians(rd)*roll_axis) * rot_snap)
@@ -325,25 +335,68 @@ class FabrikScapulaSolver:
                 if np.any(penetration_mask):
                     cost += float(np.sum(np.abs(dists[penetration_mask])) * 500.0)
                 
-                # 4. AI TETHER: Prevent Inferior Angle lift-off (>15mm)
-                # Use absolute value to prevent penetration here as well
+                # 4. AI TETHER: Prevent Inferior Angle lift-off (>8mm)
                 ai_w = trial.apply(ai_loc) + ac_snap
                 p_ai_surf, n_ai_surf = self.get_surface_info(ai_w)
                 ai_dist = np.dot(ai_w - p_ai_surf, n_ai_surf)
-                
+
                 if ai_dist < 0: # Inside ribs
                     cost += abs(ai_dist) * 10000.0
-                elif ai_dist > 15.0: # Too far away
-                    cost += (ai_dist - 15.0) * 1000.0
+                elif ai_dist > 8.0: # Too far away
+                    cost += (ai_dist - 8.0) * 1000.0
 
-                # 5. CLAVICLE COLLISION GUARD: Check shaft midpoint
-                # The clavicle rod goes from SC to AC.
-                c_mid = 0.5 * (self.sc_joint + ac_snap)
-                p_c_mid, n_c_mid = self.get_surface_info(c_mid)
-                c_dist = np.dot(c_mid - p_c_mid, n_c_mid)
-                if c_dist < 5.0: # Must stay at least 5mm clear of the ribs
-                    cost += abs(c_dist - 5.0) * 50000.0
-                
+                # 5. CLAVICLE COLLISION GUARD: DISABLED.
+                # The B-spline X=f(Y,Z) is fit to both anterior and posterior
+                # thorax points and is single-valued, so it falsely reports the
+                # clavicle midpoint (anterior, near IJ level) as "inside" the
+                # posterior wall.  At c_mid≈(0, 0, 90) the spline returns the
+                # posterior X≈-60, so c_dist≈-54mm and the 50k coefficient
+                # produces a ~3 million constant cost that drowns out every
+                # real signal in the Nelder-Mead search.
+
+                # 6. SCAPULAR PLANE ANGLE: The dorsal normal projected onto the
+                # horizontal XZ plane should be 25–50° from pure posterior (-X),
+                # angled medially. This enforces the anatomical ~30–45° scapular
+                # plane orientation visible in a top-down view.
+                n_scap_trial = trial.apply(n_scap_loc)
+                n_xz = np.array([n_scap_trial[0], 0.0, n_scap_trial[2]])
+                nxz_len = np.linalg.norm(n_xz)
+                if nxz_len > 1e-6:
+                    n_xz /= nxz_len
+                    angle_deg = np.degrees(np.arccos(np.clip(-n_xz[0], -1.0, 1.0)))
+                    if angle_deg < 25.0:
+                        cost += (25.0 - angle_deg) ** 2 * 2.0
+                    elif angle_deg > 50.0:
+                        cost += (angle_deg - 50.0) ** 2 * 2.0
+                    # Lateral component must point toward the spine (medially).
+                    # medial_component > 0 means pointing toward the body midline.
+                    medial_component = -n_xz[2] * self.side_sign
+                    if medial_component < 0.1:
+                        cost += (0.1 - medial_component) * 50.0
+
+                # 7. TS MEDIAL BORDER: Trigonum Spinae should stay within 120mm
+                # of the spinal midline (Z = 0). Prevents excessive lateral drift.
+                ts_w = trial.apply(ts_loc) + ac_snap
+                ts_lat = abs(ts_w[2])
+                if ts_lat > 120.0:
+                    cost += (ts_lat - 120.0) ** 2 * 0.3
+
+                # 8. UPWARD ROTATION: The Zs axis (TS→AA) should be near-horizontal
+                # in neutral standing (~0–5°). Excessive upward rotation swings the
+                # inferior angle (AI) medially toward the spine, as seen in the
+                # top-down and front views. Penalise if the Y component of Zs exceeds
+                # sin(10°) ≈ 0.17 upward, or sin(5°) ≈ 0.09 downward.
+                zs_local_vec = aa_loc - ts_loc
+                zs_len = np.linalg.norm(zs_local_vec)
+                if zs_len > 1e-6:
+                    zs_local_vec = zs_local_vec / zs_len
+                    zs_world_vec = trial.apply(zs_local_vec)
+                    upward_rot_sin = zs_world_vec[1]
+                    if upward_rot_sin > 0.17:   # > ~10° upward rotation
+                        cost += (upward_rot_sin - 0.17) ** 2 * 800.0
+                    elif upward_rot_sin < -0.09:  # > ~5° downward rotation
+                        cost += (upward_rot_sin + 0.09) ** 2 * 400.0
+
                 return cost
 
             res = minimize(bubble_cost, x0=[0., 0.], method='Nelder-Mead',
@@ -352,15 +405,19 @@ class FabrikScapulaSolver:
             rotate_ac(R.from_rotvec(np.radians(bt)*tilt_axis) *
                       R.from_rotvec(np.radians(br)*roll_axis))
 
-            # Final re-lock of the bubble gap
-            apply_bubble_translation()
+            # NOTE: we deliberately skip a final apply_bubble_translation here.
+            # When the optimizer's chosen rotation makes n_scap_world point
+            # along a direction that no longer reduces subscap penetration,
+            # the 15-iter rigid-translation loop would push AC tens of mm out
+            # of plane.  The cost function already includes the penetration
+            # penalty, so the optimizer's converged rotation already respects
+            # d_min ≈ SUBSCAP_BUBBLE_MM without needing a re-lock step.
             df = subscap_clearances()
-            
-            # Diagnostic for AI distance
+
             ai_fin = world_lm(ai_loc)
             p_ai_fin, n_ai_fin = self.get_surface_info(ai_fin)
             ai_dist_fin = np.dot(ai_fin - p_ai_fin, n_ai_fin)
-            
+
             print(f"  FABRIK Step 4: Optimized tilt={bt:.1f}°, roll={br:.1f}°, Cost={res.fun:.2f}, d_min={np.min(df):.1f}mm, AI_dist={ai_dist_fin:.1f}mm")
         else:
             # Legacy: single-axis roll sweep for medial clearance

@@ -6,9 +6,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Paths
-const anthro_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\anthro_data.csv");
-const ssm_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\SSM_shape_model_103");
-const out_path = ref("E:\\Repo\\mmg_demo\\Demos\\SSM Demo\\predict_gui\\Resources\\predicted_model.ply");
+const anthro_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/anthro_data.csv");
+const ssm_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/SSM_shape_model_103");
+const out_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/predicted_model.ply");
 
 // Patient Data
 const sex = ref("0");
@@ -28,15 +28,18 @@ const isKinematicVisible = ref(false);
 
 
 // Joint Coordinates (ISB Standards)
-const r_joint_coords = ref({ 
-  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
-  ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
-  gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
+// Defaults set to the empirically-found neutral upright pose.  Loading the
+// prediction with these values produces an anatomical neutral standing pose
+// directly; sliders remain available for refinement.
+const r_joint_coords = ref({
+  sc_abduction: -8.0, sc_elevation: -15.0, sc_upward: -2.0,
+  ac_internal: -11.5, ac_upward: -9.5, ac_posterior: -2.5,
+  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
 });
-const l_joint_coords = ref({ 
-  sc_abduction: 0.0, sc_elevation: 0.0, sc_upward: 0.0, 
-  ac_internal: 0.0, ac_upward: 0.0, ac_posterior: 0.0,
-  gh_flexion: 0.0, gh_abduction: 0.0, gh_internal: 0.0
+const l_joint_coords = ref({
+  sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
+  ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
+  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: -17.0
 });
 
 // Mesh References for dynamic updates

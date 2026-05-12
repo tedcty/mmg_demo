@@ -31,8 +31,13 @@ async fn run_prediction(app: AppHandle, args: PredictArgs) -> Result<String, Str
     
     let script_str = script_path.to_string_lossy().to_string();
 
-    let mut child = Command::new("cmd")
-        .args(["/c", "conda", "run", "-n", "thmd2", "python", &script_str, &json_args])
+    #[cfg(target_os = "windows")]
+    let (cmd, cmd_args): (&str, Vec<&str>) = ("cmd", vec!["/c", "conda", "run", "-n", "demo", "python", &script_str, &json_args]);
+    #[cfg(not(target_os = "windows"))]
+    let (cmd, cmd_args): (&str, Vec<&str>) = ("conda", vec!["run", "-n", "demo", "python", &script_str, &json_args]);
+
+    let mut child = Command::new(cmd)
+        .args(&cmd_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
