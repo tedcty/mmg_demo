@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import * as THREE from 'three';
+
+// Unique ID for this browser tab — isolates predictions and progress from other sessions
+const sessionId = crypto.randomUUID();
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Paths
@@ -637,9 +638,10 @@ async function loadBones(externalData: any = null) {
 }
 
 onMounted(async () => {
-  // Listen for Python stdout chunks
-  listen("progress-status", (event) => {
-    const text = event.payload as string;
+  // Stream progress messages from the Python pipeline via SSE
+  const evtSource = new EventSource(`/api/progress?session=${sessionId}`);
+  evtSource.onmessage = (event) => {
+    const text = event.data as string;
     if (text.startsWith("STATUS|")) {
       statusMessage.value = text.replace("STATUS|", "");
       statusColor.value = "#00d1b2";
@@ -652,7 +654,7 @@ onMounted(async () => {
     } else {
       statusMessage.value = text;
     }
-  });
+  };
 
   // Initialize Three.js natively
   if (viewerContainer.value) {
@@ -928,8 +930,11 @@ async function runPrediction() {
   statusColor.value = "#ffffff";
 
   try {
-    const result = await invoke("run_prediction", {
-      args: {
+    const response = await fetch("/api/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
         sex: sex.value,
         age: age.value,
         height: height.value,
@@ -937,26 +942,17 @@ async function runPrediction() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        anthro_path: anthro_path.value,
-        ssm_path: ssm_path.value,
-        out_path: out_path.value,
         fabrik_step: 4
-      }
+      })
     });
 
-    // Result is now the JSON string of bones.json
-    try {
-      const boneData = JSON.parse(result as string);
-      statusMessage.value = "Prediction Complete! Rendering...";
-      statusColor.value = "#48c774";
-      hasPrediction.value = true;
-      isViewingOriginal.value = false;
-      loadBones(boneData);
-    } catch (e) {
-      statusMessage.value = "Prediction Success, but failed to parse bone data.";
-      statusColor.value = "#f14668";
-      console.error(e);
-    }
+    if (!response.ok) throw await response.text();
+    const boneData = await response.json();
+    statusMessage.value = "Prediction Complete! Rendering...";
+    statusColor.value = "#48c774";
+    hasPrediction.value = true;
+    isViewingOriginal.value = false;
+    loadBones(boneData);
   } catch (error) {
     statusMessage.value = "Failed: " + error;
     statusColor.value = "#f14668";
@@ -972,9 +968,11 @@ async function saveReport() {
   statusColor.value = "#ffffff";
 
   try {
-    const result = await invoke("save_refinement_report", {
-      args: {
-        out_path: out_path.value,
+    const response = await fetch("/api/save_report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
         patient: {
             sex: sex.value,
             age: age.value,
@@ -983,9 +981,10 @@ async function saveReport() {
         },
         right_st: r_joint_coords.value,
         left_st: l_joint_coords.value,
-      }
+      })
     });
-    statusMessage.value = result as string;
+    if (!response.ok) throw await response.text();
+    statusMessage.value = await response.text();
     statusColor.value = "#48c774";
   } catch (error) {
     statusMessage.value = "Export Failed: " + error;
@@ -1002,8 +1001,11 @@ async function runFabrikStep() {
   statusColor.value = "#FFA040";
 
   try {
-    const result = await invoke("run_prediction", {
-      args: {
+    const response = await fetch("/api/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
         sex: sex.value,
         age: age.value,
         height: height.value,
@@ -1011,14 +1013,12 @@ async function runFabrikStep() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        anthro_path: anthro_path.value,
-        ssm_path: ssm_path.value,
-        out_path: out_path.value,
         fabrik_step: 4
-      }
+      })
     });
 
-    const boneData = JSON.parse(result as string);
+    if (!response.ok) throw await response.text();
+    const boneData = await response.json();
     statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
     hasPrediction.value = true;

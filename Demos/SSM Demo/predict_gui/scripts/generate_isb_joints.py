@@ -29,13 +29,14 @@ def _extract_faces(polydata) -> list:
     return faces
 
 
-def process_and_export(target_ply: str | None = None, fabrik_step: int = 1):
+def process_and_export(target_ply: str | None = None, fabrik_step: int = 1, export_path: str | None = None):
     print("Starting Global ISB Assembly Pipeline (Recursive JCS)...")
 
     script_dir  = os.path.dirname(os.path.abspath(__file__))
     res_dir     = os.path.join(script_dir, '..', 'Resources')
     maps_dir    = os.path.join(res_dir, "landmarks", "maps to mean")
-    export_path = os.path.join(script_dir, '..', 'TauriGUI', 'public', 'bones.json')
+    if export_path is None:
+        export_path = os.path.join(script_dir, '..', 'TauriGUI', 'public', 'bones.json')
 
     if target_ply is None:
         target_ply = os.path.join(

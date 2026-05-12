@@ -28,5 +28,10 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // Proxy API and bones.json to the Flask server during dev
+    proxy: {
+      '/api': 'http://localhost:8000',
+      '/bones.json': 'http://localhost:8000',
+    },
   },
 }));
