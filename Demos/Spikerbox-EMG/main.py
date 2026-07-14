@@ -12,6 +12,10 @@ from scipy.signal import butter, sosfilt
 # Game definitions
 # --------------------------------
 game_duration = 15.0 # in seconds
+window_seconds = 2 # This defines the x-axis, the smaller the faster the game
+coin_chance = 0.7 # Percentage of coins appearing vs. penalties
+coin_disappear = 0.6 # Must be >=0.5; Coin or penalty will disappear after % of total time (window_seconds), 0.5 is position of the bird
+
 game_active = False
 game_start_time = 0.0
 
@@ -19,7 +23,6 @@ game_start_time = 0.0
 # Configuration for data streaming
 # --------------------------------
 fs = 48000
-window_seconds = 3
 buffer_size = int(fs * window_seconds)
 device_idx = 1
 rms_win = 0.02
@@ -49,7 +52,7 @@ zi = np.zeros((sos.shape[0], 2))
 # ---------------------------------
 calibration_active = False # Boolean about calibration process
 calibration_start_time = 0.0
-baseline_duration = 2.0  # seconds
+baseline_duration = 3.0  # seconds
 mvc_duration = 3.0       # seconds
 total_duration = baseline_duration + mvc_duration
 baseline_buffer = []
@@ -123,13 +126,15 @@ layout.setSpacing(8)
 top_bar = QtWidgets.QHBoxLayout()
 top_bar.setSpacing(12)
 
-# Button
-button = QtWidgets.QPushButton("Calibrate EMG")
+# Start button
+button = QtWidgets.QPushButton("Start the game")
 top_bar.addWidget(button)
 
 def start_calibration():
-    global calibration_active, calibration_start_time
+    global calibration_active, calibration_start_time, calibrate_emg
     global mvc_buffer, baseline_buffer
+    calibrate_emg = False
+    toggle_calibration()
     baseline_buffer = []
     mvc_buffer = []
     calibration_start_time = time.time()
@@ -138,13 +143,8 @@ def start_calibration():
 
 button.clicked.connect(start_calibration)
 
-# Checkbox for calibration (EMG & baseline)
-checkbox = QtWidgets.QCheckBox("Use calibration")
-top_bar.addWidget(checkbox)
-
-def toggle_calibration(state):
+def toggle_calibration():
     global calibrate_emg, coin_active, game_active
-    calibrate_emg = state == QtCore.Qt.Checked
 
     if calibrate_emg:
         # Switch to cursor mode
@@ -158,7 +158,7 @@ def toggle_calibration(state):
     else:
         # Switch back to line plot
         bird_item.setVisible(False)
-        curve.setVisible(True)
+        curve.setVisible(False) # set to True for debugging
         coin_active = False
 
         # Absolute EMG → auto range
@@ -168,23 +168,14 @@ def toggle_calibration(state):
         game_active = False
         game_over_label.hide()
 
-checkbox.stateChanged.connect(toggle_calibration)
-
-# "Start Game" button: (re)starts the 30s timed game, used both for the
-# initial start and for restarting after the game has ended.
-start_button = QtWidgets.QPushButton("Start Game")
+# Play again button
+start_button = QtWidgets.QPushButton("Play again")
 start_button.setEnabled(False)  # enabled once calibration has completed
 top_bar.addWidget(start_button)
 
 def start_game():
     global calibrate_emg, coin_active
     global game_active, game_start_time, score
-
-    # Make sure we're showing the cursor/game view, and keep the checkbox
-    # in sync without re-triggering toggle_calibration.
-    checkbox.blockSignals(True)
-    checkbox.setChecked(True)
-    checkbox.blockSignals(False)
 
     calibrate_emg = True
     curve.setVisible(False)
@@ -201,6 +192,27 @@ def start_game():
     game_active = True
 
 start_button.clicked.connect(start_game)
+
+# Quit button
+quit_button = QtWidgets.QPushButton("Quit game")
+quit_button.setEnabled(True)
+top_bar.addWidget(quit_button)
+
+def quit_game():
+    global calibrate_emg, coin_active
+    global game_active, game_start_time, score
+
+    calibrate_emg = False
+    game_active = False
+    curve.setVisible(False)
+    game_over_label.hide()
+    start_button.setEnabled(False)  # enabled once calibration has completed
+
+    # Reset score
+    score = 0
+    score_label.setText(f"Score: {score}")
+
+quit_button.clicked.connect(quit_game)
 
 # Score display
 score_label = QtWidgets.QLabel("Score: 0")
@@ -234,7 +246,7 @@ plot.getViewBox().setBackgroundColor(None)
 
 # EMG line plot
 curve = plot.plot(pen='y')
-curve.setVisible(True)
+curve.setVisible(False) # Set to True for debbugging
 
 # EMG cursor (bird image)
 bird_img = QtGui.QPixmap(bird_path)
@@ -294,6 +306,7 @@ def spawn_penalty():
     penalty_item.setVisible(True)
 
 # Game Over overlay
+main_rect = main_widget.rect()
 game_over_label = QtWidgets.QLabel(main_widget)
 game_over_label.setStyleSheet("""
 QLabel {
@@ -306,8 +319,76 @@ QLabel {
 }
 """)
 game_over_label.setAlignment(QtCore.Qt.AlignCenter)
+game_over_label.setText(f"Game Over!\nFinal Score: {score}")
+game_over_label.adjustSize()
+game_over_label.move(
+    main_rect.center().x() - game_over_label.width() // 2,
+    main_rect.center().y() - game_over_label.height() // 2,
+)
 game_over_label.hide()
 
+# Relax label (for calibration)
+relax_label = QtWidgets.QLabel(main_widget)
+relax_label.setStyleSheet("""
+QLabel {
+    color: white;
+    font-size: 36px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 180);
+    padding: 20px 40px;
+    border-radius: 12px;
+}
+""")
+relax_label.setAlignment(QtCore.Qt.AlignCenter)
+relax_label.setText("Relax your muscle!")
+relax_label.adjustSize()
+relax_label.move(
+    main_rect.center().x() - relax_label.width() // 2,
+    main_rect.center().y() - relax_label.height() // 2,
+)
+relax_label.hide()
+
+# Contract label (for calibration)
+contract_label = QtWidgets.QLabel(main_widget)
+contract_label.setStyleSheet("""
+QLabel {
+    color: white;
+    font-size: 36px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 180);
+    padding: 20px 40px;
+    border-radius: 12px;
+}
+""")
+contract_label.setAlignment(QtCore.Qt.AlignCenter)
+contract_label.setText("Contract your muscle!")
+contract_label.adjustSize()
+contract_label.move(
+    main_rect.center().x() - contract_label.width() // 2,
+    main_rect.center().y() - contract_label.height() // 2,
+)
+contract_label.hide()
+
+# Rules label
+rules_label = QtWidgets.QLabel(main_widget)
+rules_label.setStyleSheet("""
+QLabel {
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 180);
+    padding: 20px 40px;
+    border-radius: 12px;
+}
+""")
+rules_label.setAlignment(QtCore.Qt.AlignCenter)
+rules_label.setText("How does this game work?\n\nMove the bird up and down\nby contracting and relaxing your muscle!\n\nCatch the yellow coins\nand avoid the red penalties!")
+rules_label.adjustSize()
+rules_label.move(
+    main_rect.center().x() - rules_label.width() // 2,
+    main_rect.center().y() - main_rect.center().y() + rules_label.height()
+)
+rules_label.hide()
 
 def end_game():
     global game_active
@@ -321,11 +402,6 @@ def end_game():
     # Show final score, centered over the window
     game_over_label.setText(f"Game Over!\nFinal Score: {score}")
     game_over_label.adjustSize()
-    rect = main_widget.rect()
-    game_over_label.move(
-        rect.center().x() - game_over_label.width() // 2,
-        rect.center().y() - game_over_label.height() // 2,
-    )
     game_over_label.raise_()
     game_over_label.show()
 
@@ -335,7 +411,7 @@ main_widget.show()
 # Update function
 # ----------------------------
 def update():
-    global calibration_active, mvc_value, baseline_value
+    global calibration_active, mvc_value, baseline_value, calibrate_emg
     global zi
     global bird_y, score, coin_active, coin_x, penalty_active, penalty_x
 
@@ -350,36 +426,64 @@ def update():
         rms = np.sqrt(np.convolve(filtered ** 2, np.ones(w) / w, mode="valid"))
         y = np.zeros(buffer_size)
         y[-len(rms):] = rms
-
-        # --- Calibration logic ---
         current_emg = y[-1]
         elapsed = time.time() - calibration_start_time
+
+        # --- Calibration logic ---
         if calibration_active:
+            rules_label.hide()
+            bird_item.setVisible(False)
+
             if elapsed < baseline_duration:
                 # Phase 1: baseline (relaxed)
+                relax_label.raise_()
+                relax_label.show()
                 curve.setPen('b')
                 baseline_buffer.append(current_emg)
             elif elapsed < total_duration:
                 # Phase 2: MVC (contract)
+                relax_label.hide()
+                contract_label.raise_()
+                contract_label.show()
                 curve.setPen('r')
                 mvc_buffer.append(current_emg)
             else:
                 # Finish calibration
+                contract_label.hide()
                 curve.setPen('y')
                 calibration_active = False
                 baseline_value = np.mean(baseline_buffer)
                 mvc_value = np.mean(mvc_buffer)
                 start_button.setEnabled(True)
+                calibrate_emg = True
+                toggle_calibration() # change display to normalized signal
+                start_game() # start the game
 
                 print(f"Baseline RMS: {baseline_value:.4f}")
                 print(f"MVC RMS: {mvc_value:.4f}")
 
-        # Visualize either normalized RMS as cursor or absolute RMS as line plot
+        # Grab the data to visualize
         display_y = y.copy()
+
+        # --- End the game ---
         if calibrate_emg and game_active and time.time() - game_start_time >= game_duration:
             end_game()
 
-        if calibrate_emg and game_active and mvc_value is not None and baseline_value is not None:
+        # --- Show the rules ---
+        if not (game_active or calibration_active or calibrate_emg):
+            # Show bird in center
+            rect = view.sceneBoundingRect()
+            bird_x = rect.center().x()
+            bird_y = rect.center().x()
+            bird_item.setPos(bird_x, bird_y)
+            bird_item.setVisible(True)
+
+            # Show rules
+            rules_label.raise_()
+            rules_label.show()
+
+        # --- Active game loop ---
+        if calibrate_emg and game_active and mvc_value and baseline_value is not None:
             # --- # Normalize EMG data to MVC ---
             emg_corr = display_y - baseline_value
             emg_corr = np.maximum(emg_corr, 0)
@@ -393,7 +497,6 @@ def update():
             rect = view.sceneBoundingRect()
             bird_x = rect.center().x()
             bird_y = rect.top() + (1 - cursor_value) * rect.height()
-
             bird_item.setPos(bird_x, bird_y)
 
             # --- Update flying coin ---
@@ -402,7 +505,7 @@ def update():
                 elapsed = time.time() - coin_start_time
                 t = elapsed / window_seconds
 
-                if t >= 1.0:
+                if t >= 0.6:
                     coin_active = False
                     coin_item.setVisible(False)
                 else:
@@ -426,7 +529,7 @@ def update():
                 elapsed = time.time() - penalty_start_time
                 t = elapsed / window_seconds
 
-                if t >= 1.0:
+                if t >= 0.6:
                     penalty_active = False
                     penalty_item.setVisible(False)
                 else:
@@ -445,7 +548,7 @@ def update():
                         score_label.setText(f"Score: {score}")
 
             if not coin_active and not penalty_active:
-                if np.random.rand() < 0.7:
+                if np.random.rand() < coin_chance:
                     spawn_coin()
                 else:
                     spawn_penalty()
