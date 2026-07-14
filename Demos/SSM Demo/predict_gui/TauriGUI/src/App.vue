@@ -119,6 +119,7 @@ let isFirstLoad = true;
 const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
+const showGuides = ref(true); // Master toggle: spheres, triangles, muscle/glide areas, labels
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
@@ -227,24 +228,29 @@ async function loadBones(externalData: any = null) {
         
         bonesGroup!.add(mesh);
 
-        const originGeom = new THREE.SphereGeometry(3, 16, 16);
-        const originMat = new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false });
-        const originSphere = new THREE.Mesh(originGeom, originMat);
-        originSphere.renderOrder = 1001;
-        if (bone.origin) {
-            originSphere.position.set(bone.origin[0], bone.origin[1], bone.origin[2]);
-        }
-        bonesGroup!.add(originSphere); // Add to bonesGroup directly so it stays at world pos
+        // Origin marker sphere + label — part of the visual guides
+        let originSphere: THREE.Mesh | null = null;
+        let sprite: THREE.Sprite | null = null;
+        if (showGuides.value) {
+            const originGeom = new THREE.SphereGeometry(3, 16, 16);
+            const originMat = new THREE.MeshBasicMaterial({ color: 0xffd700, depthTest: false });
+            originSphere = new THREE.Mesh(originGeom, originMat);
+            originSphere.renderOrder = 1001;
+            if (bone.origin) {
+                originSphere.position.set(bone.origin[0], bone.origin[1], bone.origin[2]);
+            }
+            bonesGroup!.add(originSphere); // Add to bonesGroup directly so it stays at world pos
 
-        const canvas = document.createElement('canvas');
-        canvas.width = 1024; canvas.height = 256;
-        const spriteMap = new THREE.CanvasTexture(canvas);
-        spriteMap.anisotropy = 16;
-        const spriteMat = new THREE.SpriteMaterial({ map: spriteMap, depthTest: false });
-        const sprite = new THREE.Sprite(spriteMat);
-        sprite.scale.set(80, 20, 1);
-        sprite.renderOrder = 1002;
-        bonesGroup!.add(sprite);
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024; canvas.height = 256;
+            const spriteMap = new THREE.CanvasTexture(canvas);
+            spriteMap.anisotropy = 16;
+            const spriteMat = new THREE.SpriteMaterial({ map: spriteMap, depthTest: false });
+            sprite = new THREE.Sprite(spriteMat);
+            sprite.scale.set(80, 20, 1);
+            sprite.renderOrder = 1002;
+            bonesGroup!.add(sprite);
+        }
 
         if (bone.label === "Thorax") { thoraxMesh.value = mesh as THREE.Mesh; originMarkers.thorax = originSphere; originLabels.thorax = sprite; }
         else if (bone.label === "R Clavicle") { clavicleMeshes.right = mesh as THREE.Mesh; originMarkers.clavicle.right = originSphere; originLabels.clavicle.right = sprite; initialQuats.clavicle.right.copy(mesh.quaternion); initialPositions.clavicle.right.copy(mesh.position); }
@@ -288,7 +294,7 @@ async function loadBones(externalData: any = null) {
           jointPivots[side as 'right'|'left'].ac.set(jointData.ac[0], jointData.ac[1], jointData.ac[2]);
           jointPivots[side as 'right'|'left'].gh.set(jointData.gh[0], jointData.gh[1], jointData.gh[2]);
           
-          if (needsFullRecreation) {
+          if (needsFullRecreation && showGuides.value) {
             const colors = { sc: 0xff4444, ac: 0x44ff44, gh: 0x4444ff };
             ['sc', 'ac', 'gh'].forEach((joint) => {
                 const pMarker = new THREE.Mesh(new THREE.SphereGeometry(5.5, 16, 16), new THREE.MeshBasicMaterial({ color: colors[joint as 'sc'|'ac'|'gh'], depthTest: false, transparent: true, opacity: 0.3, wireframe: true }));
@@ -311,7 +317,7 @@ async function loadBones(externalData: any = null) {
       });
     }
 
-    if (needsFullRecreation && activeData.markers) {
+    if (needsFullRecreation && showGuides.value && activeData.markers) {
         activeData.markers.forEach((marker: any) => {
             const sphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32), new THREE.MeshStandardMaterial({ color: marker.color, roughness: 0.2 }));
             sphere.position.set(marker.pos[0], marker.pos[1], marker.pos[2]);
@@ -320,7 +326,7 @@ async function loadBones(externalData: any = null) {
     }
 
     // --- SCAPULAR PLANE TRIANGLES ---
-    if (needsFullRecreation && activeData.scapular_planes) {
+    if (needsFullRecreation && showGuides.value && activeData.scapular_planes) {
         ['right', 'left'].forEach((side) => {
             const plane = activeData.scapular_planes[side];
             if (!plane || !plane.aa || !plane.ts || !plane.ai) return;
@@ -378,7 +384,7 @@ async function loadBones(externalData: any = null) {
     }
 
 
-    if (needsFullRecreation && activeData.anatomical_landmarks) {
+    if (needsFullRecreation && showGuides.value && activeData.anatomical_landmarks) {
       ['right', 'left'].forEach((side) => {
         const lms = activeData.anatomical_landmarks[side];
         const colors = { thorax: 0x00FFFF, clavicle: 0xFFA500, scapula: 0xFFFF00 };
@@ -429,7 +435,7 @@ async function loadBones(externalData: any = null) {
     }
 
     // --- THORAX POSTERIOR HIGHLIGHTS ---
-    if (isHighlightsEnabled.value) {
+    if (showGuides.value && isHighlightsEnabled.value) {
         if (highlightsGroup) {
             globalScene.remove(highlightsGroup);
             highlightsGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
@@ -541,7 +547,7 @@ async function loadBones(externalData: any = null) {
     }
 
     // --- SCAPULAR PLANE VISUALIZATION ---
-    if (isScapularPlaneEnabled.value && activeData.anatomical_landmarks) {
+    if (showGuides.value && isScapularPlaneEnabled.value && activeData.anatomical_landmarks) {
         if (scapularPlaneGroup) {
             globalScene.remove(scapularPlaneGroup);
             scapularPlaneGroup.traverse((obj) => { if (obj instanceof THREE.Mesh) { obj.geometry.dispose(); (obj.material as THREE.Material).dispose(); } });
@@ -1244,20 +1250,24 @@ function toggleComparison() {
 
               <div class="card transparent-card" style="margin-top: 15px; border-color: #60A060;">
                 <h3 style="color: #60A060">🔍 Anatomical Guides</h3>
-                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" v-model="isHighlightsEnabled" @change="loadBones()" id="highlightToggle" />
+                <div class="toggle-group" style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); color: white; display: flex; align-items: center; gap: 10px; font-weight: bold;">
+                  <input type="checkbox" v-model="showGuides" @change="loadBones()" id="guidesToggle" />
+                  <label for="guidesToggle">Show Visual Guides</label>
+                </div>
+                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isHighlightsEnabled" :disabled="!showGuides" @change="loadBones()" id="highlightToggle" />
                   <label for="highlightToggle">Highlight Glide Area</label>
                 </div>
-                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" v-model="isNormalsEnabled" @change="loadBones()" id="normalsToggle" />
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isNormalsEnabled" :disabled="!showGuides" @change="loadBones()" id="normalsToggle" />
                   <label for="normalsToggle">Show Surface Normals</label>
                 </div>
-                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" v-model="isScapularPlaneEnabled" @change="loadBones()" id="scapularPlaneToggle" />
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isScapularPlaneEnabled" :disabled="!showGuides" @change="loadBones()" id="scapularPlaneToggle" />
                   <label for="scapularPlaneToggle">Show Scapular Plane</label>
                 </div>
-                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
-                  <input type="checkbox" v-model="isLabelsEnabled" id="labelsToggle" />
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isLabelsEnabled" :disabled="!showGuides" id="labelsToggle" />
                   <label for="labelsToggle">Show Coordinate Labels</label>
                 </div>
               </div>
