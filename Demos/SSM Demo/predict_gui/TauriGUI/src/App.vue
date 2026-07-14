@@ -49,6 +49,18 @@ const isKinematicVisible = ref(false);
 // Dev mode — gates developer-only tools (e.g. Run FABRIK). Toggle with
 // Ctrl+Shift+D; persisted so it survives reloads. Hidden from demo users.
 const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
+// Colour theme — light mode is the default. Persisted so the choice survives
+// reloads; only an explicit 'dark' opts out of light.
+const isLightMode = ref(localStorage.getItem('ssm_theme') !== 'dark');
+const SCENE_BG = { light: 0xe8ecf4, dark: 0x1a1a2e };
+
+function toggleTheme() {
+  isLightMode.value = !isLightMode.value;
+  localStorage.setItem('ssm_theme', isLightMode.value ? 'light' : 'dark');
+  if (globalScene) {
+    globalScene.background = new THREE.Color(isLightMode.value ? SCENE_BG.light : SCENE_BG.dark);
+  }
+}
 
 
 // Joint Coordinates (ISB Standards)
@@ -697,7 +709,7 @@ onMounted(async () => {
     const height = viewerContainer.value.clientHeight;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a2e);
+    scene.background = new THREE.Color(isLightMode.value ? SCENE_BG.light : SCENE_BG.dark);
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 5000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1098,7 +1110,7 @@ function toggleComparison() {
 </script>
 
 <template>
-  <div class="container">
+  <div class="container" :class="{ 'light-mode': isLightMode }">
      <div class="left-pane">
         <div class="viewer-wrapper">
            <div class="floating-frame" ref="viewerContainer">
@@ -1121,14 +1133,16 @@ function toggleComparison() {
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
-              <div class="header-title-group">
-                <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematic Refinement' : 'Shoulder Predictor') }}</h2>
+              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematic Refinement' : 'Shoulder Predictor') }}</h2>
+              <div class="header-actions">
+                <button @click="toggleTheme" class="icon-btn" :title="isLightMode ? 'Switch to dark mode' : 'Switch to light mode'">
+                    <svg v-if="isLightMode" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                    <svg v-else xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+                </button>
                 <button v-if="hasPrediction" @click="toggleComparison" class="comparison-btn header-compare" :class="{ original: isViewingOriginal }">
                    <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
                    <span v-else>📏 Compare with Mean Model</span>
                 </button>
-              </div>
-              <div class="header-actions">
                 <button @click="isKinematicVisible = !isKinematicVisible; isSettingsVisible = false" class="icon-btn" :class="{ active: isKinematicVisible }" title="Kinematic Alignment">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
                 </button>
@@ -1274,7 +1288,7 @@ function toggleComparison() {
 
             <div v-else class="main-view animate-in">
               <div class="card transparent-card">
-                <h3>🩺 Patient Measurements</h3>
+                <h3>🩺 Measurements</h3>
                 <div class="grid-compact">
                   <div>
                     <label>Sex</label>
@@ -1364,6 +1378,9 @@ function toggleComparison() {
 
 <style>
 /* Global resets and seamless background */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
 html, body, #app {
   margin: 0;
   padding: 0;
@@ -1737,11 +1754,8 @@ input[type="range"] {
   padding-top: 15px;
   border-top: 1px solid rgba(255,255,255,0.05);
 }
-.header-title-group {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
+.pane-header h2 {
+  white-space: nowrap;
 }
 /* Compact variant of .comparison-btn for the card header */
 .header-compare {
@@ -1771,6 +1785,80 @@ input[type="range"] {
 .comparison-btn.original:hover {
   background: rgba(72, 199, 116, 0.2);
 }
+
+/* =========================================================================
+   LIGHT MODE
+   Overrides scoped under .container.light-mode. Light is the default theme;
+   the header sun/moon button toggles it (persisted in localStorage).
+   ========================================================================= */
+.container.light-mode {
+  background: radial-gradient(circle at 50% 50%, #f4f6fb 0%, #dbe2ee 100%);
+  color: #1e293b;
+}
+.light-mode .floating-frame {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 30px 80px -20px rgba(30, 41, 59, 0.25),
+              inset 0 0 20px rgba(255, 255, 255, 0.4);
+}
+.light-mode .frame-reflection {
+  background: linear-gradient(135deg, rgba(255,255,255,0.5) 0%, transparent 40%);
+}
+.light-mode .pane-header {
+  background: rgba(255, 255, 255, 0.6);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.light-mode h2 { color: #0f172a; }
+.light-mode .card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+/* Keep transparent cards borderless in light mode (the .card override above
+   would otherwise re-add a border/background to them). */
+.light-mode .transparent-card {
+  background: transparent;
+  border: none;
+}
+.light-mode .hint { color: #64748b; }
+.light-mode label { color: #64748b; }
+.light-mode .input-fi {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #1e293b;
+}
+.light-mode .icon-btn {
+  background: #e8ecf4;
+  color: #475569;
+}
+.light-mode .icon-btn:hover {
+  background: #d5dce8;
+  color: #0f172a;
+}
+.light-mode .secondary-btn {
+  background: #e8ecf4;
+  color: #1e293b;
+  border: 1px solid #cbd5e1;
+}
+.light-mode .secondary-btn:hover { background: #d5dce8; }
+.light-mode .status-box { background-color: #f1f5f9; }
+.light-mode .progress-track {
+  background-color: #e2e8f0;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+.light-mode .progress-pct { color: #475569; }
+.light-mode .joint-group {
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+.light-mode .side-label { color: #0f172a; }
+.light-mode .sub-group { border-top: 1px solid rgba(15, 23, 42, 0.08); }
+.light-mode .comparison-toggle { border-top: 1px solid rgba(15, 23, 42, 0.08); }
+.light-mode .viewport-label {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 32px rgba(30, 41, 59, 0.15);
+}
+.light-mode .label-text { color: #0f172a; }
 </style>
 .overlap-btn {
   background: rgba(79, 172, 254, 0.1) !important;
