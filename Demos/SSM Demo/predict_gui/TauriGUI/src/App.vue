@@ -23,9 +23,32 @@ const r_hum_epi_width = ref("55");
 const statusMessage = ref("");
 const statusColor = ref("#ffffff");
 const isPredicting = ref(false);
+// Prediction progress (0–100), driven by the pipeline's streamed stage
+// messages. Shown to all users as the demo-facing feedback while the raw
+// "Pipeline Output" text stays dev-only.
+const predictionProgress = ref(0);
+
+// Ordered pipeline stages → target progress %. Matched by substring against
+// the STATUS messages streamed from the Python pipeline so the bar advances
+// as each stage begins. Progress is kept monotonic (only ever increases), so
+// stages that get skipped (e.g. cached PLSR training) don't stall the bar.
+const PIPELINE_STAGES: { match: string; pct: number }[] = [
+  { match: "Initialising",       pct: 5 },
+  { match: "Loading PCA model",  pct: 15 },
+  { match: "PLSR training",      pct: 30 },
+  { match: "Loading PCA shape",  pct: 45 },
+  { match: "Running PLSR",       pct: 60 },
+  { match: "Reconstructing",     pct: 72 },
+  { match: "Using mean mesh",    pct: 80 },
+  { match: "Saving output",      pct: 88 },
+  { match: "Joint Assembly",     pct: 94 },
+];
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
+// Dev mode — gates developer-only tools (e.g. Run FABRIK). Toggle with
+// Ctrl+Shift+D; persisted so it survives reloads. Hidden from demo users.
+const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
 
 
 // Joint Coordinates (ISB Standards)
@@ -33,14 +56,14 @@ const isKinematicVisible = ref(false);
 // prediction with these values produces an anatomical neutral standing pose
 // directly; sliders remain available for refinement.
 const r_joint_coords = ref({
-  sc_abduction: -8.0, sc_elevation: -15.0, sc_upward: -2.0,
-  ac_internal: -11.5, ac_upward: -9.5, ac_posterior: -2.5,
+  sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
+  ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
   gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
 });
 const l_joint_coords = ref({
   sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
   ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
-  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: -17.0
+  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
 });
 
 // Mesh References for dynamic updates
@@ -119,7 +142,7 @@ let isFirstLoad = true;
 const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
-const showGuides = ref(true); // Master toggle: spheres, triangles, muscle/glide areas, labels
+const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
@@ -660,6 +683,12 @@ onMounted(async () => {
     } else {
       statusMessage.value = text;
     }
+
+    // Advance the progress bar to the furthest stage seen so far.
+    if (isPredicting.value) {
+      const stage = PIPELINE_STAGES.find((s) => text.includes(s.match));
+      if (stage) predictionProgress.value = Math.max(predictionProgress.value, stage.pct);
+    }
   };
 
   // Initialize Three.js natively
@@ -809,24 +838,33 @@ onMounted(async () => {
       });
 
       // 2. Define Joint Rotation Quaternions (ISB Standards)
+      // Per-side mirror so a positive slider produces the same anatomical
+      // motion on both shoulders; defaults are symmetric L/R.
+      const jointSide = side === 'right' ? 1 : -1;
+
       const qSC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.sc_elevation),
-        THREE.MathUtils.degToRad(-coords.sc_abduction), 
-        THREE.MathUtils.degToRad(coords.sc_upward),
+        THREE.MathUtils.degToRad(-jointSide * coords.sc_elevation),  // X (elevation/depression)
+        THREE.MathUtils.degToRad( jointSide * coords.sc_abduction),  // Y (protraction/retraction)
+        THREE.MathUtils.degToRad(-jointSide * coords.sc_upward),     // Z (axial rotation)
         'YXZ'
       ));
 
       const qAC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.ac_upward),
-        THREE.MathUtils.degToRad(coords.ac_internal),
-        THREE.MathUtils.degToRad(coords.ac_posterior),
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_upward),     // X (upward rotation)
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_internal),   // Y (internal/external rotation)
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_posterior),  // Z (posterior tilt)
         'YXZ'
       ));
 
+      // GH rotates about anatomical axes (humerus hangs along -Y at neutral;
+      // world X=anterior, Y=superior, Z=lateral):
+      //   flexion   → mediolateral (Z)      forward swing, same sign both arms
+      //   abduction → anteroposterior (X)    lateral raise, mirrored per side
+      //   internal  → humeral long axis (Y)  axial spin, mirrored per side
       const qGH = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.gh_flexion),
-        THREE.MathUtils.degToRad(coords.gh_abduction),
-        THREE.MathUtils.degToRad(coords.gh_internal),
+        THREE.MathUtils.degToRad(jointSide * coords.gh_abduction),   // X
+        THREE.MathUtils.degToRad(-jointSide * coords.gh_internal),   // Y
+        THREE.MathUtils.degToRad(coords.gh_flexion),                // Z
         'YXZ'
       ));
 
@@ -927,11 +965,23 @@ onMounted(async () => {
         renderer.setSize(fWidth, fHeight);
       }
     });
+
+    // Ctrl+Shift+D toggles developer mode (persisted across reloads).
+    window.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        isDevMode.value = !isDevMode.value;
+        localStorage.setItem('ssm_dev_mode', isDevMode.value ? '1' : '0');
+        statusMessage.value = `Dev mode ${isDevMode.value ? 'ENABLED' : 'disabled'}`;
+        statusColor.value = isDevMode.value ? '#FFA040' : '#94a3b8';
+      }
+    });
   }
 });
 
 async function runPrediction() {
   isPredicting.value = true;
+  predictionProgress.value = 0;
   statusMessage.value = "Starting Python pipeline...";
   statusColor.value = "#ffffff";
 
@@ -954,6 +1004,7 @@ async function runPrediction() {
 
     if (!response.ok) throw await response.text();
     const boneData = await response.json();
+    predictionProgress.value = 100;
     statusMessage.value = "Prediction Complete! Rendering...";
     statusColor.value = "#48c774";
     hasPrediction.value = true;
@@ -1003,6 +1054,7 @@ async function runFabrikStep() {
   if (isPredicting.value) return;
 
   isPredicting.value = true;
+  predictionProgress.value = 0;
   statusMessage.value = "Running FABRIK...";
   statusColor.value = "#FFA040";
 
@@ -1025,6 +1077,7 @@ async function runFabrikStep() {
 
     if (!response.ok) throw await response.text();
     const boneData = await response.json();
+    predictionProgress.value = 100;
     statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
     hasPrediction.value = true;
@@ -1068,7 +1121,13 @@ function toggleComparison() {
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
-              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematic Refinement' : 'Shoulder Predictor') }}</h2>
+              <div class="header-title-group">
+                <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematic Refinement' : 'Shoulder Predictor') }}</h2>
+                <button v-if="hasPrediction" @click="toggleComparison" class="comparison-btn header-compare" :class="{ original: isViewingOriginal }">
+                   <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
+                   <span v-else>📏 Compare with Mean Model</span>
+                </button>
+              </div>
               <div class="header-actions">
                 <button @click="isKinematicVisible = !isKinematicVisible; isSettingsVisible = false" class="icon-btn" :class="{ active: isKinematicVisible }" title="Kinematic Alignment">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
@@ -1218,8 +1277,11 @@ function toggleComparison() {
                 <h3>🩺 Patient Measurements</h3>
                 <div class="grid-compact">
                   <div>
-                    <label>Sex (0=Male, 1=Female)</label>
-                    <input v-model="sex" class="input-fi" />
+                    <label>Sex</label>
+                    <select v-model="sex" class="input-fi">
+                      <option value="0">Male</option>
+                      <option value="1">Female</option>
+                    </select>
                   </div>
                   <div>
                     <label>Age (years)</label>
@@ -1234,15 +1296,15 @@ function toggleComparison() {
                     <input v-model="weight" class="input-fi" />
                   </div>
                   <div>
-                    <label>R Clavicle Length</label>
+                    <label>R Clavicle Length (mm)</label>
                     <input v-model="r_clav_len" class="input-fi" />
                   </div>
                   <div>
-                    <label>R Humerus Length</label>
+                    <label>R Humerus Length (mm)</label>
                     <input v-model="r_hum_len" class="input-fi" />
                   </div>
                   <div>
-                    <label>R Hum Epicondyle Width</label>
+                    <label>R Hum Epicondyle Width (mm)</label>
                     <input v-model="r_hum_epi_width" class="input-fi" />
                   </div>
                 </div>
@@ -1277,21 +1339,21 @@ function toggleComparison() {
                 <span v-else>🔄 Executing Model Generation...</span>
               </button>
 
-              <button :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
+              <button v-if="isDevMode" :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
                 <span v-if="!isPredicting">🛠️ Run FABRIK</span>
                 <span v-else>⏳ Running...</span>
               </button>
 
-              <div v-if="statusMessage" class="status-box" :style="{ color: statusColor, borderColor: statusColor }">
-                <div class="status-label">Pipeline Output:</div>
-                {{ statusMessage }}
+              <div v-if="isPredicting" class="progress-wrap animate-in">
+                <div class="progress-track">
+                  <div class="progress-fill" :style="{ width: predictionProgress + '%' }"></div>
+                </div>
+                <div class="progress-pct">{{ Math.round(predictionProgress) }}%</div>
               </div>
 
-              <div v-if="hasPrediction" class="comparison-toggle animate-in">
-                <button @click="toggleComparison" class="comparison-btn" :class="{ original: isViewingOriginal }">
-                   <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
-                   <span v-else>📏 Compare with Mean Model</span>
-                </button>
+              <div v-if="isDevMode && statusMessage" class="status-box" :style="{ color: statusColor, borderColor: statusColor }">
+                <div class="status-label">Pipeline Output:</div>
+                {{ statusMessage }}
               </div>
             </div>
          </div>
@@ -1383,6 +1445,13 @@ html, body, #app {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 14px;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .main-view, .settings-view {
   padding: 15px 25px;
@@ -1539,6 +1608,33 @@ label {
   opacity: 0.7;
 }
 
+/* Prediction progress bar */
+.progress-wrap {
+  margin-top: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.progress-track {
+  flex: 1;
+  height: 10px;
+  background-color: #161625;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4facfe, #48c774);
+  transition: width 0.4s ease;
+}
+.progress-pct {
+  font-family: 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  min-width: 3.5ch;
+  text-align: right;
+}
+
 /* Kinematic Sliders */
 .joint-group {
   padding: 10px;
@@ -1640,6 +1736,19 @@ input[type="range"] {
   margin-top: 15px;
   padding-top: 15px;
   border-top: 1px solid rgba(255,255,255,0.05);
+}
+.header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+/* Compact variant of .comparison-btn for the card header */
+.header-compare {
+  width: auto;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 .comparison-btn {
   width: 100%;
