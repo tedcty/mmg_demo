@@ -26,6 +26,9 @@ const isPredicting = ref(false);
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
+// Dev mode — gates developer-only tools (e.g. Run FABRIK). Toggle with
+// Ctrl+Shift+D; persisted so it survives reloads. Hidden from demo users.
+const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
 
 
 // Joint Coordinates (ISB Standards)
@@ -936,6 +939,17 @@ onMounted(async () => {
         renderer.setSize(fWidth, fHeight);
       }
     });
+
+    // Ctrl+Shift+D toggles developer mode (persisted across reloads).
+    window.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        e.preventDefault();
+        isDevMode.value = !isDevMode.value;
+        localStorage.setItem('ssm_dev_mode', isDevMode.value ? '1' : '0');
+        statusMessage.value = `Dev mode ${isDevMode.value ? 'ENABLED' : 'disabled'}`;
+        statusColor.value = isDevMode.value ? '#FFA040' : '#94a3b8';
+      }
+    });
   }
 });
 
@@ -1286,7 +1300,7 @@ function toggleComparison() {
                 <span v-else>🔄 Executing Model Generation...</span>
               </button>
 
-              <button :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
+              <button v-if="isDevMode" :disabled="isPredicting" @click="runFabrikStep" class="run-btn step-btn">
                 <span v-if="!isPredicting">🛠️ Run FABRIK</span>
                 <span v-else>⏳ Running...</span>
               </button>
