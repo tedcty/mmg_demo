@@ -335,15 +335,23 @@ class FabrikScapulaSolver:
                 if np.any(penetration_mask):
                     cost += float(np.sum(np.abs(dists[penetration_mask])) * 500.0)
                 
-                # 4. AI TETHER: Prevent Inferior Angle lift-off (>8mm)
+                # 4. AI TETHER: keep the Inferior Angle from penetrating the
+                # ribs, and softly cap excessive lift-off. The threshold must be
+                # reachable for this geometry — the AI naturally sits ~27mm off
+                # the glide surface once Step 3's bubble translation stands the
+                # scapula off. An 8mm target was unreachable, so its penalty
+                # dominated the cost (~16000) and left the roll DOF undriven,
+                # which broke L/R symmetry (each side settled in a different
+                # noise-driven local min). A 30mm ceiling lets the symmetric
+                # anatomical terms below shape the pose consistently on both sides.
                 ai_w = trial.apply(ai_loc) + ac_snap
                 p_ai_surf, n_ai_surf = self.get_surface_info(ai_w)
                 ai_dist = np.dot(ai_w - p_ai_surf, n_ai_surf)
 
                 if ai_dist < 0: # Inside ribs
                     cost += abs(ai_dist) * 10000.0
-                elif ai_dist > 8.0: # Too far away
-                    cost += (ai_dist - 8.0) * 1000.0
+                elif ai_dist > 30.0: # Excessive lift-off
+                    cost += (ai_dist - 30.0) * 1000.0
 
                 # 5. CLAVICLE COLLISION GUARD: DISABLED.
                 # The B-spline X=f(Y,Z) is fit to both anterior and posterior
