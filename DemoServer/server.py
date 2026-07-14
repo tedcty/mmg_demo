@@ -23,6 +23,7 @@ First-time build of the SSM frontend (run once from TauriGUI/):
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -63,6 +64,16 @@ _lock: threading.Lock = threading.Lock()
 _sessions: dict[str, queue.Queue] = {}
 
 
+# Session IDs are used to build filesystem paths, so they must be restricted
+# to UUID-safe characters. This blocks directory traversal (e.g. "../../..")
+# that would otherwise let a crafted session_id write files outside SESSIONS_DIR.
+_SID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
+
+def _valid_sid(sid: str) -> bool:
+    return bool(_SID_RE.match(sid or ''))
+
+
 def _get_queue(sid: str) -> queue.Queue:
     with _lock:
         if sid not in _sessions:
@@ -71,7 +82,13 @@ def _get_queue(sid: str) -> queue.Queue:
 
 
 def _session_dir(sid: str) -> str:
+    if not _valid_sid(sid):
+        raise ValueError(f'invalid session id: {sid!r}')
     d = os.path.join(SESSIONS_DIR, sid)
+    # Defense in depth: ensure the resolved path stays under SESSIONS_DIR.
+    root = os.path.realpath(SESSIONS_DIR)
+    if os.path.commonpath([os.path.realpath(d), root]) != root:
+        raise ValueError(f'session path escapes sessions dir: {sid!r}')
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -126,8 +143,8 @@ def ssm_app(path):
 @app.route('/api/progress')
 def progress():
     sid = request.args.get('session', '').strip()
-    if not sid:
-        return jsonify({'error': 'session query param required'}), 400
+    if not _valid_sid(sid):
+        return jsonify({'error': 'invalid or missing session query param'}), 400
 
     q = _get_queue(sid)
 
@@ -163,8 +180,8 @@ def progress():
 def predict():
     data = request.get_json(force=True)
     sid  = data.get('session_id', '').strip()
-    if not sid:
-        return jsonify({'error': 'session_id required'}), 400
+    if not _valid_sid(sid):
+        return jsonify({'error': 'invalid or missing session_id'}), 400
 
     _cleanup_old_sessions()
 
@@ -241,6 +258,9 @@ def save_report():
     patient = data.get('patient', {})
     rs      = data.get('right_st', {})
     ls      = data.get('left_st', {})
+
+    if sid and not _valid_sid(sid):
+        return jsonify({'error': 'invalid session_id'}), 400
 
     if sid:
         report_path = os.path.join(_session_dir(sid), 'refinement_report.md')
