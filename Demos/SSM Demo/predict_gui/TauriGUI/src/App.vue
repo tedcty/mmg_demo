@@ -33,8 +33,8 @@ const isKinematicVisible = ref(false);
 // prediction with these values produces an anatomical neutral standing pose
 // directly; sliders remain available for refinement.
 const r_joint_coords = ref({
-  sc_abduction: -8.0, sc_elevation: -15.0, sc_upward: -2.0,
-  ac_internal: -11.5, ac_upward: -9.5, ac_posterior: -2.5,
+  sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
+  ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
   gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
 });
 const l_joint_coords = ref({
@@ -809,17 +809,21 @@ onMounted(async () => {
       });
 
       // 2. Define Joint Rotation Quaternions (ISB Standards)
+      // Per-side mirror so a positive slider produces the same anatomical
+      // motion on both shoulders; defaults are symmetric L/R.
+      const jointSide = side === 'right' ? 1 : -1;
+
       const qSC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.sc_elevation),
-        THREE.MathUtils.degToRad(-coords.sc_abduction), 
-        THREE.MathUtils.degToRad(coords.sc_upward),
+        THREE.MathUtils.degToRad(-jointSide * coords.sc_elevation),  // X (elevation/depression)
+        THREE.MathUtils.degToRad( jointSide * coords.sc_abduction),  // Y (protraction/retraction)
+        THREE.MathUtils.degToRad(-jointSide * coords.sc_upward),     // Z (axial rotation)
         'YXZ'
       ));
 
       const qAC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.ac_upward),
-        THREE.MathUtils.degToRad(coords.ac_internal),
-        THREE.MathUtils.degToRad(coords.ac_posterior),
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_upward),     // X (upward rotation)
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_internal),   // Y (internal/external rotation)
+        THREE.MathUtils.degToRad(-jointSide * coords.ac_posterior),  // Z (posterior tilt)
         'YXZ'
       ));
 
@@ -828,11 +832,10 @@ onMounted(async () => {
       //   flexion   → mediolateral (Z)      forward swing, same sign both arms
       //   abduction → anteroposterior (X)    lateral raise, mirrored per side
       //   internal  → humeral long axis (Y)  axial spin, mirrored per side
-      const ghSide = side === 'right' ? 1 : -1;
       const qGH = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(ghSide * coords.gh_abduction),  // X
-        THREE.MathUtils.degToRad(-ghSide * coords.gh_internal),  // Y
-        THREE.MathUtils.degToRad(coords.gh_flexion),             // Z
+        THREE.MathUtils.degToRad(jointSide * coords.gh_abduction),   // X
+        THREE.MathUtils.degToRad(-jointSide * coords.gh_internal),   // Y
+        THREE.MathUtils.degToRad(coords.gh_flexion),                // Z
         'YXZ'
       ));
 
