@@ -18,6 +18,9 @@ dist
 *.sln
 Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
 
+# DemoServer runtime output (per-session prediction artifacts)
+DemoServer/sessions/
+
 Demos/Spikerbox/.venv
 Demos/SSM Demo/predict_gui/debug
 .theia
