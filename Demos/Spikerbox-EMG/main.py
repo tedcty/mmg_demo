@@ -9,6 +9,13 @@ from collections import deque
 from scipy.signal import butter, sosfilt
 
 # --------------------------------
+# Game definitions
+# --------------------------------
+game_duration = 15.0 # in seconds
+game_active = False
+game_start_time = 0.0
+
+# --------------------------------
 # Configuration for data streaming
 # --------------------------------
 fs = 48000
@@ -136,7 +143,7 @@ checkbox = QtWidgets.QCheckBox("Use calibration")
 top_bar.addWidget(checkbox)
 
 def toggle_calibration(state):
-    global calibrate_emg, coin_active
+    global calibrate_emg, coin_active, game_active
     calibrate_emg = state == QtCore.Qt.Checked
 
     if calibrate_emg:
@@ -157,7 +164,43 @@ def toggle_calibration(state):
         # Absolute EMG → auto range
         plot.enableAutoRange(axis='y')
 
+        # Stop the game if it's running
+        game_active = False
+        game_over_label.hide()
+
 checkbox.stateChanged.connect(toggle_calibration)
+
+# "Start Game" button: (re)starts the 30s timed game, used both for the
+# initial start and for restarting after the game has ended.
+start_button = QtWidgets.QPushButton("Start Game")
+start_button.setEnabled(False)  # enabled once calibration has completed
+top_bar.addWidget(start_button)
+
+def start_game():
+    global calibrate_emg, coin_active
+    global game_active, game_start_time, score
+
+    # Make sure we're showing the cursor/game view, and keep the checkbox
+    # in sync without re-triggering toggle_calibration.
+    checkbox.blockSignals(True)
+    checkbox.setChecked(True)
+    checkbox.blockSignals(False)
+
+    calibrate_emg = True
+    curve.setVisible(False)
+    bird_item.setVisible(True)
+    coin_active = True
+    plot.disableAutoRange(axis='y')
+    plot.setYRange(0, 1.2)
+
+    # Reset score and (re)start the 30s clock
+    score = 0
+    score_label.setText(f"Score: {score}")
+    game_over_label.hide()
+    game_start_time = time.time()
+    game_active = True
+
+start_button.clicked.connect(start_game)
 
 # Score display
 score_label = QtWidgets.QLabel("Score: 0")
@@ -250,6 +293,42 @@ def spawn_penalty():
     penalty_item.setPos(rect.right(), penalty_y)
     penalty_item.setVisible(True)
 
+# Game Over overlay
+game_over_label = QtWidgets.QLabel(main_widget)
+game_over_label.setStyleSheet("""
+QLabel {
+    color: white;
+    font-size: 36px;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 180);
+    padding: 20px 40px;
+    border-radius: 12px;
+}
+""")
+game_over_label.setAlignment(QtCore.Qt.AlignCenter)
+game_over_label.hide()
+
+
+def end_game():
+    global game_active
+    game_active = False
+
+    # Freeze the scene
+    bird_item.setVisible(False)
+    coin_item.setVisible(False)
+    penalty_item.setVisible(False)
+
+    # Show final score, centered over the window
+    game_over_label.setText(f"Game Over!\nFinal Score: {score}")
+    game_over_label.adjustSize()
+    rect = main_widget.rect()
+    game_over_label.move(
+        rect.center().x() - game_over_label.width() // 2,
+        rect.center().y() - game_over_label.height() // 2,
+    )
+    game_over_label.raise_()
+    game_over_label.show()
+
 main_widget.show()
 
 # ----------------------------
@@ -290,13 +369,17 @@ def update():
                 calibration_active = False
                 baseline_value = np.mean(baseline_buffer)
                 mvc_value = np.mean(mvc_buffer)
+                start_button.setEnabled(True)
 
                 print(f"Baseline RMS: {baseline_value:.4f}")
                 print(f"MVC RMS: {mvc_value:.4f}")
 
         # Visualize either normalized RMS as cursor or absolute RMS as line plot
         display_y = y.copy()
-        if calibrate_emg and mvc_value is not None and baseline_value is not None:
+        if calibrate_emg and game_active and time.time() - game_start_time >= game_duration:
+            end_game()
+
+        if calibrate_emg and game_active and mvc_value is not None and baseline_value is not None:
             # --- # Normalize EMG data to MVC ---
             emg_corr = display_y - baseline_value
             emg_corr = np.maximum(emg_corr, 0)
