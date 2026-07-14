@@ -193,9 +193,12 @@ def predict():
 
     q.put('STATUS|Initialising prediction...')
 
+    # Use the current interpreter directly. The server already runs inside the
+    # env that has the SSM stack (it imports generate_isb_joints at startup),
+    # so sys.executable has every dependency. This avoids depending on `conda`
+    # being on PATH — it usually isn't (WinError 2), which 500'd the request.
     proc = subprocess.Popen(
-        ['conda', 'run', '--no-capture-output', '-n', 'demo',
-         'python', script, json_args],
+        [sys.executable, script, json_args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
