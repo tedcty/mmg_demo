@@ -40,7 +40,7 @@ const r_joint_coords = ref({
 const l_joint_coords = ref({
   sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
   ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
-  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: -17.0
+  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
 });
 
 // Mesh References for dynamic updates
@@ -119,7 +119,7 @@ let isFirstLoad = true;
 const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
-const showGuides = ref(true); // Master toggle: spheres, triangles, muscle/glide areas, labels
+const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
@@ -823,10 +823,16 @@ onMounted(async () => {
         'YXZ'
       ));
 
+      // GH rotates about anatomical axes (humerus hangs along -Y at neutral;
+      // world X=anterior, Y=superior, Z=lateral):
+      //   flexion   → mediolateral (Z)      forward swing, same sign both arms
+      //   abduction → anteroposterior (X)    lateral raise, mirrored per side
+      //   internal  → humeral long axis (Y)  axial spin, mirrored per side
+      const ghSide = side === 'right' ? 1 : -1;
       const qGH = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(coords.gh_flexion),
-        THREE.MathUtils.degToRad(coords.gh_abduction),
-        THREE.MathUtils.degToRad(coords.gh_internal),
+        THREE.MathUtils.degToRad(ghSide * coords.gh_abduction),  // X
+        THREE.MathUtils.degToRad(-ghSide * coords.gh_internal),  // Y
+        THREE.MathUtils.degToRad(coords.gh_flexion),             // Z
         'YXZ'
       ));
 
