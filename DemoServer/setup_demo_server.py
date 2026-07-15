@@ -37,6 +37,48 @@ REQS = os.path.join(HERE, "requirements.txt")
 SERVER = os.path.join(HERE, "server.py")
 
 
+def find_conda():
+    """Locate a runnable conda executable, even when it isn't on PATH.
+
+    On Windows `conda` is often only a .bat in condabin/ (or a shell function),
+    so `subprocess.run(["conda", ...])` fails with WinError 2 even though conda
+    is installed. We look, in order, at:
+      1. CONDA_EXE — the real exe path conda exports when a base/env is active;
+      2. a plain PATH lookup (conda.exe first, then conda);
+      3. the install derived from this interpreter (we're commonly launched by
+         an env's own python, e.g. <base>/envs/<name>/python.exe).
+    Prefer a .exe/binary over a .bat so it runs without a shell.
+    """
+    candidates = []
+    env_exe = os.environ.get("CONDA_EXE")
+    if env_exe:
+        candidates.append(env_exe)
+    candidates.append(shutil.which("conda.exe"))
+
+    # Derive the base install from sys.prefix: if we're inside <base>/envs/<name>
+    # the base is two levels up; otherwise sys.prefix may itself be the base.
+    prefix = sys.prefix
+    parent = os.path.dirname(prefix)
+    bases = [prefix]
+    if os.path.basename(parent).lower() == "envs":
+        bases.append(os.path.dirname(parent))
+    for base in bases:
+        candidates.append(os.path.join(base, "Scripts", "conda.exe"))  # Windows
+        candidates.append(os.path.join(base, "bin", "conda"))          # macOS/Linux
+
+    candidates.append(shutil.which("conda"))
+    for base in bases:
+        candidates.append(os.path.join(base, "condabin", "conda.bat"))  # last resort
+
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+CONDA = find_conda()
+
+
 def run(cmd, cwd=None, check=True):
     """Run a command, streaming output. Returns True on success."""
     printable = " ".join(cmd) if isinstance(cmd, list) else cmd
@@ -47,14 +89,20 @@ def run(cmd, cwd=None, check=True):
     except subprocess.CalledProcessError as e:
         print(f"  ERROR: command failed ({e.returncode})")
         return False
+    except (FileNotFoundError, OSError) as e:
+        exe = printable.split()[0] if printable else "command"
+        print(f"  ERROR: could not run '{exe}': {e}")
+        return False
 
 
 def conda_env_exists(name):
+    if not CONDA:
+        return False
     try:
         out = subprocess.run(
-            ["conda", "env", "list"], capture_output=True, text=True, check=True
+            [CONDA, "env", "list"], capture_output=True, text=True, check=True
         ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return False
     for line in out.splitlines():
         # Match the env name in the first column (ignore the active-env '*').
@@ -69,21 +117,22 @@ def setup_python():
     print(f"[1/2] Python environment  (conda env: {ENV_NAME})")
     print("=" * 54)
 
-    if not shutil.which("conda"):
-        print("  WARNING: 'conda' not found on PATH.")
+    if not CONDA:
+        print("  WARNING: could not locate a conda executable.")
         print(f"  Install Miniconda, or create the env manually, then:")
         print(f"    pip install -r {REQS}")
         return False
+    print(f"  Using conda: {CONDA}")
 
     if conda_env_exists(ENV_NAME):
         print(f"  Env '{ENV_NAME}' already exists — reusing it.")
     else:
         print(f"  Creating env '{ENV_NAME}' (Python {PY_VERSION})...")
-        if not run(["conda", "create", "-y", "-n", ENV_NAME, f"python={PY_VERSION}"]):
+        if not run([CONDA, "create", "-y", "-n", ENV_NAME, f"python={PY_VERSION}"]):
             return False
 
     print(f"  Installing DemoServer/requirements.txt into '{ENV_NAME}'...")
-    ok = run(["conda", "run", "-n", ENV_NAME, "pip", "install", "-r", REQS])
+    ok = run([CONDA, "run", "-n", ENV_NAME, "pip", "install", "-r", REQS])
     if ok:
         print("  SUCCESS: Python dependencies installed.")
     else:
@@ -106,11 +155,11 @@ def ensure_node():
         return ["npm"], ["npx"]
 
     print("  'npm' not found on PATH — attempting to install Node.js...")
-    if shutil.which("conda") and conda_env_exists(ENV_NAME):
+    if CONDA and conda_env_exists(ENV_NAME):
         # conda-forge ships a recent Node (Vite needs 18+); the `defaults`
         # channel can lag, so pin the channel explicitly.
-        if run(["conda", "install", "-y", "-n", ENV_NAME, "-c", "conda-forge", "nodejs"]):
-            prefix = ["conda", "run", "--no-capture-output", "-n", ENV_NAME]
+        if run([CONDA, "install", "-y", "-n", ENV_NAME, "-c", "conda-forge", "nodejs"]):
+            prefix = [CONDA, "run", "--no-capture-output", "-n", ENV_NAME]
             if run(prefix + ["npm", "--version"], check=False):
                 print(f"  SUCCESS: Node.js installed into the '{ENV_NAME}' env.")
                 return prefix + ["npm"], prefix + ["npx"]
@@ -150,8 +199,8 @@ def launch():
     print("\n" + "=" * 54)
     print("Launching DemoServer on http://0.0.0.0:8000  (Ctrl+C to stop)")
     print("=" * 54)
-    if shutil.which("conda") and conda_env_exists(ENV_NAME):
-        cmd = ["conda", "run", "--no-capture-output", "-n", ENV_NAME, "python", SERVER]
+    if CONDA and conda_env_exists(ENV_NAME):
+        cmd = [CONDA, "run", "--no-capture-output", "-n", ENV_NAME, "python", SERVER]
     else:
         print("  (conda env unavailable — launching with the current interpreter)")
         cmd = [sys.executable, SERVER]

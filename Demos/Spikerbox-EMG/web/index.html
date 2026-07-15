@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hear Your Muscles — EMG Game</title>
+<style>
+    :root {
+        --uoa-navy: #00467F;
+        --uoa-navy-dark: #00335e;
+        --uoa-gold: #EAAA00;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+        margin: 0; padding: 0; height: 100%;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background: #0f172a; color: #fff;
+        touch-action: manipulation;
+    }
+    #wrap {
+        max-width: 1000px; margin: 0 auto; padding: 12px;
+        display: flex; flex-direction: column; gap: 10px; min-height: 100%;
+    }
+    .bar {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    }
+    button {
+        background: var(--uoa-navy); color: #fff; border: none;
+        padding: 10px 16px; border-radius: 6px; font-weight: 700;
+        font-size: 14px; cursor: pointer; min-height: 44px;
+        -webkit-tap-highlight-color: transparent;
+    }
+    button:hover:not(:disabled) { background: var(--uoa-navy-dark); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    select {
+        padding: 9px 10px; border-radius: 6px; border: 1px solid #334155;
+        background: #1e293b; color: #fff; font-size: 13px; min-height: 44px;
+        max-width: 320px;
+    }
+    #score {
+        margin-left: auto; background: rgba(0,0,0,0.5); padding: 8px 14px;
+        border-radius: 6px; font-size: 18px; font-weight: 800;
+    }
+    #stage {
+        position: relative; width: 100%; aspect-ratio: 1000 / 700;
+        background: #000; border-radius: 8px; overflow: hidden;
+        border-top: 4px solid var(--uoa-gold);
+    }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    #status {
+        font-size: 12px; color: #94a3b8; min-height: 16px;
+    }
+    .hint { font-size: 12px; color: #64748b; }
+    a { color: var(--uoa-gold); }
+</style>
+</head>
+<body>
+<div id="wrap">
+    <div class="bar">
+        <select id="device" title="Audio input device">
+            <option value="">Loading input devices…</option>
+        </select>
+        <button id="startBtn" disabled>Start the game</button>
+        <button id="againBtn" disabled>Play again</button>
+        <button id="quitBtn" disabled>Quit game</button>
+        <div id="score">Score: 0</div>
+    </div>
+    <div id="stage"><canvas id="cv" width="1000" height="700"></canvas></div>
+    <div id="status">Pick your SpikerBox input above, then press "Start the game".</div>
+    <div class="hint">
+        Plug the SpikerBox into your device's audio input and select it above. The game reads the
+        live audio stream, band-passes it (20–300&nbsp;Hz), and turns your muscle activation into the
+        bird's height. Calibrate (relax, then contract) and catch the worms 🐛, avoid the cats 🐱.
+    </div>
+</div>
+
+<script>
+// ===========================================================================
+// Hear Your Muscles — browser port of Demos/Spikerbox-EMG/main.py
+//
+// Reads a live audio input (the SpikerBox) via the Web Audio API, band-passes
+// it, computes an RMS envelope, and drives a small catch-the-worm game on a
+// Canvas. Mirrors the PyQt/pyqtgraph desktop version's game logic and tuning.
+// ===========================================================================
+
+// ---- Game / signal constants (from main.py) ----
+const GAME_DURATION = 30.0;      // seconds
+const WINDOW_SECONDS = 2;        // object travel time base — smaller = faster
+const COIN_CHANCE = 0.7;         // worm vs. cat spawn probability
+const COIN_DISAPPEAR = 0.6;      // object vanishes after this fraction of WINDOW_SECONDS
+const RMS_WIN = 0.02;            // RMS envelope window (s)
+const CURSOR_SMOOTHING_SECONDS = 0.5;
+const LOWCUT = 20.0, HIGHCUT = 300.0;   // EMG band-pass (Hz)
+const BASELINE_DURATION = 3.0;   // calibration: relaxed phase (s)
+const MVC_DURATION = 3.0;        // calibration: max contraction phase (s)
+const TOTAL_CAL = BASELINE_DURATION + MVC_DURATION;
+
+// Canvas is a fixed 1000x700 internal coordinate space (CSS scales it to fit),
+// so these pixel thresholds match the desktop version directly.
+const W = 1000, H = 700;
+const X_HIT = 50, Y_HIT = 30;
+const BIRD_SIZE = 90, ITEM_SIZE = 70;
+
+// ---- DOM ----
+const cv = document.getElementById('cv');
+const ctx2d = cv.getContext('2d');
+const deviceSel = document.getElementById('device');
+const startBtn = document.getElementById('startBtn');
+const againBtn = document.getElementById('againBtn');
+const quitBtn = document.getElementById('quitBtn');
+const scoreEl = document.getElementById('score');
+const statusEl = document.getElementById('status');
+
+// ---- Images ----
+const imgs = {};
+function loadImg(name, src) {
+    return new Promise((res) => {
+        const im = new Image();
+        im.onload = () => { imgs[name] = im; res(); };
+        im.onerror = () => { imgs[name] = null; res(); };   // draw a fallback shape
+        im.src = src;
+    });
+}
+
+// ---- Audio state ----
+let audioCtx = null, mediaStream = null, workletNode = null;
+let fs = 48000;
+let envRing = null;      // ring buffer of recent instantaneous RMS envelope values
+let envCap = 0, envHead = 0, envCount = 0;
+
+// ---- Game state ----
+let calibrationActive = false, calibrateEmg = false, gameActive = false;
+let calStart = 0, gameStart = 0;
+let baselineBuf = [], mvcBuf = [], baselineValue = null, mvcValue = null;
+let score = 0;
+let birdY = H / 2;
+let coin = { active: false, x: 0, y: 0, start: 0 };
+let penalty = { active: false, x: 0, y: 0, start: 0 };
+
+function now() { return performance.now() / 1000; }
+
+// ---------------------------------------------------------------------------
+// Audio: enumerate devices, then build the processing graph.
+//   source -> highpass(20) -> lowpass(300) -> worklet(RMS) -> silent sink
+// The worklet posts the instantaneous RMS envelope back to the main thread.
+// ---------------------------------------------------------------------------
+async function initDevices() {
+    try {
+        // A first getUserMedia unlocks device labels in enumerateDevices().
+        const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+        tmp.getTracks().forEach(t => t.stop());
+    } catch (e) {
+        statusEl.textContent = 'Microphone/line-in permission denied — the game needs audio input access.';
+        return;
+    }
+    const devs = (await navigator.mediaDevices.enumerateDevices())
+        .filter(d => d.kind === 'audioinput');
+    deviceSel.innerHTML = '';
+    devs.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Audio input ${i + 1}`;
+        deviceSel.appendChild(opt);
+    });
+    startBtn.disabled = false;
+    statusEl.textContent = 'Select your SpikerBox input above, then press "Start the game" to calibrate.';
+}
+
+const WORKLET_SRC = `
+class EmgProcessor extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this.win = Math.max(1, Math.floor(${RMS_WIN} * sampleRate));
+        this.sq = new Float32Array(this.win);
+        this.idx = 0; this.sum = 0;
+    }
+    process(inputs) {
+        const input = inputs[0];
+        if (input && input[0]) {
+            const ch = input[0];
+            for (let i = 0; i < ch.length; i++) {
+                const s2 = ch[i] * ch[i];
+                this.sum += s2 - this.sq[this.idx];
+                this.sq[this.idx] = s2;
+                this.idx = (this.idx + 1) % this.win;
+            }
+            const rms = Math.sqrt(Math.max(0, this.sum / this.win));
+            this.port.postMessage(rms);
+        }
+        return true;
+    }
+}
+registerProcessor('emg-processor', EmgProcessor);
+`;
+
+async function startAudio(deviceId) {
+    if (audioCtx) return;   // already running
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+    fs = audioCtx.sampleRate;
+
+    // Ring buffer for the last CURSOR_SMOOTHING_SECONDS of envelope readings.
+    // The worklet posts ~ fs/128 messages per second.
+    envCap = Math.max(1, Math.round(CURSOR_SMOOTHING_SECONDS * fs / 128));
+    envRing = new Float32Array(envCap);
+    envHead = 0; envCount = 0;
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            deviceId: deviceId ? { exact: deviceId } : undefined,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1,
+        },
+    });
+
+    const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
+    await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    // Band-pass ≈ 4th order: two high-pass + two low-pass biquads.
+    const hp1 = audioCtx.createBiquadFilter(); hp1.type = 'highpass'; hp1.frequency.value = LOWCUT;
+    const hp2 = audioCtx.createBiquadFilter(); hp2.type = 'highpass'; hp2.frequency.value = LOWCUT;
+    const lp1 = audioCtx.createBiquadFilter(); lp1.type = 'lowpass';  lp1.frequency.value = HIGHCUT;
+    const lp2 = audioCtx.createBiquadFilter(); lp2.type = 'lowpass';  lp2.frequency.value = HIGHCUT;
+
+    workletNode = new AudioWorkletNode(audioCtx, 'emg-processor');
+    workletNode.port.onmessage = (e) => {
+        envRing[envHead] = e.data;
+        envHead = (envHead + 1) % envCap;
+        if (envCount < envCap) envCount++;
+    };
+
+    const sink = audioCtx.createGain(); sink.gain.value = 0;   // keep graph pulling, stay silent
+    source.connect(hp1); hp1.connect(hp2); hp2.connect(lp1); lp1.connect(lp2);
+    lp2.connect(workletNode); workletNode.connect(sink); sink.connect(audioCtx.destination);
+}
+
+// Latest instantaneous envelope (most recent reading).
+function currentEnv() {
+    if (envCount === 0) return 0;
+    return envRing[(envHead - 1 + envCap) % envCap];
+}
+// Envelope averaged over the smoothing window.
+function smoothedEnv() {
+    if (envCount === 0) return 0;
+    let s = 0;
+    for (let i = 0; i < envCount; i++) s += envRing[i];
+    return s / envCount;
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+startBtn.addEventListener('click', async () => {
+    try {
+        await startAudio(deviceSel.value);
+    } catch (e) {
+        statusEl.textContent = 'Could not open the selected audio device: ' + e.message;
+        return;
+    }
+    // Begin calibration (relax → contract).
+    calibrateEmg = false;
+    gameActive = false;
+    baselineBuf = []; mvcBuf = [];
+    calStart = now();
+    calibrationActive = true;
+    quitBtn.disabled = false;
+    statusEl.textContent = 'Calibrating…';
+});
+
+againBtn.addEventListener('click', () => startGame());
+quitBtn.addEventListener('click', () => {
+    calibrateEmg = false; gameActive = false; calibrationActive = false;
+    coin.active = penalty.active = false;
+    againBtn.disabled = true;
+    score = 0; scoreEl.textContent = 'Score: 0';
+    statusEl.textContent = 'Stopped. Press "Start the game" to calibrate again.';
+});
+
+function startGame() {
+    calibrateEmg = true;
+    coin.active = penalty.active = false;
+    score = 0; scoreEl.textContent = 'Score: 0';
+    gameStart = now();
+    gameActive = true;
+}
+
+function endGame() {
+    gameActive = false;
+    coin.active = penalty.active = false;
+}
+
+// ---------------------------------------------------------------------------
+// Main loop: update state + render (requestAnimationFrame).
+// ---------------------------------------------------------------------------
+function spawnCoin() {
+    coin.y = Math.random() * H;
+    coin.start = now();
+    coin.active = true;
+    coin.x = W;
+}
+function spawnPenalty() {
+    penalty.y = Math.random() * H;
+    penalty.start = now();
+    penalty.active = true;
+    penalty.x = W;
+}
+
+function update() {
+    const t = now();
+
+    // --- Calibration state machine ---
+    if (calibrationActive) {
+        const elapsed = t - calStart;
+        if (elapsed < BASELINE_DURATION) {
+            baselineBuf.push(currentEnv());
+        } else if (elapsed < TOTAL_CAL) {
+            mvcBuf.push(currentEnv());
+        } else {
+            calibrationActive = false;
+            baselineValue = baselineBuf.length ? baselineBuf.reduce((a, b) => a + b, 0) / baselineBuf.length : 0;
+            mvcValue = mvcBuf.length ? mvcBuf.reduce((a, b) => a + b, 0) / mvcBuf.length : 0;
+            againBtn.disabled = false;
+            statusEl.textContent = `Calibrated — baseline ${baselineValue.toExponential(2)}, MVC ${mvcValue.toExponential(2)}.`;
+            startGame();
+        }
+    }
+
+    // --- End the game after GAME_DURATION ---
+    if (calibrateEmg && gameActive && (t - gameStart) >= GAME_DURATION) {
+        endGame();
+    }
+
+    // --- Active game loop ---
+    if (calibrateEmg && gameActive && mvcValue && baselineValue !== null && (mvcValue - baselineValue) > 0) {
+        let cursor = (smoothedEnv() - baselineValue) / (mvcValue - baselineValue);
+        cursor = Math.min(1, Math.max(0, cursor));
+        birdY = (1 - cursor) * H;
+
+        const travel = COIN_DISAPPEAR * WINDOW_SECONDS;   // seconds visible
+        if (coin.active) {
+            const p = (t - coin.start) / WINDOW_SECONDS;
+            if (p >= COIN_DISAPPEAR) { coin.active = false; }
+            else {
+                coin.x = W - p * W;
+                if (Math.abs(coin.x - W / 2) < X_HIT && Math.abs(coin.y - birdY) < Y_HIT) {
+                    coin.active = false; score += 1; scoreEl.textContent = 'Score: ' + score;
+                }
+            }
+        }
+        if (penalty.active) {
+            const p = (t - penalty.start) / WINDOW_SECONDS;
+            if (p >= COIN_DISAPPEAR) { penalty.active = false; }
+            else {
+                penalty.x = W - p * W;
+                if (Math.abs(penalty.x - W / 2) < X_HIT && Math.abs(penalty.y - birdY) < Y_HIT) {
+                    penalty.active = false; score -= 1; scoreEl.textContent = 'Score: ' + score;
+                }
+            }
+        }
+        if (!coin.active && !penalty.active) {
+            if (Math.random() < COIN_CHANCE) spawnCoin(); else spawnPenalty();
+        }
+    }
+
+    draw(t);
+    requestAnimationFrame(update);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function drawImageCentered(im, x, y, size) {
+    if (im) {
+        const r = im.width / im.height || 1;
+        const w = size * (r >= 1 ? r : 1), h = size * (r >= 1 ? 1 : 1 / r);
+        ctx2d.drawImage(im, x - w / 2, y - h / 2, w, h);
+    } else {
+        ctx2d.beginPath();
+        ctx2d.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx2d.fill();
+    }
+}
+
+function overlay(lines, sub) {
+    ctx2d.save();
+    ctx2d.textAlign = 'center';
+    ctx2d.fillStyle = 'rgba(0,0,0,0.6)';
+    const bw = 620, bh = sub ? 180 : 130;
+    ctx2d.fillRect(W / 2 - bw / 2, H / 2 - bh / 2, bw, bh);
+    ctx2d.fillStyle = '#fff';
+    ctx2d.font = 'bold 40px Segoe UI, sans-serif';
+    ctx2d.fillText(lines, W / 2, H / 2 + (sub ? -10 : 14));
+    if (sub) {
+        ctx2d.font = '22px Segoe UI, sans-serif';
+        ctx2d.fillText(sub, W / 2, H / 2 + 40);
+    }
+    ctx2d.restore();
+}
+
+function draw(t) {
+    // Background
+    if (imgs.background) ctx2d.drawImage(imgs.background, 0, 0, W, H);
+    else { ctx2d.fillStyle = '#0b1220'; ctx2d.fillRect(0, 0, W, H); }
+
+    ctx2d.fillStyle = 'rgba(234,170,0,0.85)';
+
+    if (calibrationActive) {
+        const elapsed = t - calStart;
+        if (elapsed < BASELINE_DURATION) overlay('Relax your muscle!', `${(BASELINE_DURATION - elapsed).toFixed(0)}s`);
+        else overlay('Contract your muscle!', `${(TOTAL_CAL - elapsed).toFixed(0)}s`);
+        return;
+    }
+
+    if (!gameActive && !calibrateEmg) {
+        // Idle: show bird + items in the middle with the rules.
+        drawImageCentered(imgs.bird, W / 2, H / 2, BIRD_SIZE);
+        drawImageCentered(imgs.coin, W / 2 + 120, H / 2, ITEM_SIZE);
+        drawImageCentered(imgs.penalty, W / 2 - 120, H / 2, ITEM_SIZE);
+        overlay('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
+        return;
+    }
+
+    // Playing
+    drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);
+    if (coin.active) drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
+    if (penalty.active) drawImageCentered(imgs.penalty, penalty.x, penalty.y, ITEM_SIZE);
+
+    // Countdown
+    if (gameActive) {
+        const remain = Math.max(0, GAME_DURATION - (t - gameStart));
+        ctx2d.save();
+        ctx2d.textAlign = 'right';
+        ctx2d.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx2d.fillRect(W - 130, 12, 118, 44);
+        ctx2d.fillStyle = '#fff';
+        ctx2d.font = 'bold 26px Segoe UI, sans-serif';
+        ctx2d.fillText(remain.toFixed(1) + 's', W - 22, 44);
+        ctx2d.restore();
+    } else {
+        overlay('Game Over!', 'Final Score: ' + score);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+(async function boot() {
+    await Promise.all([
+        loadImg('background', 'resources/background.png'),
+        loadImg('bird', 'resources/bird.png'),
+        loadImg('coin', 'resources/worm.png'),
+        loadImg('penalty', 'resources/cat.png'),
+    ]);
+    requestAnimationFrame(update);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        statusEl.textContent = 'This browser has no Web Audio input support.';
+        return;
+    }
+    await initDevices();
+})();
+</script>
+</body>
+</html>

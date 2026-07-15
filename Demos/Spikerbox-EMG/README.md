@@ -5,6 +5,23 @@ It reads a Backyard Brains **SpikerBox** over the computer's **audio input**
 (via `sounddevice`/PortAudio) and turns your muscle activity into an
 interactive game — flex to move the on-screen cursor and collect items.
 
+## Two ways to run it
+
+1. **Desktop app** ([`main.py`](main.py)) — the native PyQt5/pyqtgraph version.
+   Set up and run with `setup_emg.py` (below). Best for a single machine with
+   the SpikerBox plugged into it.
+2. **Browser version** ([`web/index.html`](web/index.html)) — a port that runs
+   entirely in the browser using the **Web Audio API** and an HTML Canvas. It is
+   served by the **DemoServer** at **`/emg/`** (see
+   [`../../DemoServer/README.md`](../../DemoServer/README.md)) so a tablet with
+   the SpikerBox in its audio jack can run it without any Python/conda install.
+   Reuses the same images in [`resources/`](resources/) and mirrors the desktop
+   game's tuning (20–300&nbsp;Hz band-pass, RMS envelope, relax/contract
+   calibration). Requires no build step — plain HTML/JS. Pick the SpikerBox from
+   the in-page input-device dropdown and grant the browser audio permission.
+
+The rest of this README covers the **desktop app**.
+
 ## Requirements
 
 - **conda** (Miniconda/Anaconda) — the setup script creates an env named `emg`

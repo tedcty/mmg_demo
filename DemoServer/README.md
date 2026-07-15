@@ -2,7 +2,9 @@
 
 Flask app that serves the outreach demo landing page (`demo.html`) at `/` and
 hosts the **SSM Shoulder Predictor** demo at `/ssm/`, backed by a Python
-prediction pipeline. Runs on **http://0.0.0.0:8000**.
+prediction pipeline. It also hosts the **Hear Your Muscles** EMG game at `/emg/`
+— a browser (Web Audio + Canvas) port of `Demos/Spikerbox-EMG`, served straight
+from that folder with no build step. Runs on **http://0.0.0.0:8000**.
 
 > Not the same thing as the standalone Tauri desktop GUI. The Tauri app is set
 > up by `Demos/SSM Demo/predict_gui/setup_project.py` and run via `run_app.py`.

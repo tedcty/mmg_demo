@@ -9,6 +9,8 @@ Routes:
   GET  /                         → demo.html
   GET  /ssm/                     → SSM Demo (built Vite dist)
   GET  /ssm/<path>               → SSM Demo static assets
+  GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
+  GET  /emg/<path>               → EMG game assets (web/ + shared resources/)
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
@@ -43,6 +45,8 @@ CORS(app)
 # ---------------------------------------------------------------------------
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo', 'predict_gui'))
+EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
+EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
 RES_DIR     = os.path.join(SSM_DIR, 'Resources')
 GUI_DIR     = os.path.join(SSM_DIR, 'TauriGUI')
@@ -134,6 +138,24 @@ def ssm_app(path):
     if not os.path.exists(target):
         return send_from_directory(VITE_DIST, 'index.html')
     return send_from_directory(VITE_DIST, path)
+
+
+@app.route('/emg/', defaults={'path': 'index.html'})
+@app.route('/emg/<path:path>')
+def emg_app(path):
+    """Browser port of the Spikerbox-EMG game (Web Audio + Canvas).
+
+    Serves web/index.html and, for anything under resources/, the shared image
+    assets that the desktop app also uses. send_from_directory blocks traversal.
+    """
+    web_target = os.path.join(EMG_WEB_DIR, path)
+    if os.path.exists(web_target):
+        return send_from_directory(EMG_WEB_DIR, path)
+    # Fall back to the demo folder so `resources/*.png` resolves to the assets
+    # shared with main.py (no duplication).
+    if os.path.exists(os.path.join(EMG_DIR, path)):
+        return send_from_directory(EMG_DIR, path)
+    return send_from_directory(EMG_WEB_DIR, 'index.html')
 
 
 # ---------------------------------------------------------------------------

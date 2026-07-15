@@ -13,3 +13,4 @@ scipy
 sounddevice
 pyqtgraph
 PyQt5
+matplotlib  # used by test.py (live plot)
