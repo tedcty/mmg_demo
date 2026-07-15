@@ -1105,7 +1105,12 @@ async function runFabrikStep() {
 
 function toggleComparison() {
   isViewingOriginal.value = !isViewingOriginal.value;
-  loadBones();
+  // Re-render from data already in memory. Calling loadBones() with no argument
+  // would re-fetch /bones.json (the shared mean model) and overwrite
+  // predictedModelData, so every later toggle would show the mean for both
+  // views. Passing the stored predicted data keeps both models intact — the
+  // render still picks meanModelData vs predictedModelData via isViewingOriginal.
+  loadBones(predictedModelData);
 }
 </script>
 
@@ -1133,7 +1138,7 @@ function toggleComparison() {
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
-              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematic Refinement' : 'Shoulder Predictor') }}</h2>
+              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : 'Shoulder Predictor') }}</h2>
               <div class="header-actions">
                 <button @click="toggleTheme" class="icon-btn" :title="isLightMode ? 'Switch to dark mode' : 'Switch to light mode'">
                     <svg v-if="isLightMode" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
@@ -1141,7 +1146,7 @@ function toggleComparison() {
                 </button>
                 <button v-if="hasPrediction" @click="toggleComparison" class="comparison-btn header-compare" :class="{ original: isViewingOriginal }">
                    <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
-                   <span v-else>📏 Compare with Mean Model</span>
+                   <span v-else>📏 View Mean Model</span>
                 </button>
                 <button @click="isKinematicVisible = !isKinematicVisible; isSettingsVisible = false" class="icon-btn" :class="{ active: isKinematicVisible }" title="Kinematic Alignment">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
@@ -1168,7 +1173,7 @@ function toggleComparison() {
 
             <div v-else-if="isKinematicVisible" class="settings-view animate-in kinematic-scroll">
               <div class="card transparent-card">
-                <h3 style="color: #FFA040">🦴 Kinematic Refinement</h3>
+                <h3 style="color: #FFA040">🦴 Kinematics</h3>
                 <p class="hint">Adjust joint coordinates along the recursive chain.</p>
                 
                 <div class="joint-group">
