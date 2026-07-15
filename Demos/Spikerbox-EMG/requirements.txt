@@ -1,0 +1,15 @@
+# Spikerbox-EMG demo — Python dependencies (Python 3.12)
+#
+# Install into the dedicated conda env (see README.md):
+#   python setup_emg.py
+# or manually:
+#   pip install -r requirements.txt
+#
+# sounddevice needs PortAudio. The pip wheel bundles it; on Linux you may
+# instead use the system library (e.g. `sudo pacman -S portaudio`).
+
+numpy
+scipy
+sounddevice
+pyqtgraph
+PyQt5
