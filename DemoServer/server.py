@@ -7,6 +7,7 @@ output files and progress queue so predictions never collide.
 
 Routes:
   GET  /                         → demo.html
+  GET  /resources/<path>         → landing-page assets (ABI logo, etc.)
   GET  /ssm/                     → SSM Demo (built Vite dist)
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
@@ -47,6 +48,7 @@ BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo', 'predict_gui'))
 EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
 EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
+ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
 RES_DIR     = os.path.join(SSM_DIR, 'Resources')
 GUI_DIR     = os.path.join(SSM_DIR, 'TauriGUI')
@@ -114,6 +116,12 @@ def _cleanup_old_sessions() -> None:
 @app.route('/')
 def index():
     return send_file(os.path.join(BASE_DIR, 'demo.html'))
+
+
+@app.route('/resources/<path:path>')
+def demo_assets(path):
+    """Landing-page static assets (e.g. the ABI logo)."""
+    return send_from_directory(ASSETS_DIR, path)
 
 
 @app.route('/bones.json')

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Hear Your Muscles — EMG Game</title>
+<title>Muscles in Control</title>
 <style>
     :root {
         --uoa-navy: #00467F;
@@ -57,8 +57,9 @@
 <body>
 <div id="wrap">
     <div class="bar">
-        <select id="device" title="Audio input device">
-            <option value="">Loading input devices…</option>
+        <button id="enableBtn">Enable microphone</button>
+        <select id="device" title="Audio input device" disabled>
+            <option value="">Enable microphone first…</option>
         </select>
         <button id="startBtn" disabled>Start the game</button>
         <button id="againBtn" disabled>Play again</button>
@@ -66,7 +67,7 @@
         <div id="score">Score: 0</div>
     </div>
     <div id="stage"><canvas id="cv" width="1000" height="700"></canvas></div>
-    <div id="status">Pick your SpikerBox input above, then press "Start the game".</div>
+    <div id="status">Press "Enable microphone" and allow audio access when prompted.</div>
     <div class="hint">
         Plug the SpikerBox into your device's audio input and select it above. The game reads the
         live audio stream, band-passes it (20–300&nbsp;Hz), and turns your muscle activation into the
@@ -104,6 +105,7 @@ const BIRD_SIZE = 90, ITEM_SIZE = 70;
 // ---- DOM ----
 const cv = document.getElementById('cv');
 const ctx2d = cv.getContext('2d');
+const enableBtn = document.getElementById('enableBtn');
 const deviceSel = document.getElementById('device');
 const startBtn = document.getElementById('startBtn');
 const againBtn = document.getElementById('againBtn');
@@ -145,16 +147,41 @@ function now() { return performance.now() / 1000; }
 // The worklet posts the instantaneous RMS envelope back to the main thread.
 // ---------------------------------------------------------------------------
 async function initDevices() {
+    // Must be called from a user gesture (button tap): iOS blocks getUserMedia
+    // outside a gesture entirely, and it's the reliable way to surface the
+    // permission prompt on desktop Chrome too.
+    enableBtn.disabled = true;
+    statusEl.textContent = 'Requesting microphone access…';
     try {
         // A first getUserMedia unlocks device labels in enumerateDevices().
         const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
         tmp.getTracks().forEach(t => t.stop());
     } catch (e) {
-        statusEl.textContent = 'Microphone/line-in permission denied — the game needs audio input access.';
+        // Surface the real cause — a bare "permission denied" hides OS-level
+        // (macOS Privacy) blocks and missing-device cases, which look identical
+        // to the user but need different fixes.
+        console.error('getUserMedia failed:', e);
+        let msg;
+        if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+            msg = 'Microphone access is blocked. On macOS: System Settings → Privacy & Security '
+                + '→ Microphone → enable your browser, then reload and allow the site prompt.';
+        } else if (e.name === 'NotFoundError' || e.name === 'OverconstrainedError') {
+            msg = 'No audio input found — connect the SpikerBox (check macOS System Settings → '
+                + 'Sound → Input) and reload.';
+        } else {
+            msg = `Could not access audio input (${e.name}: ${e.message}).`;
+        }
+        statusEl.textContent = msg;
+        enableBtn.disabled = false;   // let the user fix it and retry
         return;
     }
     const devs = (await navigator.mediaDevices.enumerateDevices())
         .filter(d => d.kind === 'audioinput');
+    if (!devs.length) {
+        statusEl.textContent = 'No audio input devices detected. Connect the SpikerBox and try again.';
+        enableBtn.disabled = false;
+        return;
+    }
     deviceSel.innerHTML = '';
     devs.forEach((d, i) => {
         const opt = document.createElement('option');
@@ -162,7 +189,9 @@ async function initDevices() {
         opt.textContent = d.label || `Audio input ${i + 1}`;
         deviceSel.appendChild(opt);
     });
+    deviceSel.disabled = false;
     startBtn.disabled = false;
+    enableBtn.textContent = 'Microphone enabled ✓';
     statusEl.textContent = 'Select your SpikerBox input above, then press "Start the game" to calibrate.';
 }
 
@@ -457,9 +486,12 @@ function draw(t) {
     requestAnimationFrame(update);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         statusEl.textContent = 'This browser has no Web Audio input support.';
+        enableBtn.disabled = true;
         return;
     }
-    await initDevices();
+    // Request the mic from a user gesture (required on iOS, reliable on desktop)
+    // rather than automatically on load.
+    enableBtn.addEventListener('click', initDevices);
 })();
 </script>
 </body>
