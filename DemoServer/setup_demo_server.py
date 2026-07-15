@@ -8,6 +8,8 @@ Prepares a fresh clone to run DemoServer/server.py end to end:
                DemoServer/requirements.txt into it.
   2. Frontend — install Node deps and build the SSM Vite bundle into
                TauriGUI/dist (this is what server.py serves at /ssm/).
+               If npm is not on PATH, Node.js is installed into the conda
+               env automatically (via conda-forge, no sudo required).
   3. Launch  — optionally start the server on http://0.0.0.0:8000.
 
 Run from anywhere:
@@ -90,24 +92,54 @@ def setup_python():
     return ok
 
 
+def ensure_node():
+    """Make sure npm/npx are available, returning them as command-prefix lists.
+
+    Prefers a system Node.js already on PATH. If none is found, installs
+    Node.js into the conda env via conda-forge (no sudo, works the same on
+    macOS/Linux/Windows) and returns `conda run`-prefixed commands.
+
+    Returns (None, None) if Node cannot be provided.
+    """
+    if shutil.which("npm") and shutil.which("npx"):
+        print("  Using Node.js already on PATH.")
+        return ["npm"], ["npx"]
+
+    print("  'npm' not found on PATH — attempting to install Node.js...")
+    if shutil.which("conda") and conda_env_exists(ENV_NAME):
+        # conda-forge ships a recent Node (Vite needs 18+); the `defaults`
+        # channel can lag, so pin the channel explicitly.
+        if run(["conda", "install", "-y", "-n", ENV_NAME, "-c", "conda-forge", "nodejs"]):
+            prefix = ["conda", "run", "--no-capture-output", "-n", ENV_NAME]
+            if run(prefix + ["npm", "--version"], check=False):
+                print(f"  SUCCESS: Node.js installed into the '{ENV_NAME}' env.")
+                return prefix + ["npm"], prefix + ["npx"]
+        print("  ERROR: automatic Node.js install failed.")
+    else:
+        print("  Cannot auto-install: the conda env is not available.")
+
+    print("  Install Node.js manually from https://nodejs.org/ and re-run.")
+    return None, None
+
+
 def setup_frontend():
     print("\n" + "=" * 54)
     print("[2/2] SSM frontend build  (served by server.py at /ssm/)")
     print("=" * 54)
 
-    if not shutil.which("npm"):
-        print("  ERROR: 'npm' not found. Install Node.js from https://nodejs.org/")
+    npm_cmd, npx_cmd = ensure_node()
+    if npm_cmd is None:
         return False
 
     lock = os.path.join(GUI_DIR, "package-lock.json")
-    install_cmd = ["npm", "ci"] if os.path.exists(lock) else ["npm", "install"]
-    print(f"  Installing Node deps ({' '.join(install_cmd)})...")
-    if not run(install_cmd, cwd=GUI_DIR):
+    sub = ["ci"] if os.path.exists(lock) else ["install"]
+    print(f"  Installing Node deps (npm {' '.join(sub)})...")
+    if not run(npm_cmd + sub, cwd=GUI_DIR):
         return False
 
     print("  Building Vite bundle into dist/ ...")
     # --base /ssm/ MUST match the route server.py serves the bundle under.
-    if not run(["npx", "vite", "build", "--base", "/ssm/"], cwd=GUI_DIR):
+    if not run(npx_cmd + ["vite", "build", "--base", "/ssm/"], cwd=GUI_DIR):
         return False
 
     print("  SUCCESS: frontend built to TauriGUI/dist.")

@@ -21,7 +21,8 @@ That single command:
    [`requirements.txt`](requirements.txt) into it.
 2. Installs the frontend Node deps and **builds the Vite bundle** into
    `Demos/SSM Demo/predict_gui/TauriGUI/dist` — this is what the server serves
-   at `/ssm/`.
+   at `/ssm/`. If `npm` isn't on your PATH, Node.js is installed into the
+   conda env automatically (via conda-forge — no sudo, works on macOS too).
 3. Launches the server on port 8000.
 
 Drop `--run` to set up without launching. Use `--run-only` to launch an
@@ -48,7 +49,8 @@ python server.py                # → http://localhost:8000
 ## Requirements
 
 - **Python 3.12** (conda recommended)
-- **Node.js + npm** (for the frontend build)
+- **Node.js + npm** (for the frontend build) — auto-installed into the conda
+  env by `setup_demo_server.py` if not already on your PATH
 - Python deps pinned in [`requirements.txt`](requirements.txt): Flask +
   flask-cors for the server, and the SSM stack (numpy, pandas, scipy,
   scikit-learn, vtk, plus `gias3` and `ptb_mmg`). All are on PyPI.
