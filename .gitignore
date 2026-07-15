@@ -21,6 +21,9 @@ Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
 # DemoServer runtime output (per-session prediction artifacts)
 DemoServer/sessions/
 
+# DemoServer TLS cert + private key (auto-generated or dropped in locally)
+DemoServer/certs/
+
 Demos/Spikerbox/.venv
 Demos/SSM Demo/predict_gui/debug
 .theia

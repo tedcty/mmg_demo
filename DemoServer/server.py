@@ -19,7 +19,8 @@ Routes:
   POST /api/save_report          → save refinement report for session X
 
 Usage:
-  conda run -n demo python server.py
+  conda run -n demo python server.py            # HTTPS on port 8000 (default)
+  conda run -n demo python server.py --http     # plain HTTP (mic only on localhost)
 
 First-time build of the SSM frontend (run once from TauriGUI/):
   npm install
@@ -31,6 +32,8 @@ import re
 import sys
 import json
 import shutil
+import socket
+import argparse
 import subprocess
 import threading
 import queue
@@ -59,6 +62,12 @@ PUBLIC_DIR  = os.path.join(GUI_DIR, 'public')
 BONES_JSON  = os.path.join(PUBLIC_DIR, 'bones.json')   # shared mean model
 ANTHRO_CSV  = os.path.join(RES_DIR, 'anthro_data.csv')
 SSM_MODEL   = os.path.join(RES_DIR, 'SSM_shape_model_103')
+
+# TLS cert/key (HTTPS is on by default — see __main__). Drop a trusted pair
+# here (e.g. from mkcert) as cert.pem/key.pem; otherwise one is auto-generated.
+CERT_DIR  = os.path.join(BASE_DIR, 'certs')
+CERT_FILE = os.path.join(CERT_DIR, 'cert.pem')
+KEY_FILE  = os.path.join(CERT_DIR, 'key.pem')
 
 # Per-session temp directory (auto-cleaned after SESSION_TTL seconds)
 SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
@@ -343,6 +352,76 @@ def save_report():
 
 
 # ---------------------------------------------------------------------------
+# HTTPS  (on by default so tablets can use the microphone in /emg/)
+# ---------------------------------------------------------------------------
+
+def _lan_ip():
+    """Best-effort primary LAN IP so it can be baked into the cert's SANs."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))   # no packets sent; just picks the route
+        return s.getsockname()[0]
+    except Exception:
+        return '127.0.0.1'
+    finally:
+        s.close()
+
+
+def _ensure_cert():
+    """Return (cert, key) paths for HTTPS, or None if TLS can't be set up.
+
+    Reuses certs/cert.pem + certs/key.pem if present (drop in a trusted pair
+    from mkcert for warning-free iOS/Android). Otherwise auto-generates a
+    persistent self-signed cert that includes localhost, 127.0.0.1 and the
+    detected LAN IP as SANs, so the same cert works from tablets and can be
+    trusted once per device.
+    """
+    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+        return CERT_FILE, KEY_FILE
+    try:
+        import ipaddress
+        from datetime import datetime, timedelta, timezone
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        ip = _lan_ip()
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        sans = [x509.DNSName('localhost'),
+                x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]
+        try:
+            sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except ValueError:
+            pass
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'MMG Demo Server')])
+        now = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder()
+                .subject_name(name).issuer_name(name)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1))
+                .not_valid_after(now + timedelta(days=3650))
+                .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .sign(key, hashes.SHA256()))
+
+        os.makedirs(CERT_DIR, exist_ok=True)
+        with open(KEY_FILE, 'wb') as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM,
+                                      serialization.PrivateFormat.TraditionalOpenSSL,
+                                      serialization.NoEncryption()))
+        with open(CERT_FILE, 'wb') as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        print(f'[OK]   Generated self-signed cert (SANs: localhost, 127.0.0.1, {ip}).')
+        return CERT_FILE, KEY_FILE
+    except Exception as e:
+        print(f'[WARN] Could not set up HTTPS ({e}). Falling back to HTTP.')
+        print('       Install `cryptography` (in requirements.txt) for HTTPS.')
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
@@ -372,11 +451,29 @@ def _startup_init():
     # Clean up any leftover session dirs from a previous run
     _cleanup_old_sessions()
 
-    print()
-    print('Listening on http://0.0.0.0:8000')
-    print('=' * 50)
-
 
 if __name__ == '__main__':
+    ap = argparse.ArgumentParser(description='MMG Outreach Demo Server')
+    ap.add_argument('--http', action='store_true',
+                    help='serve plain HTTP (disable HTTPS; the /emg/ mic will '
+                         'then only work on localhost)')
+    ap.add_argument('--port', type=int, default=8000, help='port (default 8000)')
+    args = ap.parse_args()
+
     _startup_init()
-    app.run(host='0.0.0.0', port=8000, threaded=True, debug=False)
+
+    ssl_context = None if args.http else _ensure_cert()
+    scheme = 'https' if ssl_context else 'http'
+
+    ip = _lan_ip()
+    print()
+    print(f'Listening on {scheme}://0.0.0.0:{args.port}')
+    print(f'  This device : {scheme}://localhost:{args.port}')
+    print(f'  Tablets     : {scheme}://{ip}:{args.port}')
+    if scheme == 'https':
+        print('  (self-signed cert → accept the browser warning; for iOS the mic')
+        print('   needs the cert trusted — see DemoServer/README.md)')
+    print('=' * 50)
+
+    app.run(host='0.0.0.0', port=args.port, threaded=True, debug=False,
+            ssl_context=ssl_context)

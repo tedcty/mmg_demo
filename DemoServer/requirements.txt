@@ -9,6 +9,8 @@
 # --- Web server ---
 Flask==3.1.3
 flask-cors==6.0.2
+# HTTPS is on by default; cryptography generates the self-signed cert.
+cryptography
 
 # --- SSM prediction pipeline ---
 # Imported at server startup (generate_isb_joints) and by the headless
