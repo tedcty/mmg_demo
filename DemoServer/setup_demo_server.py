@@ -10,12 +10,16 @@ Prepares a fresh clone to run DemoServer/server.py end to end:
                TauriGUI/dist (this is what server.py serves at /ssm/).
                If npm is not on PATH, Node.js is installed into the conda
                env automatically (via conda-forge, no sudo required).
-  3. Launch  — optionally start the server on http://0.0.0.0:8000.
+  3. HTTPS   — generate a trusted cert via mkcert (delegates to setup_https.py)
+               so the HTTPS server shows no browser warning. Non-fatal: if it
+               fails, the server still serves HTTPS with a self-signed cert.
+  4. Launch  — optionally start the server on https://0.0.0.0:8000.
 
 Run from anywhere:
   python DemoServer/setup_demo_server.py            # setup only
   python DemoServer/setup_demo_server.py --run      # setup, then launch
   python DemoServer/setup_demo_server.py --run-only # skip setup, just launch
+  python DemoServer/setup_demo_server.py --no-https # skip the mkcert cert step
 
 The frontend dist is gitignored, so this build step is REQUIRED after every
 fresh clone and after any change under TauriGUI/src.
@@ -35,6 +39,7 @@ REPO = os.path.normpath(os.path.join(HERE, ".."))
 GUI_DIR = os.path.join(REPO, "Demos", "SSM Demo", "predict_gui", "TauriGUI")
 REQS = os.path.join(HERE, "requirements.txt")
 SERVER = os.path.join(HERE, "server.py")
+SETUP_HTTPS = os.path.join(HERE, "setup_https.py")
 
 
 def find_conda():
@@ -114,7 +119,7 @@ def conda_env_exists(name):
 
 def setup_python():
     print("\n" + "=" * 54)
-    print(f"[1/2] Python environment  (conda env: {ENV_NAME})")
+    print(f"[1/3] Python environment  (conda env: {ENV_NAME})")
     print("=" * 54)
 
     if not CONDA:
@@ -173,7 +178,7 @@ def ensure_node():
 
 def setup_frontend():
     print("\n" + "=" * 54)
-    print("[2/2] SSM frontend build  (served by server.py at /ssm/)")
+    print("[2/3] SSM frontend build  (served by server.py at /ssm/)")
     print("=" * 54)
 
     npm_cmd, npx_cmd = ensure_node()
@@ -195,6 +200,29 @@ def setup_frontend():
     return True
 
 
+def setup_https():
+    """Generate a trusted HTTPS cert via mkcert (delegates to setup_https.py).
+
+    Non-fatal: if this fails or is skipped, the server still serves HTTPS with
+    a self-signed cert (browsers just show a warning you can click through).
+    Runs inside the `demo` env so mkcert can be auto-installed from conda-forge.
+    """
+    print("\n" + "=" * 54)
+    print("[3/3] HTTPS certificate  (trusted via mkcert)")
+    print("=" * 54)
+    if not CONDA or not conda_env_exists(ENV_NAME):
+        print("  Skipping — conda env unavailable. The server still serves HTTPS")
+        print("  with a self-signed cert; run DemoServer/setup_https.py later to")
+        print("  make it trusted.")
+        return False
+    ok = run([CONDA, "run", "--no-capture-output", "-n", ENV_NAME, "python", SETUP_HTTPS])
+    if not ok:
+        print("  HTTPS trust setup did not complete — the server still runs with")
+        print("  a self-signed cert (accept the browser warning). You can re-run:")
+        print("    python DemoServer/setup_https.py")
+    return ok
+
+
 def launch():
     print("\n" + "=" * 54)
     print("Launching DemoServer on port 8000  (HTTPS by default; Ctrl+C to stop)")
@@ -212,6 +240,9 @@ def main():
     ap = argparse.ArgumentParser(description="Set up and/or launch the MMG Demo Server.")
     ap.add_argument("--run", action="store_true", help="launch the server after setup")
     ap.add_argument("--run-only", action="store_true", help="skip setup, just launch")
+    ap.add_argument("--no-https", action="store_true",
+                    help="skip the mkcert trusted-cert step (server still serves "
+                         "HTTPS with a self-signed cert)")
     args = ap.parse_args()
 
     print("=" * 54)
@@ -224,12 +255,17 @@ def main():
 
     py_ok = setup_python()
     fe_ok = setup_frontend()
+    https_ok = None if args.no_https else setup_https()
 
     print("\n" + "=" * 54)
     print("Setup summary")
     print("=" * 54)
     print(f"  Python env ({ENV_NAME}) : {'OK' if py_ok else 'INCOMPLETE — see above'}")
     print(f"  Frontend build          : {'OK' if fe_ok else 'INCOMPLETE — see above'}")
+    if https_ok is None:
+        print("  HTTPS trusted cert      : SKIPPED (self-signed cert in use)")
+    else:
+        print(f"  HTTPS trusted cert      : {'OK' if https_ok else 'INCOMPLETE — self-signed cert in use'}")
     print("\nStart the server with:")
     print(f"  conda run -n {ENV_NAME} python DemoServer/server.py")
     print("  # or: python DemoServer/setup_demo_server.py --run-only")
