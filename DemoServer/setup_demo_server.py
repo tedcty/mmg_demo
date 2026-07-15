@@ -88,8 +88,18 @@ def run(cmd, cwd=None, check=True):
     """Run a command, streaming output. Returns True on success."""
     printable = " ".join(cmd) if isinstance(cmd, list) else cmd
     print(f"\n$ {printable}")
+    shell = not isinstance(cmd, list)
+    # On Windows, npm/npx (and other .cmd/.bat shims) can't be launched by
+    # CreateProcess directly — a bare "npm" 500s with WinError 2 even though it
+    # is on PATH. If the first token doesn't resolve to a real .exe/.com, run it
+    # through the shell so cmd.exe resolves the shim via PATHEXT.
+    if isinstance(cmd, list) and os.name == "nt":
+        resolved = shutil.which(cmd[0])
+        if not resolved or not resolved.lower().endswith((".exe", ".com")):
+            cmd = subprocess.list2cmdline(cmd)
+            shell = True
     try:
-        subprocess.run(cmd, cwd=cwd, shell=not isinstance(cmd, list), check=check)
+        subprocess.run(cmd, cwd=cwd, shell=shell, check=check)
         return True
     except subprocess.CalledProcessError as e:
         print(f"  ERROR: command failed ({e.returncode})")
