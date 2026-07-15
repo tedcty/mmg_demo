@@ -195,33 +195,6 @@ async function initDevices() {
     statusEl.textContent = 'Select your SpikerBox input above, then press "Start the game" to calibrate.';
 }
 
-const WORKLET_SRC = `
-class EmgProcessor extends AudioWorkletProcessor {
-    constructor() {
-        super();
-        this.win = Math.max(1, Math.floor(${RMS_WIN} * sampleRate));
-        this.sq = new Float32Array(this.win);
-        this.idx = 0; this.sum = 0;
-    }
-    process(inputs) {
-        const input = inputs[0];
-        if (input && input[0]) {
-            const ch = input[0];
-            for (let i = 0; i < ch.length; i++) {
-                const s2 = ch[i] * ch[i];
-                this.sum += s2 - this.sq[this.idx];
-                this.sq[this.idx] = s2;
-                this.idx = (this.idx + 1) % this.win;
-            }
-            const rms = Math.sqrt(Math.max(0, this.sum / this.win));
-            this.port.postMessage(rms);
-        }
-        return true;
-    }
-}
-registerProcessor('emg-processor', EmgProcessor);
-`;
-
 async function startAudio(deviceId) {
     if (audioCtx) return;   // already running
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -244,8 +217,8 @@ async function startAudio(deviceId) {
         },
     });
 
-    const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
-    await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+    // Load the worklet from a served file (not a blob URL) — required for iOS.
+    await audioCtx.audioWorklet.addModule('emg-worklet.js');
 
     const source = audioCtx.createMediaStreamSource(mediaStream);
     // Band-pass ≈ 4th order: two high-pass + two low-pass biquads.
@@ -254,7 +227,9 @@ async function startAudio(deviceId) {
     const lp1 = audioCtx.createBiquadFilter(); lp1.type = 'lowpass';  lp1.frequency.value = HIGHCUT;
     const lp2 = audioCtx.createBiquadFilter(); lp2.type = 'lowpass';  lp2.frequency.value = HIGHCUT;
 
-    workletNode = new AudioWorkletNode(audioCtx, 'emg-processor');
+    workletNode = new AudioWorkletNode(audioCtx, 'emg-processor', {
+        processorOptions: { rmsWin: RMS_WIN },
+    });
     workletNode.port.onmessage = (e) => {
         envRing[envHead] = e.data;
         envHead = (envHead + 1) % envCap;

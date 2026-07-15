@@ -71,3 +71,19 @@ cd "Demos/SSM Demo/predict_gui/TauriGUI" && npx vite build --base /ssm/
 Static assets are re-read per request, so a rebuild is picked up on the next
 browser reload — no server restart needed. Restart the server only when
 `server.py` or the Python pipeline changes.
+
+## Tablets & offline use
+
+For outreach events on iPad/Android tablets, note:
+
+- **Offline-ready hub.** Vue and Tailwind are **vendored** in
+  `resources/vendor/` and served locally, so the landing page (`/`) and the
+  demos work on a LAN with **no internet**. Nothing loads from a public CDN.
+- **`/ssm/`** (three.js/WebGL) and the info PDFs work over plain HTTP on iOS
+  and Android tablets.
+- **`/emg/` needs a secure context for the microphone.** Browsers block
+  `getUserMedia` on a non-`localhost` HTTP origin, so a tablet hitting
+  `http://<server-ip>:8000` gets no audio. Serve the demo over **HTTPS** for
+  remote tablets (e.g. a `mkcert` cert whose root CA is installed on each
+  tablet). The EMG audio worklet is loaded from a served file
+  (`web/emg-worklet.js`, not a `blob:` URL) so it also works on iOS/iPad.
