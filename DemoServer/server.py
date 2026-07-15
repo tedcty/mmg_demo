@@ -19,8 +19,10 @@ Routes:
   POST /api/save_report          → save refinement report for session X
 
 Usage:
-  conda run -n demo python server.py            # HTTPS on port 8000 (default)
-  conda run -n demo python server.py --http     # plain HTTP (mic only on localhost)
+  conda run -n demo python server.py         # HTTPS :8443 (+ http :8000 redirect)
+  conda run -n demo python server.py --http  # plain HTTP :8000 (mic only on localhost)
+
+Open http://<host>:8000 (auto-redirects to HTTPS) or https://<host>:8443 directly.
 
 First-time build of the SSM frontend (run once from TauriGUI/):
   npm install
@@ -421,6 +423,58 @@ def _ensure_cert():
         return None
 
 
+def _start_http_redirect(http_port, https_port):
+    """Run a tiny HTTP server that 302-redirects everything to HTTPS.
+
+    Browsers default to http:// when you type `host:port`, which resets against
+    the TLS port. This redirector on the plain-HTTP port bounces those requests
+    to https://<host>:<https_port> so no one hits ERR_CONNECTION_RESET.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _Redirect(BaseHTTPRequestHandler):
+        def _go(self):
+            host = (self.headers.get('Host', '') or '').split(':')[0] or 'localhost'
+            self.send_response(302)
+            self.send_header('Location', f'https://{host}:{https_port}{self.path}')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_OPTIONS = _go
+
+        def log_message(self, *args):
+            return  # keep the console quiet
+
+    try:
+        srv = ThreadingHTTPServer(('0.0.0.0', http_port), _Redirect)
+    except OSError as e:
+        print(f'[WARN] HTTP->HTTPS redirect not started on :{http_port} ({e}).')
+        return
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f'[OK]   HTTP :{http_port} -> HTTPS :{https_port} redirect active.')
+
+
+def _serve(port, ssl_context):
+    """Run the app, keeping Ctrl+C responsive.
+
+    The werkzeug dev server does the TLS handshake on the serving thread, so a
+    stuck handshake (seen on locked-down Windows where a security agent probes
+    the loopback TLS port) can block Ctrl+C. Run it in a daemon thread and wait
+    on the main thread, which stays interruptible; Ctrl+C then always exits.
+    """
+    import time
+    kwargs = dict(host='0.0.0.0', port=port, threaded=True, debug=False)
+    if ssl_context is not None:
+        kwargs['ssl_context'] = ssl_context
+    t = threading.Thread(target=lambda: app.run(**kwargs), daemon=True)
+    t.start()
+    try:
+        while t.is_alive():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print('\nShutting down.')
+
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -455,25 +509,36 @@ def _startup_init():
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='MMG Outreach Demo Server')
     ap.add_argument('--http', action='store_true',
-                    help='serve plain HTTP (disable HTTPS; the /emg/ mic will '
-                         'then only work on localhost)')
-    ap.add_argument('--port', type=int, default=8000, help='port (default 8000)')
+                    help='serve plain HTTP only, no TLS (mic then works only on '
+                         'localhost)')
+    ap.add_argument('--https-port', type=int, default=8443,
+                    help='HTTPS app port (default 8443)')
+    ap.add_argument('--http-port', type=int, default=8000,
+                    help='plain-HTTP port: redirects to HTTPS by default, or '
+                         'serves the app in --http mode (default 8000)')
     args = ap.parse_args()
 
     _startup_init()
 
     ssl_context = None if args.http else _ensure_cert()
-    scheme = 'https' if ssl_context else 'http'
-
     ip = _lan_ip()
     print()
-    print(f'Listening on {scheme}://0.0.0.0:{args.port}')
-    print(f'  This device : {scheme}://localhost:{args.port}')
-    print(f'  Tablets     : {scheme}://{ip}:{args.port}')
-    if scheme == 'https':
-        print('  (self-signed cert → accept the browser warning; for iOS the mic')
-        print('   needs the cert trusted — see DemoServer/README.md)')
-    print('=' * 50)
 
-    app.run(host='0.0.0.0', port=args.port, threaded=True, debug=False,
-            ssl_context=ssl_context)
+    if ssl_context:
+        # HTTPS app on 8443, with a plain-HTTP redirector on 8000 so that
+        # typing http://host:8000 auto-upgrades instead of resetting.
+        _start_http_redirect(args.http_port, args.https_port)
+        print(f'Serving HTTPS on 0.0.0.0:{args.https_port}')
+        print(f'  This device : https://localhost:{args.https_port}')
+        print(f'  Tablets     : https://{ip}:{args.https_port}')
+        print(f'  (or just open http://<host>:{args.http_port} — it redirects to HTTPS)')
+        print('  self-signed cert → accept the warning; iOS needs the cert trusted')
+        print('  (see DemoServer/README.md).')
+        print('=' * 50)
+        _serve(args.https_port, ssl_context)
+    else:
+        print(f'Serving HTTP on 0.0.0.0:{args.http_port}  (no TLS — mic only on localhost)')
+        print(f'  This device : http://localhost:{args.http_port}')
+        print(f'  Tablets     : http://{ip}:{args.http_port}  (mic blocked without HTTPS)')
+        print('=' * 50)
+        _serve(args.http_port, None)

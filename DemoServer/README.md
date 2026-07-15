@@ -4,8 +4,9 @@ Flask app that serves the outreach demo landing page (`demo.html`) at `/` and
 hosts the **SSM Shoulder Predictor** demo at `/ssm/`, backed by a Python
 prediction pipeline. It also hosts the **Hear Your Muscles** EMG game at `/emg/`
 — a browser (Web Audio + Canvas) port of `Demos/Spikerbox-EMG`, served straight
-from that folder with no build step. Runs on **https://0.0.0.0:8000** (HTTPS is
-on by default — see [Tablets & offline use](#tablets--offline-use)).
+from that folder with no build step. HTTPS is on by default: the app runs on
+**https://0.0.0.0:8443**, and **http://…:8000 auto-redirects** to it (so typing
+`host:8000` still works) — see [Tablets & offline use](#tablets--offline-use).
 
 > Not the same thing as the standalone Tauri desktop GUI. The Tauri app is set
 > up by `Demos/SSM Demo/predict_gui/setup_project.py` and run via `run_app.py`.
@@ -46,7 +47,7 @@ npx vite build --base /ssm/     # --base MUST match the /ssm/ route
 
 # 3. Run the server
 cd ../../../../DemoServer
-python server.py                # → https://localhost:8000  (add --http for plain HTTP)
+python server.py                # HTTPS :8443 (+ http :8000 redirect); --http for plain HTTP
 ```
 
 ## Requirements
@@ -87,13 +88,18 @@ For outreach events on iPad/Android tablets, note:
 
 ### HTTPS (on by default)
 
-The server serves **HTTPS on port 8000 by default**. On first run it
-auto-generates a persistent self-signed cert in `certs/` (git-ignored) whose
-SANs include `localhost`, `127.0.0.1` and the detected LAN IP. Requires the
-`cryptography` package (in `requirements.txt`). Use `--http` to opt out.
+The server serves **HTTPS on port 8443 by default**, plus a plain-HTTP
+redirector on **:8000** that 302s to HTTPS — so `http://<host>:8000` (what
+browsers assume when you type `host:8000`) auto-upgrades instead of resetting.
+On first run it auto-generates a persistent self-signed cert in `certs/`
+(git-ignored) whose SANs include `localhost`, `127.0.0.1` and the detected LAN
+IP. Requires the `cryptography` package (in `requirements.txt`). Use `--http`
+to opt out (plain HTTP on :8000, mic then only on localhost); `--https-port` /
+`--http-port` change the ports.
 
-Open the tablet at **`https://<server-ip>:8000`** (the launch banner prints the
-exact URL). A self-signed cert triggers a browser warning:
+Open the tablet at **`http://<server-ip>:8000`** (redirects) or
+**`https://<server-ip>:8443`** directly. A self-signed cert triggers a browser
+warning:
 
 - **Android Chrome** — tap **Advanced → Proceed**; the mic then prompts normally.
 - **iOS/iPad Safari** — Safari will *not* grant the mic to an untrusted cert

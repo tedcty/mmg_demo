@@ -235,7 +235,7 @@ def setup_https():
 
 def launch():
     print("\n" + "=" * 54)
-    print("Launching DemoServer on port 8000  (HTTPS by default; Ctrl+C to stop)")
+    print("Launching DemoServer  (HTTPS :8443, http://…:8000 redirects; Ctrl+C to stop)")
     print("=" * 54)
     if CONDA and conda_env_exists(ENV_NAME):
         cmd = [CONDA, "run", "--no-capture-output", "-n", ENV_NAME, "python", SERVER]
