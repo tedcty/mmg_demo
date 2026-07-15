@@ -11,7 +11,7 @@ from scipy.signal import butter, sosfilt
 # --------------------------------
 # Game definitions
 # --------------------------------
-game_duration = 15.0 # in seconds
+game_duration = 30.0 # in seconds
 window_seconds = 2 # This defines the x-axis, the smaller the faster the game
 coin_chance = 0.7 # Percentage of coins appearing vs. penalties
 coin_disappear = 0.6 # Must be >=0.5; Coin or penalty will disappear after % of total time (window_seconds), 0.5 is position of the bird
@@ -67,8 +67,8 @@ calibrate_emg = False # Boolean about calibration applied to EMG data
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 bg_path = os.path.join(BASE_DIR, "resources", "background.png")
 bird_path = os.path.join(BASE_DIR, "resources", "bird.png")
-coin_path = os.path.join(BASE_DIR, "resources", "coin.png")
-penalty_path = os.path.join(BASE_DIR, "resources", "penalty.png")
+coin_path = os.path.join(BASE_DIR, "resources", "worm.png")
+penalty_path = os.path.join(BASE_DIR, "resources", "cat.png")
 
 bird_y = 0.0
 coin_active = penalty_active = False
@@ -76,7 +76,7 @@ coin_start_time = penalty_start_time = 0.0
 coin_y = penalty_y = 0.0
 coin_x = penalty_x = 0.0
 
-X_HIT_THRESHOLD = 50    # how close to midline
+X_HIT_THRESHOLD = 50    # horizontal tolerance (to midline)
 Y_HIT_THRESHOLD = 30    # vertical tolerance
 
 score = 0
@@ -206,6 +206,8 @@ def quit_game():
     game_active = False
     curve.setVisible(False)
     game_over_label.hide()
+    coin_item.setVisible(False)
+    penalty_item.setVisible(False)
     start_button.setEnabled(False)  # enabled once calibration has completed
 
     # Reset score
@@ -254,7 +256,7 @@ bird_item = QtWidgets.QGraphicsPixmapItem(bird_img)
 bird_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
 bird_item.setVisible(False)
 bird_item.setZValue(100)
-bird_item.setOffset(-bird_img.width() / 2, -bird_img.height()) # This offsets the height of the bird such that bird is standing on the floor at 0
+bird_item.setOffset(-bird_img.width() / 2, -bird_img.height() / 2) # Remove the /2 for the y coordinate to make the bird stand on the floor
 
 view = plot.getViewBox()
 win.scene().addItem(bird_item)
@@ -382,11 +384,11 @@ QLabel {
 }
 """)
 rules_label.setAlignment(QtCore.Qt.AlignCenter)
-rules_label.setText("How does this game work?\n\nMove the bird up and down\nby contracting and relaxing your muscle!\n\nCatch the yellow coins\nand avoid the red penalties!")
+rules_label.setText("Move the bird up and down\nby contracting and relaxing your muscle!\n\nCatch the worms and avoid the cats!")
 rules_label.adjustSize()
 rules_label.move(
     main_rect.center().x() - rules_label.width() // 2,
-    main_rect.center().y() - main_rect.center().y() + rules_label.height()
+    rules_label.height() // 2
 )
 rules_label.hide()
 
@@ -433,6 +435,8 @@ def update():
         if calibration_active:
             rules_label.hide()
             bird_item.setVisible(False)
+            coin_item.setVisible(False)
+            penalty_item.setVisible(False)
 
             if elapsed < baseline_duration:
                 # Phase 1: baseline (relaxed)
@@ -473,10 +477,12 @@ def update():
         if not (game_active or calibration_active or calibrate_emg):
             # Show bird in center
             rect = view.sceneBoundingRect()
-            bird_x = rect.center().x()
-            bird_y = rect.center().x()
-            bird_item.setPos(bird_x, bird_y)
+            bird_item.setPos(rect.center().x(), rect.center().y())
+            coin_item.setPos(rect.center().x() + bird_img.width(), rect.center().y())
+            penalty_item.setPos(rect.center().x() - bird_img.width(), rect.center().y())
             bird_item.setVisible(True)
+            coin_item.setVisible(True)
+            penalty_item.setVisible(True)
 
             # Show rules
             rules_label.raise_()
