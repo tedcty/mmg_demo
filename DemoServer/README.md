@@ -99,20 +99,29 @@ exact URL). A self-signed cert triggers a browser warning:
 - **iOS/iPad Safari** — Safari will *not* grant the mic to an untrusted cert
   even after "visit anyway", so the cert must be **trusted once per iPad**.
 
-**Warning-free on iPad — use `mkcert`:**
+**Warning-free — one command:**
 
 ```bash
-# once, on the server machine
+python DemoServer/setup_https.py        # installs a local CA + writes certs/
+```
+
+This runs `mkcert` (auto-installed via conda-forge if needed): it trusts a local
+CA on **this** machine and writes `certs/cert.pem` + `certs/key.pem` for
+`localhost`, `127.0.0.1` and your LAN IP. `server.py` prefers those over the
+self-signed cert, so **this PC and Android show no warning** after a restart.
+Pass extra hostnames/IPs as arguments if needed. Equivalent manual steps:
+
+```bash
 mkcert -install
 mkcert -cert-file DemoServer/certs/cert.pem -key-file DemoServer/certs/key.pem \
        <server-lan-ip> localhost 127.0.0.1
 ```
 
-The server prefers `certs/cert.pem` + `certs/key.pem` if present. Then install
-`mkcert`'s **root CA** (`mkcert -CAROOT` → `rootCA.pem`) on each iPad once:
-AirDrop/email it → Settings → **General → VPN & Device Management** → install
-the profile → **General → About → Certificate Trust Settings** → enable it.
-After that, `https://<server-ip>:8000` is trusted and the mic just prompts.
+**For iPads**, also install `mkcert`'s **root CA** (`mkcert -CAROOT` →
+`rootCA.pem`, printed by the script) on each device once: AirDrop/email it →
+Settings → **General → VPN & Device Management** → install the profile →
+**General → About → Certificate Trust Settings** → enable it. After that,
+`https://<server-ip>:8000` is trusted and the mic just prompts.
 
 > Simplest alternative: run the browser **on the same machine as the server**
 > (`https://localhost:8000`) — localhost is always a secure context.
