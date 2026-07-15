@@ -8,6 +8,7 @@ output files and progress queue so predictions never collide.
 Routes:
   GET  /                         → demo.html
   GET  /resources/<path>         → landing-page assets (ABI logo, etc.)
+  GET  /posters/<path>           → info/poster PDFs (info-button targets)
   GET  /ssm/                     → SSM Demo (built Vite dist)
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
@@ -49,6 +50,7 @@ SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo',
 EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
 EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
 ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
+POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
 RES_DIR     = os.path.join(SSM_DIR, 'Resources')
 GUI_DIR     = os.path.join(SSM_DIR, 'TauriGUI')
@@ -122,6 +124,12 @@ def index():
 def demo_assets(path):
     """Landing-page static assets (e.g. the ABI logo)."""
     return send_from_directory(ASSETS_DIR, path)
+
+
+@app.route('/posters/<path:path>')
+def posters(path):
+    """Info/poster PDFs opened from the landing-page info buttons."""
+    return send_from_directory(POSTERS_DIR, path)
 
 
 @app.route('/bones.json')
