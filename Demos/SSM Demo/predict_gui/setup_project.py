@@ -63,29 +63,41 @@ def setup():
         print("SUCCESS: Rust/Cargo found.")
 
     # 3. Setup Conda Environment (Optional Step)
-    print("\n[3/3] Python Environment (thmd2)...")
-    env_name = "agent"
-    
+    # The SSM stack (numpy, pandas, scipy, scikit-learn, vtk, gias3, ptb_mmg) is
+    # shared with the DemoServer, so we reuse the same env name and the single
+    # pinned requirements file to keep the two setups from drifting apart.
+    env_name = "demo"
+    reqs = os.path.normpath(
+        os.path.join(root_dir, "..", "..", "..", "DemoServer", "requirements.txt")
+    )
+    print(f"\n[3/3] Python Environment ('{env_name}')...")
+
     # Check if conda is available
     if not shutil.which("conda"):
-        print("WARNING: 'conda' not found. You will need to manually ensure the 'thmd2' environment exists.")
+        print(f"WARNING: 'conda' not found. Ensure the '{env_name}' environment exists, then:")
+        print(f"  pip install -r {reqs}")
     else:
-        print(f"To create or update the environment, run:")
+        print(f"To create or update the environment manually, run:")
         print(f"  conda create -n {env_name} python=3.12")
         print(f"  conda activate {env_name}")
-        print(f"  pip install numpy pandas scikit-learn vtk gias3 ptb")
-        
-        choice = input(f"\nWould you like to try creating/updating the '{env_name}' environment now? (y/n): ")
+        print(f"  pip install -r {reqs}")
+
+        choice = input(f"\nWould you like to create/update the '{env_name}' environment now? (y/n): ")
         if choice.lower() == 'y':
-            print(f"Updating {env_name}...")
-            # This assumes the user has access to the required packages
-            run_command(f"conda install -n {env_name} -y numpy pandas scikit-learn vtk")
-            print("\nNote: 'gias3' and 'ptb' often require manual installation or specific wheels.")
+            # Create the env if it doesn't exist yet (harmless if it already does).
+            run_command(["conda", "create", "-y", "-n", env_name, "python=3.12"])
+            print(f"Installing pinned dependencies into '{env_name}'...")
+            if run_command(["conda", "run", "-n", env_name, "pip", "install", "-r", reqs]):
+                print("SUCCESS: Python dependencies installed.")
+            else:
+                print("ERROR: dependency install failed — see the pip output above.")
 
     print("\n====================================================")
     print("Setup Complete!")
-    print("You can now run the application using:")
+    print("You can now run the Tauri desktop app using:")
+    print(f"  conda activate {env_name}")
     print("  python run_app.py")
+    print("\n(For the web Demo Server instead, see DemoServer/README.md)")
     print("====================================================")
 
 if __name__ == "__main__":
