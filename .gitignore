@@ -24,6 +24,10 @@ DemoServer/sessions/
 # DemoServer TLS cert + private key (auto-generated or dropped in locally)
 DemoServer/certs/
 
+# DemoServer double-click launcher (generated per-machine with absolute paths)
+DemoServer/run_demo_server.bat
+DemoServer/run_demo_server.sh
+
 Demos/Spikerbox/.venv
 Demos/SSM Demo/predict_gui/debug
 .theia

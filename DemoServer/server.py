@@ -516,12 +516,22 @@ if __name__ == '__main__':
     ap.add_argument('--http-port', type=int, default=8000,
                     help='plain-HTTP port: redirects to HTTPS by default, or '
                          'serves the app in --http mode (default 8000)')
+    ap.add_argument('--open', action='store_true',
+                    help='open the demo in the default browser once serving')
     args = ap.parse_args()
 
     _startup_init()
 
     ssl_context = None if args.http else _ensure_cert()
     ip = _lan_ip()
+
+    if args.open:
+        # Open the plain-HTTP URL; it redirects to HTTPS when TLS is on. A short
+        # delay lets the server bind first so the first load doesn't fail.
+        import webbrowser
+        url = f'http://localhost:{args.http_port}'
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
     print()
 
     if ssl_context:
