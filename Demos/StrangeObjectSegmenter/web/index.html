@@ -1,13 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" class="md-dark">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Strange Object Segmenter</title>
 <link rel="stylesheet" href="/resources/vendor/material.css">
-<script type="importmap">
-{ "imports": { "three": "/resources/vendor/three/three.module.js" } }
-</script>
 <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--md-sys-color-background);
@@ -403,15 +400,22 @@ function makeVoxels(THREE, sample, colorHex, opacity) {
     return mesh;
 }
 function frameGroup() {
-    const { THREE, group, camera, controls } = R;
+    const { THREE, group, camera } = R;
     const box = new THREE.Box3().setFromObject(group);
     if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
+    box.getCenter(R.target);
     const size = box.getSize(new THREE.Vector3()).length() || 60;
-    controls.target.copy(center);
-    camera.position.copy(center).add(new THREE.Vector3(size * 0.55, size * 0.4, size * 0.85));
-    camera.near = size / 100; camera.far = size * 10; camera.updateProjectionMatrix();
-    controls.update();
+    R.dist = size * 1.15;
+    camera.near = size / 100; camera.far = size * 12; camera.updateProjectionMatrix();
+    updateCam();
+}
+function updateCam() {
+    const { camera, target, dist, yaw, pitch } = R;
+    camera.position.set(
+        target.x + dist * Math.cos(pitch) * Math.sin(yaw),
+        target.y + dist * Math.sin(pitch),
+        target.z + dist * Math.cos(pitch) * Math.cos(yaw));
+    camera.lookAt(target);
 }
 function setMode(mode) {
     curMode = mode;
@@ -438,33 +442,54 @@ function onResize() {
 window.addEventListener('resize', onResize);
 function animate() {
     if (!R || !R.running) return;
-    R.group.rotation.y += 0.004;
-    R.controls.update();
+    if (!R.dragging) R.yaw += 0.004;      // gentle auto-orbit
+    updateCam();
     R.renderer.render(R.scene, R.camera);
     requestAnimationFrame(animate);
 }
 async function openReveal() {
     revealEl.classList.add('show');
-    if (!R) {
-        const THREE = await import('three');
-        const { OrbitControls } = await import('/resources/vendor/three/OrbitControls.js');
-        const host = document.getElementById('reveal-canvas');
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setPixelRatio(Math.min(2, devicePixelRatio));
-        host.appendChild(renderer.domElement);
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x0c0c48);   // Waitematā
-        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-        const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(1, 1, 1.4); scene.add(dl);
-        const group = new THREE.Group(); scene.add(group);
-        R = { THREE, renderer, scene, camera, controls, group, host, running: false };
+    revealEmpty.hidden = true;
+    try {
+        if (!R) {
+            // Direct-URL import (no import map / bare specifier). Manual orbit
+            // controls instead of OrbitControls (fewer moving parts, offline).
+            const THREE = await import('/resources/vendor/three/three.module.js');
+            const host = document.getElementById('reveal-canvas');
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+            renderer.domElement.style.touchAction = 'none';
+            host.appendChild(renderer.domElement);
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0c0c48);   // Waitematā
+            const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 4000);
+            scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+            const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(1, 1.2, 1.4); scene.add(dl);
+            const group = new THREE.Group(); scene.add(group);
+            R = { THREE, renderer, scene, camera, group, host, running: false,
+                  target: new THREE.Vector3(), dist: 100, yaw: 0.7, pitch: 0.5, dragging: false };
+            let lx = 0, ly = 0;
+            const el = renderer.domElement;
+            el.addEventListener('pointerdown', e => { R.dragging = true; lx = e.clientX; ly = e.clientY; el.setPointerCapture(e.pointerId); });
+            el.addEventListener('pointermove', e => {
+                if (!R.dragging) return;
+                R.yaw -= (e.clientX - lx) * 0.01;
+                R.pitch = Math.max(-1.4, Math.min(1.4, R.pitch + (e.clientY - ly) * 0.01));
+                lx = e.clientX; ly = e.clientY;
+            });
+            const stop = () => { R.dragging = false; };
+            el.addEventListener('pointerup', stop);
+            el.addEventListener('pointercancel', stop);
+            el.addEventListener('wheel', e => { R.dist = Math.max(5, R.dist * Math.exp(e.deltaY * 0.001)); e.preventDefault(); }, { passive: false });
+        }
+        onResize();
+        setMode(curMode);
+        if (!R.running) { R.running = true; animate(); }
+    } catch (err) {
+        console.error('3D reveal failed:', err);
+        revealEmpty.hidden = false;
+        revealEmpty.textContent = '3D failed to load: ' + (err && err.message || err);
     }
-    onResize();
-    setMode(curMode);
-    if (!R.running) { R.running = true; animate(); }
 }
 function closeReveal() { revealEl.classList.remove('show'); if (R) R.running = false; }
 document.getElementById('revealBtn').addEventListener('click', openReveal);
