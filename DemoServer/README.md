@@ -48,6 +48,7 @@ npx vite build --base /ssm/     # --base MUST match the /ssm/ route
 # 3. Run the server
 cd ../../../../DemoServer
 python server.py                # HTTPS :8443 (+ http :8000 redirect); --http for plain HTTP
+python server.py --check        # preflight doctor only: checks env/frontend/cert/ports
 ```
 
 ## Requirements

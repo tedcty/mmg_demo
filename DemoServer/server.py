@@ -23,6 +23,7 @@ Routes:
 Usage:
   conda run -n demo python server.py         # HTTPS :8443 (+ http :8000 redirect)
   conda run -n demo python server.py --http  # plain HTTP :8000 (mic only on localhost)
+  conda run -n demo python server.py --check # preflight doctor only, then exit
 
 Open http://<host>:8000 (auto-redirects to HTTPS) or https://<host>:8443 directly.
 
@@ -547,6 +548,81 @@ def _serve(port, ssl_context):
 
 
 # ---------------------------------------------------------------------------
+# Preflight "doctor"
+# ---------------------------------------------------------------------------
+
+def _port_free(port):
+    """True if nothing is already listening on the port."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(('0.0.0.0', port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _doctor(https_port, http_port, want_https):
+    """Check the common things that break a run and print a clear report.
+
+    Returns False only on a fatal problem (the port we need is taken); warnings
+    don't stop the server.
+    """
+    print('\n' + '-' * 50)
+    print('Preflight check')
+    print('-' * 50)
+    fatal = False
+
+    def line(label, status, hint=''):
+        print(f'  [{status:<4}] {label}' + (f'  - {hint}' if hint else ''))
+
+    # SSM frontend (needed for /ssm/ only)
+    if os.path.isdir(VITE_DIST):
+        line('SSM frontend built', 'OK')
+    else:
+        line('SSM frontend built', 'WARN',
+             'not built → /ssm/ shows a build message. Run setup_demo_server.py.')
+
+    # SSM prediction inputs
+    if os.path.exists(ANTHRO_CSV) and os.path.isdir(SSM_MODEL):
+        line('SSM model + data', 'OK')
+    else:
+        line('SSM model + data', 'WARN', 'Resources/ missing → SSM predictions fail')
+
+    line('bones.json', 'OK' if os.path.exists(BONES_JSON) else 'WARN',
+         '' if os.path.exists(BONES_JSON) else 'not generated yet')
+
+    # HTTPS bits
+    if want_https:
+        if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+            line('TLS cert', 'OK')
+        else:
+            line('TLS cert', 'INFO', 'will be auto-generated on start')
+        if os.path.exists(ROOTCA_FILE):
+            line('tablet trust CA', 'OK', 'served at /rootCA.crt (/trust)')
+        else:
+            line('tablet trust CA', 'INFO',
+                 'run setup_https.py for a trusted cert + /trust page')
+    else:
+        line('mode', 'INFO', 'plain HTTP (--http) — mic only works on localhost')
+
+    # Ports
+    main_port = https_port if want_https else http_port
+    if _port_free(main_port):
+        line(f'port {main_port} free', 'OK')
+    else:
+        line(f'port {main_port} free', 'FAIL',
+             'already in use — stop the other server (close its window) and retry')
+        fatal = True
+    if want_https and not _port_free(http_port):
+        line(f'port {http_port} (redirect)', 'WARN', 'in use → redirect will be skipped')
+
+    print('-' * 50)
+    return not fatal
+
+
+# ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
@@ -555,12 +631,8 @@ def _startup_init():
     print('MMG Outreach Demo Server')
     print('=' * 50)
 
-    if not os.path.isdir(VITE_DIST):
-        print(f'[WARN] SSM frontend not built. Run from {GUI_DIR}:')
-        print('       npm install && npx vite build --base /ssm/')
-    else:
-        print(f'[OK]   SSM frontend dist found.')
-
+    # Generate bones.json from the mean model if it isn't there yet (the doctor
+    # reports its presence; this is the one step with a side effect).
     if not os.path.exists(BONES_JSON):
         print('[INFO] Generating initial bones.json from mean model...')
         try:
@@ -570,8 +642,6 @@ def _startup_init():
             print('[OK]   Initial bones.json generated.')
         except Exception as e:
             print(f'[WARN] Initial assembly failed: {e}')
-    else:
-        print('[OK]   bones.json found.')
 
     # Clean up any leftover session dirs from a previous run
     _cleanup_old_sessions()
@@ -589,12 +659,21 @@ if __name__ == '__main__':
                          'serves the app in --http mode (default 8000)')
     ap.add_argument('--open', action='store_true',
                     help='open the demo in the default browser once serving')
+    ap.add_argument('--check', action='store_true',
+                    help='run the preflight doctor and exit (no server)')
     args = ap.parse_args()
 
     _startup_init()
 
     ssl_context = None if args.http else _ensure_cert()
     ip = _lan_ip()
+
+    ok = _doctor(args.https_port, args.http_port, ssl_context is not None)
+    if args.check:
+        sys.exit(0 if ok else 1)
+    if not ok:
+        print('\nPreflight found a fatal problem (see FAIL above). Not starting.')
+        sys.exit(1)
 
     if args.open:
         # Open the plain-HTTP URL; it redirects to HTTPS when TLS is on. A short
