@@ -9,6 +9,8 @@ Routes:
   GET  /                         → demo.html
   GET  /resources/<path>         → landing-page assets (ABI logo, etc.)
   GET  /posters/<path>           → info/poster PDFs (info-button targets)
+  GET  /trust                    → tablet cert-trust instructions (also on HTTP)
+  GET  /rootCA.crt               → the CA to install on a tablet (also on HTTP)
   GET  /ssm/                     → SSM Demo (built Vite dist)
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
@@ -70,6 +72,18 @@ SSM_MODEL   = os.path.join(RES_DIR, 'SSM_shape_model_103')
 CERT_DIR  = os.path.join(BASE_DIR, 'certs')
 CERT_FILE = os.path.join(CERT_DIR, 'cert.pem')
 KEY_FILE  = os.path.join(CERT_DIR, 'key.pem')
+# Root CA handed out at /rootCA.crt so tablets can trust the server (copied here
+# by setup_https.py). Falls back to the leaf cert if there is no separate CA.
+ROOTCA_FILE = os.path.join(CERT_DIR, 'rootCA.pem')
+TRUST_HTML  = os.path.join(BASE_DIR, 'trust.html')
+
+
+def _rootca_path():
+    if os.path.exists(ROOTCA_FILE):
+        return ROOTCA_FILE
+    if os.path.exists(CERT_FILE):
+        return CERT_FILE
+    return None
 
 # Per-session temp directory (auto-cleaned after SESSION_TTL seconds)
 SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
@@ -135,6 +149,25 @@ def index():
 def demo_assets(path):
     """Landing-page static assets (e.g. the ABI logo)."""
     return send_from_directory(ASSETS_DIR, path)
+
+
+@app.route('/trust')
+def trust_page():
+    """Instructions for trusting the server's cert on a tablet."""
+    if not os.path.exists(TRUST_HTML):
+        return 'trust.html missing', 404
+    return send_file(TRUST_HTML)
+
+
+@app.route('/rootCA.crt')
+def root_ca():
+    """The CA/cert to install on a tablet so HTTPS (and the EMG mic) is trusted."""
+    ca = _rootca_path()
+    if not ca:
+        return 'No certificate available yet — run setup_https.py.', 404
+    # This MIME makes iOS/Android offer to install it as a certificate.
+    return send_file(ca, mimetype='application/x-x509-ca-cert',
+                     as_attachment=True, download_name='rootCA.crt')
 
 
 @app.route('/posters/<path:path>')
@@ -433,13 +466,51 @@ def _start_http_redirect(http_port, https_port):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class _Redirect(BaseHTTPRequestHandler):
-        def _go(self):
+        def _redirect(self):
             host = (self.headers.get('Host', '') or '').split(':')[0] or 'localhost'
             self.send_response(302)
             self.send_header('Location', f'https://{host}:{https_port}{self.path}')
             self.send_header('Content-Length', '0')
             self.end_headers()
-        do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_OPTIONS = _go
+
+        def _send_file(self, path, ctype, download=None):
+            try:
+                with open(path, 'rb') as f:
+                    data = f.read()
+            except OSError:
+                self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(data)))
+            if download:
+                self.send_header('Content-Disposition', f'attachment; filename="{download}"')
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            # The trust page + CA must stay on plain HTTP: before the cert is
+            # installed the HTTPS site is untrusted, so redirecting them would
+            # be a chicken-and-egg trap. Everything else upgrades to HTTPS.
+            path = self.path.split('?', 1)[0]
+            if path == '/rootCA.crt':
+                ca = _rootca_path()
+                if ca:
+                    return self._send_file(ca, 'application/x-x509-ca-cert', 'rootCA.crt')
+                self.send_response(404)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            if path in ('/trust', '/trust/'):
+                return self._send_file(TRUST_HTML, 'text/html; charset=utf-8')
+            self._redirect()
+
+        do_POST = do_PUT = do_DELETE = do_OPTIONS = _redirect
+
+        def do_HEAD(self):
+            self._redirect()
 
         def log_message(self, *args):
             return  # keep the console quiet
@@ -542,8 +613,7 @@ if __name__ == '__main__':
         print(f'  This device : https://localhost:{args.https_port}')
         print(f'  Tablets     : https://{ip}:{args.https_port}')
         print(f'  (or just open http://<host>:{args.http_port} — it redirects to HTTPS)')
-        print('  self-signed cert → accept the warning; iOS needs the cert trusted')
-        print('  (see DemoServer/README.md).')
+        print(f'  New tablet? open http://{ip}:{args.http_port}/trust to install the cert.')
         print('=' * 50)
         _serve(args.https_port, ssl_context)
     else:

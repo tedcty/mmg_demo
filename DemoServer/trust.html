@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trust this demo server</title>
+<style>
+    :root { --uoa-navy:#00467F; --uoa-gold:#EAAA00; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+           background:#f4f7f9; color:#1e293b; line-height:1.5; }
+    .bar { background:var(--uoa-gold); height:6px; }
+    header { background:var(--uoa-navy); color:#fff; padding:20px; }
+    header h1 { margin:0; font-size:20px; }
+    main { max-width:680px; margin:0 auto; padding:20px; }
+    .card { background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+            padding:20px; margin-bottom:16px; }
+    .dl { display:block; text-align:center; background:var(--uoa-navy); color:#fff;
+          text-decoration:none; font-weight:700; padding:16px; border-radius:8px;
+          font-size:18px; margin:8px 0 4px; }
+    .dl:active { background:#00335e; }
+    .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    .tab { flex:1; min-width:90px; text-align:center; padding:10px; border-radius:6px;
+           border:2px solid #e2e8f0; background:#fff; font-weight:700; cursor:pointer; }
+    .tab.active { border-color:var(--uoa-navy); color:var(--uoa-navy); background:#eff6ff; }
+    ol { margin:0; padding-left:22px; }
+    li { margin:6px 0; }
+    .note { font-size:13px; color:#64748b; }
+    .warn { background:#fff7ed; border:1px solid #fed7aa; color:#9a3412;
+            border-radius:8px; padding:12px; font-size:13px; }
+    .steps { display:none; }
+    .steps.active { display:block; }
+    code { background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+    a.go { color:var(--uoa-navy); font-weight:700; }
+</style>
+</head>
+<body>
+<div class="bar"></div>
+<header><h1>Trust this demo server</h1></header>
+<main>
+    <div class="card">
+        <p>To run the muscle (EMG) game, this tablet needs to trust the demo
+           server's certificate <strong>once</strong>. Two steps: download it,
+           then turn trust on.</p>
+        <a class="dl" href="/rootCA.crt" download="rootCA.crt">1 — Download the certificate</a>
+        <p class="note">If nothing happens, your browser downloaded a file called
+           <code>rootCA.crt</code>. Continue with the steps below.</p>
+    </div>
+
+    <div class="card">
+        <div class="tabs">
+            <div class="tab" data-os="ios">iPad / iPhone</div>
+            <div class="tab" data-os="android">Android</div>
+            <div class="tab" data-os="windows">Windows</div>
+        </div>
+
+        <div class="steps" data-os="ios">
+            <strong>2 — Install &amp; trust (iOS/iPadOS)</strong>
+            <ol>
+                <li>After downloading, tap <strong>Allow</strong> to download the profile.</li>
+                <li>Open <strong>Settings → General → VPN &amp; Device Management</strong>,
+                    tap the <em>mkcert</em> profile, then <strong>Install</strong> (enter passcode).</li>
+                <li>Then go to <strong>Settings → General → About → Certificate Trust
+                    Settings</strong> and switch <strong>ON</strong> the mkcert certificate.</li>
+            </ol>
+            <p class="note">The second step (Certificate Trust Settings) is easy to
+               miss — without it the game still won't get the mic.</p>
+        </div>
+
+        <div class="steps" data-os="android">
+            <strong>2 — Install (Android)</strong>
+            <ol>
+                <li>Open <strong>Settings</strong> and search for <strong>“CA
+                    certificate”</strong> (Security → Encryption &amp; credentials →
+                    Install a certificate → CA certificate).</li>
+                <li>Pick the downloaded <code>rootCA.crt</code> and confirm.</li>
+                <li>You may need a screen lock (PIN/pattern) set on the device first.</li>
+            </ol>
+            <p class="note">Chrome may show a “network may be monitored” note — that's
+               expected for a local demo certificate.</p>
+        </div>
+
+        <div class="steps" data-os="windows">
+            <strong>2 — Install (Windows)</strong>
+            <ol>
+                <li>Open the downloaded <code>rootCA.crt</code> → <strong>Install
+                    Certificate</strong>.</li>
+                <li>Choose <strong>Current User</strong> → <strong>Place all
+                    certificates in the following store</strong> → <strong>Trusted Root
+                    Certification Authorities</strong> → Finish, and accept the warning.</li>
+            </ol>
+            <div class="warn">On a managed/work Windows tablet, IT policy may block
+               installing a root certificate. If it fails, use an iPad or Android
+               tablet for the EMG game, or ask whoever set up the kit to pre-install it.</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <p>Done? <a class="go" href="/">Continue to the demos →</a></p>
+    </div>
+</main>
+<script>
+    const tabs = document.querySelectorAll('.tab');
+    const steps = document.querySelectorAll('.steps');
+    function show(os) {
+        tabs.forEach(t => t.classList.toggle('active', t.dataset.os === os));
+        steps.forEach(s => s.classList.toggle('active', s.dataset.os === os));
+    }
+    tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.os)));
+    // Auto-select based on the device.
+    const ua = navigator.userAgent;
+    const os = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document)
+        ? 'ios' : /Android/.test(ua) ? 'android' : 'windows';
+    show(os);
+</script>
+</body>
+</html>

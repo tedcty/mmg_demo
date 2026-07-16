@@ -102,7 +102,8 @@ def main():
     if not run([mkcert, "-cert-file", CERT_FILE, "-key-file", KEY_FILE, *hosts]):
         return 1
 
-    # 3) Report where the root CA lives (for installing on tablets).
+    # 3) Report where the root CA lives, and copy it next to the certs so the
+    #    server can hand it out at /rootCA.crt (the self-serve tablet trust page).
     caroot = ""
     try:
         caroot = subprocess.run(
@@ -110,6 +111,12 @@ def main():
         ).stdout.strip()
     except Exception:
         pass
+    if caroot:
+        src = os.path.join(caroot, "rootCA.pem")
+        if os.path.exists(src):
+            shutil.copyfile(src, os.path.join(CERT_DIR, "rootCA.pem"))
+            print(f"  Copied root CA to {os.path.join(CERT_DIR, 'rootCA.pem')} "
+                  f"(served at /rootCA.crt → /trust page).")
 
     print("\n" + "=" * 54)
     print("Done — server.py will use these on its next start:")

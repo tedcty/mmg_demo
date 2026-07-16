@@ -123,11 +123,28 @@ mkcert -cert-file DemoServer/certs/cert.pem -key-file DemoServer/certs/key.pem \
        <server-lan-ip> localhost 127.0.0.1
 ```
 
-**For iPads**, also install `mkcert`'s **root CA** (`mkcert -CAROOT` →
-`rootCA.pem`, printed by the script) on each device once: AirDrop/email it →
-Settings → **General → VPN & Device Management** → install the profile →
-**General → About → Certificate Trust Settings** → enable it. After that,
-`https://<server-ip>:8000` is trusted and the mic just prompts.
+### Trusting tablets (self-serve)
 
-> Simplest alternative: run the browser **on the same machine as the server**
-> (`https://localhost:8000`) — localhost is always a secure context.
+Every tablet that runs the **EMG game** (SpikerBox in its mic input) needs the
+CA installed once. `setup_https.py` copies the root CA next to the certs, and
+the server hands it out with instructions at a plain-HTTP page so tablets can
+reach it **before** they trust the cert:
+
+- On the tablet, open **`http://<server-ip>:8000/trust`** → tap **Download the
+  certificate** → follow the per-OS steps shown (auto-selected for iOS / Android
+  / Windows). iOS needs the extra **Settings → General → About → Certificate
+  Trust Settings** toggle.
+
+**Do this once per tablet when you prep the kit**, not at every event: because
+you own the tablets and the mkcert CA lasts ~10 years, a tablet trusted once
+stays trusted. Keep it stable by giving the **server a static LAN IP** on your
+router and always using the same server machine (its CA and the cert's IP SAN
+won't change). If the server IP changes, re-run
+`python DemoServer/setup_https.py <new-ip>` and re-trust the tablets.
+
+> **Windows tablet clients** are the exception: installing a root CA there is a
+> manual Certificate Import Wizard step and may be **blocked by policy** on
+> managed devices. Prefer iOS/Android for EMG tablets, or pre-install the CA.
+>
+> A single self-contained machine (server + browser) needs none of this —
+> `http://localhost:8000` is always a secure context.
