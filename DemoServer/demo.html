@@ -25,7 +25,8 @@
         .text-uoa-navy { color: var(--md-sys-color-primary); }
         .border-uoa-navy { border-color: var(--md-sys-color-primary); }
         .bg-uoa-gold   { background-color: var(--md-sys-color-tertiary-container); }
-        .text-uoa-gold { color: var(--md-sys-color-tertiary); }
+        /* Māhina bright cyan — the accent is only ever used on dark surfaces */
+        .text-uoa-gold { color: var(--md-uoa-mahina); }
         .border-uoa-gold { border-color: var(--md-sys-color-primary); }
         .text-uoa-grey { color: var(--md-sys-color-on-surface-variant); }
         .hover-uoa-navy:active, .hover-uoa-navy:hover { filter: brightness(1.08); }
@@ -81,8 +82,8 @@
         
         <!-- DASHBOARD VIEW -->
         <template v-if="!activeApp">
-            <!-- Top Branding Bar -->
-            <div class="bg-uoa-gold h-1.5 w-full"></div>
+            <!-- Top Branding Bar (Māhina cyan accent) -->
+            <div class="h-1.5 w-full" style="background: var(--md-uoa-mahina)"></div>
             
             <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
                 <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-28 sm:h-32 flex items-center justify-between gap-4">
@@ -119,7 +120,7 @@
                             ABI Musculoskeletal Modelling Group
                         </div>
                         <h2 class="text-3xl sm:text-5xl font-black mb-4 tracking-tight leading-tight">
-                            Interactive <br><span style="color: #00caef">Biomechanics</span>
+                            Interactive <br><span class="text-uoa-gold">Biomechanics</span>
                         </h2>
                         <p class="text-base sm:text-lg text-blue-100 opacity-90 leading-relaxed max-w-xl">
                             Select a demo below to see how we model and analyse the musculoskeletal system.
