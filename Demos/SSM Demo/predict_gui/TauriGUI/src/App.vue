@@ -55,7 +55,7 @@ const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
 // Colour theme — light mode is the default. Persisted so the choice survives
 // reloads; only an explicit 'dark' opts out of light.
 const isLightMode = ref(localStorage.getItem('ssm_theme') !== 'dark');
-const SCENE_BG = { light: 0xe8ecf4, dark: 0x1a1a2e };
+const SCENE_BG = { light: 0xe8ecf4, dark: 0x0c0c48 };
 
 function toggleTheme() {
   isLightMode.value = !isLightMode.value;
@@ -988,7 +988,7 @@ onMounted(async () => {
         isDevMode.value = !isDevMode.value;
         localStorage.setItem('ssm_dev_mode', isDevMode.value ? '1' : '0');
         statusMessage.value = `Dev mode ${isDevMode.value ? 'ENABLED' : 'disabled'}`;
-        statusColor.value = isDevMode.value ? '#FFA040' : '#94a3b8';
+        statusColor.value = isDevMode.value ? '#00caef' : '#94a3b8';
       }
     });
   }
@@ -1071,7 +1071,7 @@ async function runFabrikStep() {
   isPredicting.value = true;
   predictionProgress.value = 0;
   statusMessage.value = "Running FABRIK...";
-  statusColor.value = "#FFA040";
+  statusColor.value = "#00caef";
 
   try {
     const response = await fetch("/api/predict", {
@@ -1162,7 +1162,7 @@ function toggleComparison() {
 
             <div v-if="isSettingsVisible" class="settings-view animate-in">
               <div class="card transparent-card">
-                <h3 style="color: #60a5fa">📂 Backend Path Configuration</h3>
+                <h3 style="color: #3d49d8">📂 Backend Path Configuration</h3>
                 <p class="hint">Configure the internal directories for anatomical processing.</p>
                 <label>Anthropometric Data CSV</label>
                 <input v-model="anthro_path" class="input-fi" />
@@ -1176,7 +1176,7 @@ function toggleComparison() {
 
             <div v-else-if="isKinematicVisible" class="settings-view animate-in kinematic-scroll">
               <div class="card transparent-card">
-                <h3 style="color: #FFA040">🦴 Kinematics</h3>
+                <h3 style="color: #00caef">🦴 Kinematics</h3>
                 <p class="hint">Adjust joint coordinates along the recursive chain.</p>
                 
                 <div class="joint-group">
@@ -1395,7 +1395,7 @@ html, body, #app {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 50%, #1e1e36 0%, #0a0a12 100%);
+  background: radial-gradient(circle at 50% 50%, #14144f 0%, #0c0c48 100%);
 }
 </style>
 
@@ -1406,7 +1406,7 @@ html, body, #app {
   width: 100vw;
   background: transparent;
   color: #e0e0e0;
-  font-family: 'Inter', 'Outfit', sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
 }
 .left-pane {
   flex: 1.5; /* Give visual priority to the model */
@@ -1500,9 +1500,9 @@ h2 {
   font-weight: 600;
 }
 .card {
-  background: #1e1e36;
+  background: #14144f;
   padding: 18px;
-  border-radius: 0; /* Square Corners */
+  border-radius: 12px; /* Material */
   border: 1px solid #2a2a4a;
 }
 .transparent-card {
@@ -1538,7 +1538,7 @@ label {
 .input-fi {
   width: 100%;
   padding: 7px 10px;
-  border-radius: 0; /* Square Corners */
+  border-radius: 12px; /* Material */
   border: 1px solid #333;
   background: #121220;
   color: #fff;
@@ -1575,7 +1575,7 @@ label {
   color: white;
   border: none;
   padding: 12px;
-  border-radius: 0; /* Square Corners */
+  border-radius: 12px; /* Material */
   font-size: 1rem;
   font-weight: bold;
   cursor: pointer;
@@ -1616,7 +1616,7 @@ label {
   margin-top: 5px;
   padding: 12px;
   background-color: #161625;
-  border-radius: 0; /* Square Corners */
+  border-radius: 12px; /* Material */
   border: 1px solid currentColor;
   white-space: pre-wrap;
   word-break: break-all;
@@ -1683,7 +1683,7 @@ label {
 }
 input[type="range"] {
   width: 100%;
-  accent-color: #FFA040;
+  accent-color: #00caef;
   background: transparent;
   cursor: pointer;
 }
@@ -1695,7 +1695,7 @@ input[type="range"] {
 }
 .group-title {
   font-size: 0.7rem;
-  color: #FFA040;
+  color: #00caef;
   text-transform: uppercase;
   margin-bottom: 8px;
   font-weight: bold;
@@ -1711,7 +1711,7 @@ input[type="range"] {
 }
 .save-btn {
   flex: 1;
-  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  background: linear-gradient(135deg, #3d49d8 0%, #1f2bd4 100%);
   box-shadow: 0 10px 20px rgba(59, 130, 246, 0.2);
 }
 .save-btn:hover:not(:disabled) {
@@ -1753,7 +1753,7 @@ input[type="range"] {
 }
 
 .status-indicator.active {
-  background: #3b82f6;
+  background: #1f2bd4;
   box-shadow: 0 0 15px rgba(59, 130, 246, 0.8);
 }
 
@@ -1775,15 +1775,15 @@ input[type="range"] {
 .comparison-btn {
   width: 100%;
   padding: 12px;
-  background: rgba(255, 160, 64, 0.1);
-  border: 1px solid rgba(255, 160, 64, 0.3);
-  color: #FFA040;
+  background: rgba(0, 202, 239, 0.1);
+  border: 1px solid rgba(0, 202, 239, 0.3);
+  color: #00caef;
   font-weight: bold;
   cursor: pointer;
   transition: all 0.2s;
 }
 .comparison-btn:hover {
-  background: rgba(255, 160, 64, 0.2);
+  background: rgba(0, 202, 239, 0.2);
 }
 .comparison-btn.original {
   background: rgba(72, 199, 116, 0.1);
@@ -1897,26 +1897,26 @@ input[type="range"]::-webkit-slider-thumb {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #FFA040;
+  background: #00caef;
   border: 2px solid #fff;
   margin-top: -10px;
 }
 input[type="range"]::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 3px;
-  background: rgba(255, 160, 64, 0.35);
+  background: rgba(0, 202, 239, 0.35);
 }
 input[type="range"]::-moz-range-thumb {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #FFA040;
+  background: #00caef;
   border: 2px solid #fff;
 }
 input[type="range"]::-moz-range-track {
   height: 6px;
   border-radius: 3px;
-  background: rgba(255, 160, 64, 0.35);
+  background: rgba(0, 202, 239, 0.35);
 }
 </style>
 .overlap-btn {
