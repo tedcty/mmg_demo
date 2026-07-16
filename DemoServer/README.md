@@ -75,6 +75,52 @@ Static assets are re-read per request, so a rebuild is picked up on the next
 browser reload — no server restart needed. Restart the server only when
 `server.py` or the Python pipeline changes.
 
+## Troubleshooting — `doctor.py`
+
+When something's wrong, run the doctor:
+
+```bash
+python DemoServer/doctor.py            # diagnose (read-only)
+python DemoServer/doctor.py --reset    # stop any running server / free ports 8443 + 8000
+python DemoServer/doctor.py --restart  # reset, then start a fresh server
+python DemoServer/doctor.py --http     # diagnose/reset for plain-HTTP mode (:8000)
+```
+
+It checks prerequisites (dist, model/data, bones.json, TLS cert), reports which
+PID (if any) is holding the ports, probes that each port speaks the right
+protocol, and prints the correct URLs for this machine and for tablets. It's
+cross-platform and needs no arguments to get a full report.
+
+Two problems it exists to solve:
+
+- **"Port already in use" / preflight FAIL** — a previous server is still
+  running. `doctor.py --reset` stops it and frees the ports.
+- **`ERR_CONNECTION_RESET` in the browser** — you're on the wrong
+  protocol/port. The rule is strict:
+
+  | URL | Result |
+  |-----|--------|
+  | `https://<host>:8443` | ✅ the app |
+  | `http://<host>:8000`  | ✅ redirects to 8443 |
+  | `http://<host>:8443`  | ❌ reset (plain HTTP on the TLS port) |
+  | `https://<host>:8000` | ❌ reset (TLS on the plain-HTTP port) |
+
+### GUI dashboard
+
+Prefer a window over the command line? Run the Material-styled control panel:
+
+```bash
+conda run -n demo python DemoServer/dashboard.py
+```
+
+It shows live status (running state, PID, uptime, port/prereq/protocol
+indicators) and the correct URLs, with **Start / Stop / Restart / Reset ports**
+buttons, a **Run doctor** button (prints the full diagnostic report into the
+log pane), a server-log pane, and a toggle for auto-refresh. It's the same
+`doctor.py` logic behind a PySide6 + qt-material UI, so it reflects any server —
+even one you started from a terminal. Run it in the `demo` env so it launches
+the server with the right interpreter.
+
 ## Tablets & offline use
 
 For outreach events on iPad/Android tablets, note:

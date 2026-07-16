@@ -11,6 +11,12 @@ Flask==3.1.3
 flask-cors==6.0.2
 # HTTPS is on by default; cryptography generates the self-signed cert.
 cryptography
+# doctor.py uses psutil for reliable cross-platform process/port handling
+# (optional — doctor.py falls back to OS tools if it's absent).
+psutil
+# dashboard.py: Material Design theme for the PySide6 control panel.
+# (PySide6 itself already comes in via ptb_mmg.)
+qt-material
 
 # --- SSM prediction pipeline ---
 # Imported at server startup (generate_isb_joints) and by the headless
