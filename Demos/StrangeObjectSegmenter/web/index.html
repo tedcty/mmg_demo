@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Strange Object Segmenter</title>
 <link rel="stylesheet" href="/resources/vendor/material.css">
+<script type="importmap">
+{ "imports": { "three": "/resources/vendor/three/three.module.js" } }
+</script>
 <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: var(--md-sys-color-background);
@@ -48,6 +51,21 @@
     .result { border-radius: var(--md-shape-md); padding: 12px 16px; font-size: 14px;
         background: var(--md-sys-color-surface-container-high); display: none; }
     .result.show { display: block; }
+    /* 3D reveal overlay */
+    .reveal-overlay { position: fixed; inset: 0; z-index: 60; display: none;
+        flex-direction: column; background: var(--md-sys-color-background); }
+    .reveal-overlay.show { display: flex; }
+    .reveal-bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+        background: var(--md-sys-color-surface-container); }
+    .reveal-bar strong { font: 700 16px 'Inter'; }
+    .reveal-modes button { min-height: 38px; padding: 0 16px; }
+    .reveal-modes button:not(.on) { background: transparent; color: var(--md-sys-color-on-surface-variant); }
+    .reveal-modes button:not(.on)::after { display: none; }
+    #reveal-canvas { flex: 1; min-height: 0; }
+    #reveal-canvas canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+    .reveal-empty { position: absolute; inset: 0; display: flex; align-items: center;
+        justify-content: center; color: var(--md-sys-color-on-surface-variant); font-size: 15px;
+        pointer-events: none; }
 </style>
 </head>
 <body>
@@ -69,6 +87,8 @@
         <button id="clearBtn" class="md-btn md-btn--tonal">Clear slice</button>
         <button id="clearAllBtn" class="md-btn md-btn--outlined">Clear all</button>
         <span class="spacer"></span>
+        <button id="revealBtn" class="md-btn md-btn--filled"
+            style="background: var(--md-uoa-mahina); color: #003544;">Reveal 3D object</button>
         <button id="checkBtn" class="md-btn md-btn--filled">Check my segmentation</button>
     </div>
 
@@ -100,8 +120,24 @@
     <div class="hint">
         The foreign object is the <strong>bright, sharp-edged blob</strong> that doesn't look like the soft
         surrounding tissue. Scrub through the slices, paint over it on each one where it appears, then press
-        <em>Check my segmentation</em> to score how well you traced it.
+        <em>Check my segmentation</em> to score how well you traced it, or <em>Reveal 3D object</em> to see
+        what it looks like in 3D.
     </div>
+</div>
+
+<!-- 3D reveal -->
+<div id="reveal3d" class="reveal-overlay">
+    <div class="reveal-bar">
+        <strong>3D reconstruction</strong>
+        <span class="chip-toggle reveal-modes">
+            <button data-mode="true" class="md-btn md-btn--filled on">True object</button>
+            <button data-mode="user" class="md-btn md-btn--filled">Your segmentation</button>
+            <button data-mode="both" class="md-btn md-btn--filled">Compare</button>
+        </span>
+        <span class="spacer"></span>
+        <button id="closeReveal" class="md-btn md-btn--tonal">Close</button>
+    </div>
+    <div id="reveal-canvas"><div class="reveal-empty" id="revealEmpty" hidden>Paint the object first, then switch to “Your segmentation”.</div></div>
 </div>
 
 <script>
@@ -327,6 +363,114 @@ document.getElementById('checkBtn').addEventListener('click', () => {
         `&nbsp;·&nbsp; true volume ${gtN.toLocaleString()} voxels, you painted ${usr.toLocaleString()}.<br>${grade}`;
     resultEl.classList.add('show');
 });
+
+// ---- 3D reveal (three.js voxel reconstruction) ---------------------------
+// Downsample the 256² masks to a coarse grid and render set voxels as boxes.
+const GX = 56, GY = 56, GZ = NZ;
+function sampleTrue(gx, gy, gz) {
+    const nx = (gx + 0.5) / GX * 2 - 1, ny = (gy + 0.5) / GY * 2 - 1, nz = (gz + 0.5) / GZ * 2 - 1;
+    return insideObject(nx, ny, nz);
+}
+function sampleUser(gx, gy, gz) {
+    const m = userMask[gz];
+    const x0 = (gx / GX * SIZE) | 0, x1 = ((gx + 1) / GX * SIZE) | 0;
+    const y0 = (gy / GY * SIZE) | 0, y1 = ((gy + 1) / GY * SIZE) | 0;
+    let on = 0, tot = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { tot++; if (m[y * SIZE + x]) on++; }
+    return tot > 0 && on / tot > 0.4;
+}
+
+const revealEl = document.getElementById('reveal3d');
+const revealEmpty = document.getElementById('revealEmpty');
+let R = null, curMode = 'true';
+
+function makeVoxels(THREE, sample, colorHex, opacity) {
+    const pos = [];
+    for (let gz = 0; gz < GZ; gz++) for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++)
+        if (sample(gx, gy, gz)) pos.push([gx, gy, gz]);
+    if (!pos.length) return null;
+    const cell = 1, cellZ = cell * GX / GZ;
+    const geo = new THREE.BoxGeometry(cell * 0.9, cell * 0.9, cellZ * 0.9);
+    const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.55, metalness: 0.1,
+        transparent: opacity < 1, opacity });
+    const mesh = new THREE.InstancedMesh(geo, mat, pos.length);
+    const m4 = new THREE.Matrix4();
+    pos.forEach((p, i) => {
+        m4.makeTranslation((p[0] - (GX - 1) / 2) * cell, ((GY - 1) / 2 - p[1]) * cell, (p[2] - (GZ - 1) / 2) * cellZ);
+        mesh.setMatrixAt(i, m4);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    return mesh;
+}
+function frameGroup() {
+    const { THREE, group, camera, controls } = R;
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length() || 60;
+    controls.target.copy(center);
+    camera.position.copy(center).add(new THREE.Vector3(size * 0.55, size * 0.4, size * 0.85));
+    camera.near = size / 100; camera.far = size * 10; camera.updateProjectionMatrix();
+    controls.update();
+}
+function setMode(mode) {
+    curMode = mode;
+    const { THREE, group } = R;
+    while (group.children.length) { const c = group.children.pop(); c.geometry?.dispose(); c.material?.dispose(); }
+    if (mode === 'true' || mode === 'both') {
+        const m = makeVoxels(THREE, sampleTrue, 0x00caef, mode === 'both' ? 0.3 : 1.0);
+        if (m) group.add(m);
+    }
+    if (mode === 'user' || mode === 'both') {
+        const m = makeVoxels(THREE, sampleUser, mode === 'both' ? 0x1f2bd4 : 0x00caef, 1.0);
+        if (m) group.add(m);
+    }
+    revealEmpty.hidden = !(mode === 'user' && group.children.length === 0);
+    frameGroup();
+    revealEl.querySelectorAll('.reveal-modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+}
+function onResize() {
+    if (!R) return;
+    const w = R.host.clientWidth, h = R.host.clientHeight;
+    R.renderer.setSize(w, h, false);
+    R.camera.aspect = (w / h) || 1; R.camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', onResize);
+function animate() {
+    if (!R || !R.running) return;
+    R.group.rotation.y += 0.004;
+    R.controls.update();
+    R.renderer.render(R.scene, R.camera);
+    requestAnimationFrame(animate);
+}
+async function openReveal() {
+    revealEl.classList.add('show');
+    if (!R) {
+        const THREE = await import('three');
+        const { OrbitControls } = await import('/resources/vendor/three/OrbitControls.js');
+        const host = document.getElementById('reveal-canvas');
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+        host.appendChild(renderer.domElement);
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0c0c48);   // Waitematā
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+        const dl = new THREE.DirectionalLight(0xffffff, 0.9); dl.position.set(1, 1, 1.4); scene.add(dl);
+        const group = new THREE.Group(); scene.add(group);
+        R = { THREE, renderer, scene, camera, controls, group, host, running: false };
+    }
+    onResize();
+    setMode(curMode);
+    if (!R.running) { R.running = true; animate(); }
+}
+function closeReveal() { revealEl.classList.remove('show'); if (R) R.running = false; }
+document.getElementById('revealBtn').addEventListener('click', openReveal);
+document.getElementById('closeReveal').addEventListener('click', closeReveal);
+revealEl.querySelectorAll('.reveal-modes button').forEach(b =>
+    b.addEventListener('click', () => setMode(b.dataset.mode)));
 
 // ---- Boot ----------------------------------------------------------------
 requestAnimationFrame(() => setTimeout(() => {
