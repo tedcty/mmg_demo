@@ -676,10 +676,15 @@ if __name__ == '__main__':
         sys.exit(1)
 
     if args.open:
-        # Open the plain-HTTP URL; it redirects to HTTPS when TLS is on. A short
+        # Open the DIRECT url (https app port when TLS is on) rather than the
+        # http redirect: browsers can auto-upgrade http://localhost to https and
+        # then hit the redirect port with TLS → ERR_SSL_PROTOCOL_ERROR. A short
         # delay lets the server bind first so the first load doesn't fail.
         import webbrowser
-        url = f'http://localhost:{args.http_port}'
+        if ssl_context:
+            url = f'https://localhost:{args.https_port}'
+        else:
+            url = f'http://localhost:{args.http_port}'
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print()
