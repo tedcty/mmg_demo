@@ -1867,6 +1867,57 @@ input[type="range"] {
   box-shadow: 0 8px 32px rgba(30, 41, 59, 0.15);
 }
 .light-mode .label-text { color: #0f172a; }
+
+/* ── Touch targets (tablet, landscape) ─────────────────────────────────────
+   Enlarge the fiddly native controls so they're finger-friendly. */
+button, .icon-btn, .secondary-btn, .run-btn, .comparison-btn {
+  min-height: 44px;
+  touch-action: manipulation;
+}
+input[type="number"], input[type="text"], select {
+  min-height: 40px;
+  font-size: 16px;         /* >=16px stops iOS auto-zooming the field on focus */
+  touch-action: manipulation;
+}
+input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  touch-action: manipulation;
+}
+/* Bigger slider hit area + thumb for dragging with a fingertip */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 34px;
+  touch-action: pan-y;      /* let vertical page-scroll through, drag horizontally */
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #FFA040;
+  border: 2px solid #fff;
+  margin-top: -10px;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 160, 64, 0.35);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #FFA040;
+  border: 2px solid #fff;
+}
+input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 160, 64, 0.35);
+}
 </style>
 .overlap-btn {
   background: rgba(79, 172, 254, 0.1) !important;
