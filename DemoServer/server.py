@@ -15,6 +15,7 @@ Routes:
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
   GET  /emg/<path>               → EMG game assets (web/ + shared resources/)
+  GET  /segment/                 → Strange Object Segmenter (in-browser stack)
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
@@ -57,6 +58,7 @@ BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo', 'predict_gui'))
 EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
 EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
+SEG_WEB_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter', 'web'))
 ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
 POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
@@ -217,6 +219,17 @@ def emg_app(path):
     if os.path.exists(os.path.join(EMG_DIR, path)):
         return send_from_directory(EMG_DIR, path)
     return send_from_directory(EMG_WEB_DIR, 'index.html')
+
+
+@app.route('/segment/', defaults={'path': 'index.html'})
+@app.route('/segment/<path:path>')
+def segment_app(path):
+    """Strange Object Segmenter — brush-paint segmentation over a synthetic
+    image stack generated in the browser (no assets needed)."""
+    target = os.path.join(SEG_WEB_DIR, path)
+    if os.path.exists(target):
+        return send_from_directory(SEG_WEB_DIR, path)
+    return send_from_directory(SEG_WEB_DIR, 'index.html')
 
 
 # ---------------------------------------------------------------------------

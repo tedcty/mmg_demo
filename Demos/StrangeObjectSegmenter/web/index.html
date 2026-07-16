@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en" class="md-dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Strange Object Segmenter</title>
+<link rel="stylesheet" href="/resources/vendor/material.css">
+<style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--md-sys-color-background);
+        color: var(--md-sys-color-on-surface); font-family: 'Inter', system-ui, sans-serif;
+        touch-action: manipulation; }
+    #wrap { max-width: 1100px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column;
+        gap: 12px; min-height: 100%; }
+    header { display: flex; align-items: center; gap: 12px; }
+    header h1 { font: 700 20px/1.2 'Inter'; margin: 0; color: var(--md-sys-color-on-background); }
+    header .sub { font-size: 12px; color: var(--md-sys-color-on-surface-variant); }
+    .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .spacer { flex: 1; }
+    .tool { font: 500 14px 'Inter'; }
+    .chip-toggle { display: inline-flex; border-radius: var(--md-shape-full);
+        background: var(--md-sys-color-surface-container); padding: 3px; }
+    .chip-toggle button { min-height: 38px; border-radius: var(--md-shape-full); padding: 0 18px; }
+    .chip-toggle button:not(.on) { background: transparent; color: var(--md-sys-color-on-surface-variant); }
+    .chip-toggle button:not(.on)::after { display: none; }
+    label.range { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
+        color: var(--md-sys-color-on-surface-variant); }
+    input[type=range] { accent-color: var(--md-sys-color-primary); }
+    #stagewrap { display: flex; justify-content: center; }
+    #stage { position: relative; width: min(100%, 560px); aspect-ratio: 1;
+        border-radius: var(--md-shape-lg); overflow: hidden; box-shadow: var(--md-elevation-2);
+        background: #000; touch-action: none; }
+    #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+    #gen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: #cfe; font: 500 15px 'Inter'; background: #000; }
+    .slice-row { display: flex; align-items: center; gap: 12px; }
+    .slice-row input[type=range] { flex: 1; }
+    #sliceLabel { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 92px;
+        color: var(--md-sys-color-on-surface-variant); }
+    .readouts { display: flex; flex-wrap: wrap; gap: 10px; }
+    .stat { background: var(--md-sys-color-surface-container); border-radius: var(--md-shape-md);
+        padding: 10px 14px; min-width: 120px; }
+    .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--md-sys-color-on-surface-variant); }
+    .stat .v { font: 700 18px 'Inter'; color: var(--md-sys-color-on-background); }
+    .stat .v.accent { color: var(--md-uoa-mahina); }
+    .hint { font-size: 12px; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
+    .result { border-radius: var(--md-shape-md); padding: 12px 16px; font-size: 14px;
+        background: var(--md-sys-color-surface-container-high); display: none; }
+    .result.show { display: block; }
+</style>
+</head>
+<body>
+<div id="wrap">
+    <header>
+        <div>
+            <h1>Strange Object Segmenter</h1>
+            <div class="sub">Find the foreign object hidden in the scan and paint it across the slices.</div>
+        </div>
+    </header>
+
+    <div class="bar">
+        <span class="chip-toggle">
+            <button id="brushBtn" class="md-btn md-btn--filled on">Brush</button>
+            <button id="eraseBtn" class="md-btn md-btn--filled">Eraser</button>
+        </span>
+        <label class="range tool">Size <input id="size" type="range" min="6" max="60" value="24"></label>
+        <button id="undoBtn" class="md-btn md-btn--tonal">Undo</button>
+        <button id="clearBtn" class="md-btn md-btn--tonal">Clear slice</button>
+        <button id="clearAllBtn" class="md-btn md-btn--outlined">Clear all</button>
+        <span class="spacer"></span>
+        <button id="checkBtn" class="md-btn md-btn--filled">Check my segmentation</button>
+    </div>
+
+    <div id="stagewrap">
+        <div id="stage">
+            <canvas id="view" width="256" height="256"></canvas>
+            <div id="gen">Generating scan…</div>
+        </div>
+    </div>
+
+    <div class="slice-row">
+        <button id="prevBtn" class="md-icon-btn" aria-label="Previous slice">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <input id="slice" type="range" min="0" max="0" value="0">
+        <button id="nextBtn" class="md-icon-btn" aria-label="Next slice">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <span id="sliceLabel">Slice 1 / 1</span>
+    </div>
+
+    <div class="readouts">
+        <div class="stat"><div class="k">Painted (this slice)</div><div class="v" id="areaSlice">0 px</div></div>
+        <div class="stat"><div class="k">Segmented volume</div><div class="v accent" id="volAll">0 voxels</div></div>
+    </div>
+
+    <div class="result" id="result"></div>
+
+    <div class="hint">
+        The foreign object is the <strong>bright, sharp-edged blob</strong> that doesn't look like the soft
+        surrounding tissue. Scrub through the slices, paint over it on each one where it appears, then press
+        <em>Check my segmentation</em> to score how well you traced it.
+    </div>
+</div>
+
+<script>
+// ===========================================================================
+// Strange Object Segmenter — a brush-paint segmentation demo over a synthetic
+// image stack generated in the browser (no assets, fully offline).
+// ===========================================================================
+
+const SIZE = 256;          // slice resolution
+const NZ = 24;             // number of slices
+
+const view = document.getElementById('view');
+const vctx = view.getContext('2d');
+const genEl = document.getElementById('gen');
+
+// ---- Value-noise (cheap 3D fbm) for tissue texture -----------------------
+function hash(x, y, z) {
+    let h = (x * 374761393 + y * 668265263 + z * 1274126177) | 0;
+    h = (h ^ (h >> 13)) * 1274126177 | 0;
+    return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+}
+const smooth = t => t * t * (3 - 2 * t);
+const lerp = (a, b, t) => a + (b - a) * t;
+function vnoise(x, y, z) {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const xf = x - xi, yf = y - yi, zf = z - zi;
+    const u = smooth(xf), v = smooth(yf), w = smooth(zf);
+    const c = (a, b, d) => hash(xi + a, yi + b, zi + d);
+    const x00 = lerp(c(0,0,0), c(1,0,0), u), x10 = lerp(c(0,1,0), c(1,1,0), u);
+    const x01 = lerp(c(0,0,1), c(1,0,1), u), x11 = lerp(c(0,1,1), c(1,1,1), u);
+    return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
+}
+const fbm = (x, y, z) => 0.6 * vnoise(x, y, z) + 0.4 * vnoise(x * 2.1, y * 2.1, z * 2.1);
+
+// ---- Synthetic volume ----------------------------------------------------
+// Soft round "organs" (decoys) + one bright, sharp foreign object.
+const organs = [
+    { c: [-0.35, 0.25], r: 0.45, a: 0.16 },
+    { c: [ 0.40, 0.35], r: 0.38, a: 0.13 },
+    { c: [-0.10, -0.45], r: 0.34, a: 0.15 },
+];
+// Foreign object = union of two spheres (a tilted "peanut") spanning ~10 slices.
+const OBJ = { a: [0.26, -0.16, -0.12], b: [0.02, -0.02, 0.12], r: 0.17 };
+const d3 = (x, y, z, p) => Math.hypot(x - p[0], y - p[1], z - p[2]);
+function insideObject(nx, ny, nz) {
+    return Math.min(d3(nx, ny, nz, OBJ.a), d3(nx, ny, nz, OBJ.b)) < OBJ.r;
+}
+
+const sliceImg = [];       // ImageData per slice
+const objMask  = [];       // Uint8Array ground-truth per slice
+const userMask = [];       // Uint8Array painted per slice
+
+function buildVolume() {
+    for (let z = 0; z < NZ; z++) {
+        const nz = (z / (NZ - 1)) * 2 - 1;
+        const img = vctx.createImageData(SIZE, SIZE);
+        const gt = new Uint8Array(SIZE * SIZE);
+        for (let y = 0; y < SIZE; y++) {
+            const ny = (y / (SIZE - 1)) * 2 - 1;
+            for (let x = 0; x < SIZE; x++) {
+                const nx = (x / (SIZE - 1)) * 2 - 1;
+                const i = y * SIZE + x;
+                let val;
+                const rr = Math.hypot(nx, ny);
+                if (rr > 0.94) {
+                    val = 0.03 + 0.03 * fbm(nx * 4, ny * 4, nz * 4); // air outside body
+                } else {
+                    let t = 0.26 + 0.16 * fbm(nx * 2.6, ny * 2.6, nz * 2.6);
+                    for (const o of organs) {
+                        const dd = Math.hypot(nx - o.c[0], ny - o.c[1]) / o.r;
+                        t += o.a * Math.exp(-dd * dd * 1.6);
+                    }
+                    if (rr > 0.86) t *= (0.94 - rr) / 0.08 + 0.4;   // soft body rim
+                    if (insideObject(nx, ny, nz)) {
+                        val = 0.9 + 0.06 * fbm(nx * 9, ny * 9, nz * 9);   // bright object
+                        gt[i] = 1;
+                    } else {
+                        val = t;
+                    }
+                }
+                const g = Math.max(0, Math.min(255, val * 255)) | 0;
+                const p = i * 4;
+                img.data[p] = img.data[p + 1] = img.data[p + 2] = g;
+                img.data[p + 3] = 255;
+            }
+        }
+        sliceImg.push(img);
+        objMask.push(gt);
+        userMask.push(new Uint8Array(SIZE * SIZE));
+    }
+}
+
+// ---- State ---------------------------------------------------------------
+let z = 0;                  // current slice
+let tool = 'brush';         // 'brush' | 'erase'
+let brush = 24;
+let painting = false;
+const undoStack = [];       // {z, snap}
+
+// ---- Rendering -----------------------------------------------------------
+const overlay = vctx.createImageData(SIZE, SIZE);
+function render() {
+    vctx.putImageData(sliceImg[z], 0, 0);
+    // Build the mask overlay (Māhina cyan) and blend at 50%.
+    const m = userMask[z], od = overlay.data;
+    for (let i = 0; i < m.length; i++) {
+        const p = i * 4;
+        if (m[i]) { od[p] = 0; od[p + 1] = 202; od[p + 2] = 239; od[p + 3] = 255; }
+        else { od[p + 3] = 0; }
+    }
+    const tmp = render._tmp || (render._tmp = document.createElement('canvas'));
+    tmp.width = SIZE; tmp.height = SIZE;
+    tmp.getContext('2d').putImageData(overlay, 0, 0);
+    vctx.save();
+    vctx.globalAlpha = 0.5;
+    vctx.drawImage(tmp, 0, 0);
+    vctx.restore();
+    updateStats();
+}
+
+// ---- Painting ------------------------------------------------------------
+function stamp(cx, cy) {
+    const m = userMask[z], val = tool === 'brush' ? 1 : 0;
+    const r = brush / 2, r2 = r * r;
+    const x0 = Math.max(0, (cx - r) | 0), x1 = Math.min(SIZE - 1, (cx + r) | 0);
+    const y0 = Math.max(0, (cy - r) | 0), y1 = Math.min(SIZE - 1, (cy + r) | 0);
+    for (let y = y0; y <= y1; y++)
+        for (let x = x0; x <= x1; x++)
+            if ((x - cx) ** 2 + (y - cy) ** 2 <= r2) m[y * SIZE + x] = val;
+}
+function evtToCanvas(e) {
+    const rect = view.getBoundingClientRect();
+    return [(e.clientX - rect.left) / rect.width * SIZE, (e.clientY - rect.top) / rect.height * SIZE];
+}
+let lastPt = null;
+function paintAt(e) {
+    const [cx, cy] = evtToCanvas(e);
+    if (lastPt) {                     // interpolate for smooth strokes
+        const [px, py] = lastPt, steps = Math.max(1, Math.hypot(cx - px, cy - py) / 3);
+        for (let s = 1; s <= steps; s++) stamp(px + (cx - px) * s / steps, py + (cy - py) * s / steps);
+    } else stamp(cx, cy);
+    lastPt = [cx, cy];
+    render();
+}
+view.addEventListener('pointerdown', e => {
+    painting = true; lastPt = null;
+    undoStack.push({ z, snap: userMask[z].slice() });
+    if (undoStack.length > 30) undoStack.shift();
+    view.setPointerCapture(e.pointerId);
+    paintAt(e);
+});
+view.addEventListener('pointermove', e => { if (painting) paintAt(e); });
+view.addEventListener('pointerup', () => { painting = false; lastPt = null; });
+view.addEventListener('pointercancel', () => { painting = false; lastPt = null; });
+
+// ---- Stats ---------------------------------------------------------------
+function countMask(m) { let n = 0; for (let i = 0; i < m.length; i++) if (m[i]) n++; return n; }
+function updateStats() {
+    document.getElementById('areaSlice').textContent = countMask(userMask[z]).toLocaleString() + ' px';
+    let vox = 0; for (const m of userMask) vox += countMask(m);
+    document.getElementById('volAll').textContent = vox.toLocaleString() + ' voxels';
+}
+
+// ---- Slice navigation ----------------------------------------------------
+const sliceSlider = document.getElementById('slice');
+const sliceLabel = document.getElementById('sliceLabel');
+function setSlice(nz) {
+    z = Math.max(0, Math.min(NZ - 1, nz));
+    sliceSlider.value = z;
+    sliceLabel.textContent = `Slice ${z + 1} / ${NZ}`;
+    render();
+}
+sliceSlider.addEventListener('input', () => setSlice(+sliceSlider.value));
+document.getElementById('prevBtn').addEventListener('click', () => setSlice(z - 1));
+document.getElementById('nextBtn').addEventListener('click', () => setSlice(z + 1));
+
+// ---- Tools ---------------------------------------------------------------
+const brushBtn = document.getElementById('brushBtn'), eraseBtn = document.getElementById('eraseBtn');
+function setTool(t) {
+    tool = t;
+    brushBtn.classList.toggle('on', t === 'brush');
+    eraseBtn.classList.toggle('on', t === 'erase');
+}
+brushBtn.addEventListener('click', () => setTool('brush'));
+eraseBtn.addEventListener('click', () => setTool('erase'));
+document.getElementById('size').addEventListener('input', e => brush = +e.target.value);
+document.getElementById('undoBtn').addEventListener('click', () => {
+    const u = undoStack.pop();
+    if (u) { setSlice(u.z); userMask[u.z].set(u.snap); render(); }
+});
+document.getElementById('clearBtn').addEventListener('click', () => {
+    undoStack.push({ z, snap: userMask[z].slice() });
+    userMask[z].fill(0); render();
+});
+document.getElementById('clearAllBtn').addEventListener('click', () => {
+    for (const m of userMask) m.fill(0);
+    undoStack.length = 0; hideResult(); render();
+});
+
+// ---- Check (IoU + Dice against ground truth) -----------------------------
+const resultEl = document.getElementById('result');
+function hideResult() { resultEl.classList.remove('show'); }
+document.getElementById('checkBtn').addEventListener('click', () => {
+    let inter = 0, uni = 0, gtN = 0, usr = 0;
+    for (let s = 0; s < NZ; s++) {
+        const u = userMask[s], g = objMask[s];
+        for (let i = 0; i < u.length; i++) {
+            const a = u[i], b = g[i];
+            if (a) usr++; if (b) gtN++;
+            if (a && b) inter++;
+            if (a || b) uni++;
+        }
+    }
+    const iou = uni ? inter / uni : 0;
+    const dice = (usr + gtN) ? 2 * inter / (usr + gtN) : 0;
+    let grade = 'Keep going — paint more of the object.';
+    if (dice >= 0.85) grade = 'Excellent — a radiologist-grade trace! 🏆';
+    else if (dice >= 0.65) grade = 'Nice work — a solid segmentation. 👍';
+    else if (dice >= 0.4) grade = 'Getting there — fill in the parts you missed.';
+    resultEl.innerHTML =
+        `<strong>Overlap score (Dice): ${(dice * 100).toFixed(0)}%</strong> ` +
+        `&nbsp;·&nbsp; IoU ${(iou * 100).toFixed(0)}% ` +
+        `&nbsp;·&nbsp; true volume ${gtN.toLocaleString()} voxels, you painted ${usr.toLocaleString()}.<br>${grade}`;
+    resultEl.classList.add('show');
+});
+
+// ---- Boot ----------------------------------------------------------------
+requestAnimationFrame(() => setTimeout(() => {
+    buildVolume();
+    genEl.style.display = 'none';
+    sliceSlider.max = NZ - 1;
+    setSlice(Math.floor(NZ / 2));   // start where the object is visible
+}, 30));
+</script>
+</body>
+</html>
