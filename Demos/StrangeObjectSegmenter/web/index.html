@@ -242,7 +242,7 @@ function render() {
     const m = userMask[z], od = overlay.data;
     for (let i = 0; i < m.length; i++) {
         const p = i * 4;
-        if (m[i]) { od[p] = 0; od[p + 1] = 202; od[p + 2] = 239; od[p + 3] = 255; }
+        if (m[i]) { od[p] = 255; od[p + 1] = 92; od[p + 2] = 57; od[p + 3] = 255; }   // Lava
         else { od[p + 3] = 0; }
     }
     const tmp = render._tmp || (render._tmp = document.createElement('canvas'));
@@ -426,7 +426,7 @@ function setMode(mode) {
         if (m) group.add(m);
     }
     if (mode === 'user' || mode === 'both') {
-        const m = makeVoxels(THREE, sampleUser, mode === 'both' ? 0x1f2bd4 : 0x00caef, 1.0);
+        const m = makeVoxels(THREE, sampleUser, 0xff5c39, 1.0);   // Lava (matches the brush)
         if (m) group.add(m);
     }
     revealEmpty.hidden = !(mode === 'user' && group.children.length === 0);
