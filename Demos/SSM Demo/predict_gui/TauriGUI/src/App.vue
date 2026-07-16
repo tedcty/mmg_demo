@@ -2,8 +2,11 @@
 import { ref, onMounted } from "vue";
 import * as THREE from 'three';
 
-// Unique ID for this browser tab — isolates predictions and progress from other sessions
-const sessionId = crypto.randomUUID();
+// Unique ID for this browser tab — isolates predictions and progress from other sessions.
+// crypto.randomUUID() only exists in a secure context (HTTPS/localhost); fall back so
+// plain-HTTP tablets still get a unique id instead of all colliding on one session.
+const sessionId = (crypto?.randomUUID?.())
+  || `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Paths
