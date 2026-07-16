@@ -1,56 +1,71 @@
 /* ==========================================================================
-   Material Design 3 foundation — shared by the hub, EMG and SSM demos.
-   Offline: Roboto is vendored under /resources/vendor/fonts/.
-   Colour scheme seeded from a blue primary; swap the tokens below to rebrand.
-   Add class="md-dark" on <html>/<body> for the dark scheme.
+   Material Design 3 foundation — University of Auckland (2025) brand.
+   Shared by the hub, EMG and SSM demos. Offline: Inter is vendored under
+   /resources/vendor/fonts/.
+
+   Brand mapping (Waipapa Taumata Rau, UoA Brand Guidelines 2025):
+     Waitematā  #0c0c48  deep blue  -> dark surfaces / emphasis
+     Azure      #1f2bd4  bright blue -> primary (buttons / CTAs / links)
+     Māhina     #00caef  light blue  -> tertiary / accents
+     Accents (restrained): Lava #ff5c39, Hīnātore #c44ee0, Whenua #12b57f
+   Add class="md-dark" on <html>/<body> for the Waitematā dark scheme.
    ========================================================================== */
 
 @font-face {
-  font-family: 'Roboto'; font-style: normal; font-weight: 400; font-display: swap;
-  src: url('/resources/vendor/fonts/roboto-400.woff2') format('woff2');
+  font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('/resources/vendor/fonts/inter-400.woff2') format('woff2');
 }
 @font-face {
-  font-family: 'Roboto'; font-style: normal; font-weight: 500; font-display: swap;
-  src: url('/resources/vendor/fonts/roboto-500.woff2') format('woff2');
+  font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap;
+  src: url('/resources/vendor/fonts/inter-500.woff2') format('woff2');
 }
 @font-face {
-  font-family: 'Roboto'; font-style: normal; font-weight: 700; font-display: swap;
-  src: url('/resources/vendor/fonts/roboto-700.woff2') format('woff2');
+  font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap;
+  src: url('/resources/vendor/fonts/inter-700.woff2') format('woff2');
 }
 
 :root {
   /* ---- Colour roles (light) ---- */
-  --md-sys-color-primary: #0061a4;
+  --md-sys-color-primary: #1f2bd4;              /* Azure */
   --md-sys-color-on-primary: #ffffff;
-  --md-sys-color-primary-container: #d1e4ff;
-  --md-sys-color-on-primary-container: #001d36;
-  --md-sys-color-secondary: #535f70;
-  --md-sys-color-secondary-container: #d7e3f7;
-  --md-sys-color-on-secondary-container: #101c2b;
-  --md-sys-color-tertiary: #6b5778;
-  --md-sys-color-tertiary-container: #f2daff;
-  --md-sys-color-on-tertiary-container: #251431;
+  --md-sys-color-primary-container: #e0e0ff;
+  --md-sys-color-on-primary-container: #05053a;
+  --md-sys-color-secondary: #0c0c48;            /* Waitematā */
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #dfe0ff;
+  --md-sys-color-on-secondary-container: #0c0c48;
+  --md-sys-color-tertiary: #006782;             /* dark Māhina, readable on light */
+  --md-sys-color-on-tertiary: #ffffff;
+  --md-sys-color-tertiary-container: #b8ebff;   /* Māhina light */
+  --md-sys-color-on-tertiary-container: #001f29;
   --md-sys-color-error: #ba1a1a;
   --md-sys-color-on-error: #ffffff;
   --md-sys-color-error-container: #ffdad6;
-  --md-sys-color-background: #fdfcff;
-  --md-sys-color-on-background: #1a1c1e;
-  --md-sys-color-surface: #fdfcff;
-  --md-sys-color-on-surface: #1a1c1e;
-  --md-sys-color-surface-variant: #dfe2eb;
-  --md-sys-color-on-surface-variant: #43474e;
-  --md-sys-color-surface-container: #eceef4;
-  --md-sys-color-surface-container-high: #e6e8ee;
-  --md-sys-color-surface-container-highest: #e1e2e8;
-  --md-sys-color-outline: #73777f;
-  --md-sys-color-outline-variant: #c3c7cf;
-  --md-sys-color-inverse-surface: #2f3033;
-  --md-sys-color-inverse-on-surface: #f1f0f4;
+  --md-sys-color-background: #fdfbff;
+  --md-sys-color-on-background: #1b1b1f;
+  --md-sys-color-surface: #fdfbff;
+  --md-sys-color-on-surface: #1b1b1f;
+  --md-sys-color-surface-variant: #e3e1ec;
+  --md-sys-color-on-surface-variant: #45464f;
+  --md-sys-color-surface-container: #f1eff9;
+  --md-sys-color-surface-container-high: #ebe9f3;
+  --md-sys-color-surface-container-highest: #e5e3ed;
+  --md-sys-color-outline: #767680;
+  --md-sys-color-outline-variant: #c7c5d0;
+  --md-sys-color-inverse-surface: #0c0c48;
+  --md-sys-color-inverse-on-surface: #f2eeff;
+
+  /* ---- Brand accents (restrained use — designers only) ---- */
+  --md-uoa-lava: #ff5c39;
+  --md-uoa-hinatore: #c44ee0;
+  --md-uoa-whenua: #12b57f;
+  --md-uoa-mahina: #00caef;
+  --md-uoa-waitemata: #0c0c48;
 
   /* ---- Elevation ---- */
-  --md-elevation-1: 0 1px 2px rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.15);
-  --md-elevation-2: 0 1px 2px rgba(0,0,0,.30), 0 2px 6px 2px rgba(0,0,0,.15);
-  --md-elevation-3: 0 1px 3px rgba(0,0,0,.30), 0 4px 8px 3px rgba(0,0,0,.15);
+  --md-elevation-1: 0 1px 2px rgba(12,12,72,.30), 0 1px 3px 1px rgba(12,12,72,.15);
+  --md-elevation-2: 0 1px 2px rgba(12,12,72,.30), 0 2px 6px 2px rgba(12,12,72,.15);
+  --md-elevation-3: 0 1px 3px rgba(12,12,72,.30), 0 4px 8px 3px rgba(12,12,72,.15);
 
   /* ---- Shape ---- */
   --md-shape-sm: 8px;
@@ -61,54 +76,56 @@
 }
 
 .md-dark {
-  --md-sys-color-primary: #9ecaff;
-  --md-sys-color-on-primary: #003258;
-  --md-sys-color-primary-container: #00497d;
-  --md-sys-color-on-primary-container: #d1e4ff;
-  --md-sys-color-secondary: #bbc7db;
-  --md-sys-color-secondary-container: #3b4858;
-  --md-sys-color-on-secondary-container: #d7e3f7;
-  --md-sys-color-tertiary: #d6bee4;
-  --md-sys-color-tertiary-container: #523f5f;
-  --md-sys-color-on-tertiary-container: #f2daff;
+  --md-sys-color-primary: #bcc2ff;
+  --md-sys-color-on-primary: #0a1178;
+  --md-sys-color-primary-container: #1f2bd4;    /* Azure */
+  --md-sys-color-on-primary-container: #e0e0ff;
+  --md-sys-color-secondary: #c2c6ff;
+  --md-sys-color-on-secondary: #14144f;
+  --md-sys-color-secondary-container: #2a2a80;
+  --md-sys-color-on-secondary-container: #e0e0ff;
+  --md-sys-color-tertiary: #59d6ff;             /* Māhina bright */
+  --md-sys-color-on-tertiary: #003544;
+  --md-sys-color-tertiary-container: #004d62;
+  --md-sys-color-on-tertiary-container: #b8ebff;
   --md-sys-color-error: #ffb4ab;
   --md-sys-color-on-error: #690005;
   --md-sys-color-error-container: #93000a;
-  --md-sys-color-background: #1a1c1e;
-  --md-sys-color-on-background: #e2e2e6;
-  --md-sys-color-surface: #1a1c1e;
-  --md-sys-color-on-surface: #e2e2e6;
-  --md-sys-color-surface-variant: #43474e;
-  --md-sys-color-on-surface-variant: #c3c7cf;
-  --md-sys-color-surface-container: #1e2022;
-  --md-sys-color-surface-container-high: #282a2d;
-  --md-sys-color-surface-container-highest: #333537;
-  --md-sys-color-outline: #8d9199;
-  --md-sys-color-outline-variant: #43474e;
-  --md-sys-color-inverse-surface: #e2e2e6;
-  --md-sys-color-inverse-on-surface: #2f3033;
+  --md-sys-color-background: #0c0c48;            /* Waitematā */
+  --md-sys-color-on-background: #e4e1ff;
+  --md-sys-color-surface: #0c0c48;              /* Waitematā */
+  --md-sys-color-on-surface: #e4e1ff;
+  --md-sys-color-surface-variant: #45464f;
+  --md-sys-color-on-surface-variant: #c6c5d0;
+  --md-sys-color-surface-container: #14144f;
+  --md-sys-color-surface-container-high: #1c1c58;
+  --md-sys-color-surface-container-highest: #262663;
+  --md-sys-color-outline: #90909a;
+  --md-sys-color-outline-variant: #45464f;
+  --md-sys-color-inverse-surface: #e4e1ff;
+  --md-sys-color-inverse-on-surface: #0c0c48;
 }
 
-/* ---- Base + type scale ---- */
+/* ---- Base + type scale (Inter) ---- */
 body {
-  font-family: 'Roboto', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   color: var(--md-sys-color-on-background);
   background: var(--md-sys-color-background);
 }
-.md-display-small  { font: 400 36px/44px 'Roboto'; }
-.md-headline-small { font: 400 24px/32px 'Roboto'; }
-.md-title-large    { font: 400 22px/28px 'Roboto'; }
-.md-title-medium   { font: 500 16px/24px 'Roboto'; letter-spacing: .15px; }
-.md-body-large     { font: 400 16px/24px 'Roboto'; }
-.md-body-medium    { font: 400 14px/20px 'Roboto'; }
-.md-label-large    { font: 500 14px/20px 'Roboto'; letter-spacing: .1px; }
+.md-display-small  { font: 700 36px/44px 'Inter'; letter-spacing: -.25px; }
+.md-headline-small { font: 700 24px/32px 'Inter'; }
+.md-title-large    { font: 500 22px/28px 'Inter'; }
+.md-title-medium   { font: 500 16px/24px 'Inter'; letter-spacing: .15px; }
+.md-body-large     { font: 400 16px/24px 'Inter'; }
+.md-body-medium    { font: 400 14px/20px 'Inter'; }
+.md-label-large    { font: 500 14px/20px 'Inter'; letter-spacing: .1px; }
 
 /* ---- Buttons (with state layer) ---- */
 .md-btn {
   position: relative; overflow: hidden;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 40px; padding: 0 24px; border: none; border-radius: var(--md-shape-full);
-  font: 500 14px/1 'Roboto'; letter-spacing: .1px; cursor: pointer;
+  font: 500 14px/1 'Inter'; letter-spacing: .1px; cursor: pointer;
   text-decoration: none; user-select: none; touch-action: manipulation;
   transition: box-shadow .2s ease;
 }
@@ -155,7 +172,7 @@ body {
   position: relative; overflow: hidden; display: inline-flex; align-items: center;
   min-height: 32px; padding: 0 16px; border-radius: var(--md-shape-sm);
   border: 1px solid var(--md-sys-color-outline-variant); background: transparent;
-  color: var(--md-sys-color-on-surface-variant); font: 500 14px/1 'Roboto';
+  color: var(--md-sys-color-on-surface-variant); font: 500 14px/1 'Inter';
   cursor: pointer; white-space: nowrap; touch-action: manipulation;
 }
 .md-chip--selected {
@@ -167,6 +184,6 @@ body {
 .md-field {
   min-height: 48px; padding: 0 16px; border-radius: var(--md-shape-sm);
   border: 1px solid var(--md-sys-color-outline); background: var(--md-sys-color-surface);
-  color: var(--md-sys-color-on-surface); font: 400 16px 'Roboto'; outline: none;
+  color: var(--md-sys-color-on-surface); font: 400 16px 'Inter'; outline: none;
 }
 .md-field:focus { border-color: var(--md-sys-color-primary); border-width: 2px; }
