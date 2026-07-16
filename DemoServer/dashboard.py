@@ -9,9 +9,9 @@ auto-refresh. All the underlying logic is reused from doctor.py.
 
   conda run -n demo python DemoServer/dashboard.py
 
-Built on PySide6 (already in the demo env via ptb_mmg) + QtCharts + qt-material,
-with a custom stylesheet layered on top. Run it in the `demo` conda env so it
-can launch the server with the right interpreter.
+Built on PySide6 (already in the demo env via ptb_mmg) + qt-material, with a
+custom stylesheet layered on top. Run it in the `demo` conda env so it can
+launch the server with the right interpreter.
 """
 
 import os
@@ -21,12 +21,6 @@ import threading
 import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
-
-try:
-    from PySide6 import QtCharts
-    HAVE_CHARTS = True
-except Exception:
-    HAVE_CHARTS = False
 
 import doctor  # same folder — reuse all status/reset logic
 
@@ -65,10 +59,18 @@ QLabel#chip {{ font-size: 12px; font-weight: 700; border-radius: 13px; padding: 
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
 QLabel#statValue {{ font-size: 24px; font-weight: 800; color: {INK}; }}
 QLabel#statCaption {{ color: {GREY}; font-size: 10px; font-weight: 700; }}
-QGroupBox {{ margin-top: 14px; padding: 14px; font-weight: 700; color: {INK}; }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 2px 6px; color: {GREY}; }}
+QGroupBox {{ margin-top: 26px; padding: 16px; font-weight: 700; color: {INK}; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 16px; top: 4px; padding: 0 4px;
+                    color: {GREY}; font-size: 13px; font-weight: 800; }}
 QLabel#diag {{ font-size: 13px; color: {INK}; }}
 QLabel#url {{ font-size: 12px; color: {INK}; }}
+
+/* Demo list items */
+QFrame#demoItem {{ background: #f7f9fc; border: 1px solid {BORDER}; border-radius: 12px; }}
+QLabel#demoName {{ color: {INK}; font-size: 13px; font-weight: 800; }}
+QLabel#demoDetail {{ color: {GREY}; font-size: 11px; font-weight: 600; }}
+QLabel#demoChip {{ font-size: 10px; font-weight: 800; border-radius: 10px; padding: 3px 10px; }}
 
 /* Buttons */
 QPushButton {{ background: #f1f4f9; color: {INK}; border: 1px solid #dde3ec;
@@ -146,6 +148,46 @@ def _dot(color):
     return f'<span style="color:{color};font-size:15px">●</span>'
 
 
+# ---- GPU telemetry (best effort: pynvml → nvidia-smi → none) -------------
+_GPU = {"mode": "auto", "handle": None}
+
+
+def _gpu_stats():
+    """Return (util_pct, mem_used_mb, mem_total_mb) or None if no GPU."""
+    mode = _GPU["mode"]
+    if mode in ("auto", "nvml"):
+        try:
+            import pynvml
+            if _GPU["handle"] is None:
+                pynvml.nvmlInit()
+                _GPU["handle"] = pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = pynvml.nvmlDeviceGetUtilizationRates(_GPU["handle"]).gpu
+            mem = pynvml.nvmlDeviceGetMemoryInfo(_GPU["handle"])
+            _GPU["mode"] = "nvml"
+            return float(util), mem.used / 1048576, mem.total / 1048576
+        except Exception:
+            _GPU["handle"] = None
+            if mode == "nvml":
+                return None
+    if mode in ("auto", "smi"):
+        try:
+            out = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            row = out.stdout.strip().splitlines()[0]
+            util, used, total = [float(x) for x in row.split(",")]
+            _GPU["mode"] = "smi"
+            return util, used, total
+        except Exception:
+            if mode == "smi":
+                return None
+    _GPU["mode"] = "none"
+    return None
+
+
 def _shadow(w, blur=24, alpha=26, dy=4):
     eff = QtWidgets.QGraphicsDropShadowEffect(w)
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
@@ -170,8 +212,28 @@ class StatusWorker(QtCore.QThread):
             "cert": os.path.exists(doctor.CERT_FILE) and os.path.exists(doctor.KEY_FILE),
             "ip": doctor.lan_ip(),
             "https_code": None, "http_code": None,
-            "create_time": None, "cpu": None, "mem_mb": None, "clients": None,
+            "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
+            "clients": None, "gpu": None, "gpu_used": None, "gpu_total": None,
         }
+
+        # Machine-wide telemetry — measured regardless of server state, since
+        # SSM predictions run as *child* subprocesses (not the server process)
+        # and the GPU carries the model inference load.
+        try:
+            import psutil
+            s["cpu"] = psutil.cpu_percent(interval=0.2)
+            s["mem_pct"] = psutil.virtual_memory().percent
+        except Exception:
+            pass
+        gpu = _gpu_stats()
+        if gpu is not None:
+            s["gpu"], s["gpu_used"], s["gpu_total"] = gpu
+
+        try:
+            s["demos"] = doctor.demo_status()
+        except Exception:
+            s["demos"] = []
+
         if s["running"]:
             s["https_code"], _ = doctor._get(f"https://localhost:{doctor.HTTPS_PORT}/", timeout=2)
             s["http_code"], _ = doctor._get(f"http://localhost:{doctor.HTTP_PORT}/", timeout=2)
@@ -179,8 +241,7 @@ class StatusWorker(QtCore.QThread):
                 import psutil
                 p = psutil.Process(pids[0])
                 s["create_time"] = p.create_time()
-                s["cpu"] = p.cpu_percent(interval=0.2)
-                s["mem_mb"] = p.memory_info().rss / 1048576
+                s["srv_mb"] = p.memory_info().rss / 1048576
                 clients = 0
                 for c in psutil.net_connections(kind="inet"):
                     if c.status == "ESTABLISHED" and c.laddr and c.laddr.port in ports:
@@ -220,7 +281,6 @@ class Dashboard(QtWidgets.QWidget):
         self._polling = False
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = self._url
-        self._cpu_hist = []
 
         self._build_ui()
         self._log_sig.connect(self._append_log)
@@ -297,10 +357,12 @@ class Dashboard(QtWidgets.QWidget):
         ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap(icon, "white", 44, bg=color))
         ic.setFixedSize(44, 44)
         tv = QtWidgets.QVBoxLayout(); tv.setSpacing(2)
+        tv.addStretch(1)
         val = QtWidgets.QLabel("—"); val.setObjectName("statValue")
         cap = QtWidgets.QLabel(caption); cap.setObjectName("statCaption")
         tv.addWidget(val); tv.addWidget(cap)
-        h.addWidget(ic); h.addLayout(tv); h.addStretch(1)
+        tv.addStretch(1)
+        h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addLayout(tv); h.addStretch(1)
         return card, val
 
     def _page_dashboard(self):
@@ -311,16 +373,14 @@ class Dashboard(QtWidgets.QWidget):
         self.c_status, self.k_status = self._stat_card("status", "STATUS", GREY)
         _, self.k_uptime = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
         _, self.k_clients = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
-        _, self.k_cpu = self._stat_card_add(cards, "cpu", "CPU · MEMORY", PURPLE)
+        _, self.k_cpu = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
+        _, self.k_gpu = self._stat_card_add(cards, "cpu", "GPU LOAD", GREEN)
         cards.insertWidget(0, self.c_status)
         v.addLayout(cards)
 
-        # Chart + diagnostics side by side
+        # Demos + diagnostics side by side
         midrow = QtWidgets.QHBoxLayout(); midrow.setSpacing(16)
-        chart_box = QtWidgets.QGroupBox("CPU load — live"); _shadow(chart_box)
-        cbl = QtWidgets.QVBoxLayout(chart_box)
-        cbl.addWidget(self._build_chart())
-        midrow.addWidget(chart_box, 3)
+        midrow.addWidget(self._build_demos_box(), 3)
 
         diag = QtWidgets.QGroupBox("Diagnostics"); _shadow(diag)
         dl = QtWidgets.QVBoxLayout(diag); dl.setSpacing(10)
@@ -337,28 +397,50 @@ class Dashboard(QtWidgets.QWidget):
         row.addWidget(card)
         return card, val
 
-    def _build_chart(self):
-        if not HAVE_CHARTS:
-            lbl = QtWidgets.QLabel("QtCharts unavailable"); lbl.setAlignment(QtCore.Qt.AlignCenter)
-            self.series = None
-            return lbl
-        self.series = QtCharts.QLineSeries()
-        self.area = QtCharts.QAreaSeries(self.series)
-        self.area.setPen(QtGui.QPen(QtGui.QColor(AZURE), 2))
-        fill = QtGui.QColor(AZURE); fill.setAlpha(50); self.area.setBrush(fill)
-        chart = QtCharts.QChart(); chart.addSeries(self.area)
-        chart.legend().hide(); chart.setBackgroundVisible(False)
-        chart.setMargins(QtCore.QMargins(0, 0, 0, 0))
-        self.axX = QtCharts.QValueAxis(); self.axX.setRange(0, 60); self.axX.setLabelsVisible(False)
-        self.axX.setGridLineVisible(False)
-        self.axY = QtCharts.QValueAxis(); self.axY.setRange(0, 100); self.axY.setLabelFormat("%d%%")
-        self.axY.setTickCount(5)
-        pen = QtGui.QPen(QtGui.QColor(BORDER)); self.axY.setGridLinePen(pen)
-        chart.addAxis(self.axX, QtCore.Qt.AlignBottom); chart.addAxis(self.axY, QtCore.Qt.AlignLeft)
-        self.area.attachAxis(self.axX); self.area.attachAxis(self.axY)
-        view = QtCharts.QChartView(chart); view.setRenderHint(QtGui.QPainter.Antialiasing)
-        view.setMinimumHeight(220); view.setStyleSheet("background:transparent;border:none")
-        return view
+    # ---- demos card ------------------------------------------------------
+    CHIP = {  # status -> (label, background, text colour)
+        "ready":    ("READY",   "#e6f7f0", GREEN),
+        "stale":    ("REBUILD", "#fff2df", AMBER),
+        "build":    ("BUILD",   "#fdecea", RED),
+        "degraded": ("CHECK",   "#fff2df", AMBER),
+        "missing":  ("MISSING", "#fdecea", RED),
+    }
+
+    def _build_demos_box(self):
+        box = QtWidgets.QGroupBox("Demos"); _shadow(box)
+        v = QtWidgets.QVBoxLayout(box); v.setSpacing(10)
+        self.demo_rows = []   # [(chip_label, detail_label)] in demo_status() order
+        try:
+            demos = doctor.demo_status()
+        except Exception:
+            demos = []
+        for d in demos:
+            item, chip, detail = self._demo_item(d["name"])
+            v.addWidget(item)
+            self.demo_rows.append((chip, detail))
+        v.addStretch(1)
+        return box
+
+    def _demo_item(self, name):
+        item = QtWidgets.QFrame(); item.setObjectName("demoItem")
+        v = QtWidgets.QVBoxLayout(item); v.setContentsMargins(14, 10, 14, 10); v.setSpacing(3)
+        top = QtWidgets.QHBoxLayout()
+        n = QtWidgets.QLabel(name); n.setObjectName("demoName")
+        chip = QtWidgets.QLabel("…"); chip.setObjectName("demoChip")
+        chip.setAlignment(QtCore.Qt.AlignCenter)
+        top.addWidget(n); top.addStretch(1); top.addWidget(chip)
+        detail = QtWidgets.QLabel("…"); detail.setObjectName("demoDetail"); detail.setWordWrap(True)
+        v.addLayout(top); v.addWidget(detail)
+        return item, chip, detail
+
+    def _apply_demos(self, demos):
+        for (chip, detail), d in zip(self.demo_rows, demos):
+            label, bg, fg = self.CHIP.get(d["status"], ("?", "#eef0f3", GREY))
+            chip.setText(label)
+            chip.setStyleSheet(
+                f"background:{bg};color:{fg};font-size:10px;font-weight:800;"
+                f"border-radius:10px;padding:3px 10px")
+            detail.setText(f"{d['route']} · {d['detail']}")
 
     def _page_console(self):
         w = QtWidgets.QGroupBox("Server console"); _shadow(w)
@@ -481,13 +563,19 @@ class Dashboard(QtWidgets.QWidget):
             self.k_uptime.setText("—")
 
         self.k_clients.setText(str(s["clients"]) if s["clients"] is not None else "—")
-        if running and s["cpu"] is not None:
-            self.k_cpu.setText(f"{s['cpu']:.0f}% · {s['mem_mb']:.0f}MB")
-        else:
-            self.k_cpu.setText("—")
 
-        # chart history
-        self._push_cpu(s["cpu"] if (running and s["cpu"] is not None) else 0.0)
+        cpu = s.get("cpu")
+        self.k_cpu.setText(f"{cpu:.0f}%" if cpu is not None else "—")
+
+        gpu = s.get("gpu")
+        if gpu is not None:
+            self.k_gpu.setText(f"{gpu:.0f}%")
+            self.k_gpu.setStyleSheet("")
+        else:
+            self.k_gpu.setText("N/A")
+            self.k_gpu.setStyleSheet(f"font-size:24px;font-weight:800;color:{GREY}")
+
+        self._apply_demos(s.get("demos", []))
 
         if running:
             self.ports_lbl.setText(
@@ -518,16 +606,6 @@ class Dashboard(QtWidgets.QWidget):
 
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
-
-    def _push_cpu(self, cpu):
-        self._cpu_hist.append(cpu)
-        if len(self._cpu_hist) > 60:
-            self._cpu_hist.pop(0)
-        if HAVE_CHARTS and self.series is not None:
-            self.series.clear()
-            for i, v in enumerate(self._cpu_hist):
-                self.series.append(i, v)
-            self.axX.setRange(0, max(60, len(self._cpu_hist) - 1))
 
     # ---- controls --------------------------------------------------------
     def start_server(self):

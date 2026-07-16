@@ -39,8 +39,84 @@ CERT_FILE = os.path.join(HERE, "certs", "cert.pem")
 KEY_FILE  = os.path.join(HERE, "certs", "key.pem")
 SERVER_PY = os.path.join(HERE, "server.py")
 
+# Other served demos (static — no build step) + their key assets.
+GUI_SRC   = os.path.join(GUI_DIR, "src")
+GUI_PKG   = os.path.join(GUI_DIR, "package.json")
+GUI_INDEX = os.path.join(GUI_DIR, "index.html")
+DIST_INDEX = os.path.join(VITE_DIST, "index.html")
+EMG_WEB   = os.path.join(REPO, "Demos", "Spikerbox-EMG", "web", "index.html")
+SEG_WEB   = os.path.join(REPO, "Demos", "StrangeObjectSegmenter", "web", "index.html")
+THREE_JS  = os.path.join(HERE, "resources", "vendor", "three", "three.module.js")
+
 HTTPS_PORT = 8443
 HTTP_PORT  = 8000
+
+
+# ---- demo build/health status -------------------------------------------
+def _newest_mtime(root, prune=()):
+    """Newest file mtime under `root` (a file or dir), skipping `prune` dirs."""
+    if os.path.isfile(root):
+        try:
+            return os.path.getmtime(root)
+        except OSError:
+            return 0.0
+    newest = 0.0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in prune]
+        for f in filenames:
+            try:
+                m = os.path.getmtime(os.path.join(dirpath, f))
+            except OSError:
+                continue
+            if m > newest:
+                newest = m
+    return newest
+
+
+def demo_status():
+    """Describe each served demo and whether it needs (re)building.
+
+    Returns a list of dicts: {name, route, status, detail}. `status` is one of
+    ready | stale | build | degraded | missing (worst-case per demo). Purely
+    filesystem-based, so it's meaningful whether or not the server is running.
+    """
+    demos = []
+
+    # --- Interactive Biomechanics (SSM) — the one demo with a build step ---
+    if not os.path.isdir(VITE_DIST):
+        ssm = ("build", "frontend not built — run setup_demo_server.py")
+    else:
+        built = _newest_mtime(DIST_INDEX)
+        src = max(_newest_mtime(GUI_SRC, prune=("node_modules", "dist", ".git")),
+                  _newest_mtime(GUI_PKG), _newest_mtime(GUI_INDEX))
+        if src > built > 0:
+            ssm = ("stale", "source changed since last build — rebuild")
+        elif not (os.path.isdir(SSM_MODEL) and os.path.exists(ANTHRO)):
+            ssm = ("degraded", "built, but model/data missing — predictions fail")
+        else:
+            ssm = ("ready", "built · model loaded")
+    demos.append({"name": "Interactive Biomechanics", "route": "/ssm/",
+                  "status": ssm[0], "detail": ssm[1]})
+
+    # --- Muscles in Control (EMG) — static, no build -----------------------
+    if os.path.exists(EMG_WEB):
+        emg = ("ready", "static · no build needed")
+    else:
+        emg = ("missing", "web/index.html not found")
+    demos.append({"name": "Muscles in Control", "route": "/emg/",
+                  "status": emg[0], "detail": emg[1]})
+
+    # --- Strange Object Segmenter — static, needs vendored three.js for 3D --
+    if not os.path.exists(SEG_WEB):
+        seg = ("missing", "web/index.html not found")
+    elif not os.path.exists(THREE_JS):
+        seg = ("degraded", "three.js vendor missing — 3D reveal disabled")
+    else:
+        seg = ("ready", "static · no build needed")
+    demos.append({"name": "Strange Object Segmenter", "route": "/segment/",
+                  "status": seg[0], "detail": seg[1]})
+
+    return demos
 
 # ---- pretty output -------------------------------------------------------
 def line(label, status, note=""):
