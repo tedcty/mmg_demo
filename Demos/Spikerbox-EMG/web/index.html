@@ -271,13 +271,32 @@ function smoothedEnv() {
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
+// Wait until the audio worklet is actually delivering envelope data. On the
+// first start the mic pipeline needs a moment to spin up; without this the
+// whole calibration window captures zeros, so baseline == MVC and the game
+// loop never runs (static bird, no worms/cats) until you restart.
+function waitForAudio(timeout = 4000) {
+    return new Promise(resolve => {
+        const t0 = performance.now();
+        (function check() {
+            if (envCount > 5 || performance.now() - t0 > timeout) resolve();
+            else setTimeout(check, 30);
+        })();
+    });
+}
+
 startBtn.addEventListener('click', async () => {
+    startBtn.disabled = true;
     try {
         await startAudio(deviceSel.value);
+        statusEl.textContent = 'Starting microphone…';
+        await waitForAudio();
     } catch (e) {
         statusEl.textContent = 'Could not open the selected audio device: ' + e.message;
+        startBtn.disabled = false;
         return;
     }
+    startBtn.disabled = false;
     // Begin calibration (relax → contract).
     calibrateEmg = false;
     gameActive = false;
@@ -340,9 +359,16 @@ function update() {
             calibrationActive = false;
             baselineValue = baselineBuf.length ? baselineBuf.reduce((a, b) => a + b, 0) / baselineBuf.length : 0;
             mvcValue = mvcBuf.length ? mvcBuf.reduce((a, b) => a + b, 0) / mvcBuf.length : 0;
-            againBtn.disabled = false;
-            statusEl.textContent = `Calibrated — baseline ${baselineValue.toExponential(2)}, MVC ${mvcValue.toExponential(2)}.`;
-            startGame();
+            if (mvcValue - baselineValue <= 0) {
+                // Contraction wasn't distinguishable from rest — don't launch a
+                // dead game; ask the user to recalibrate.
+                againBtn.disabled = true;
+                statusEl.textContent = 'Calibration too weak — press "Start the game" and contract harder on "Contract your muscle!".';
+            } else {
+                againBtn.disabled = false;
+                statusEl.textContent = `Calibrated — baseline ${baselineValue.toExponential(2)}, MVC ${mvcValue.toExponential(2)}.`;
+                startGame();
+            }
         }
     }
 
