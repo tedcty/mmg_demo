@@ -7,45 +7,88 @@
 <link rel="stylesheet" href="/resources/vendor/material.css">
 <style>
     * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: var(--md-sys-color-background);
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--md-sys-color-background);
         color: var(--md-sys-color-on-surface); font-family: 'Inter', system-ui, sans-serif;
         touch-action: manipulation; }
-    #wrap { max-width: 1100px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column;
-        gap: 12px; min-height: 100%; }
-    header { display: flex; align-items: center; gap: 12px; }
-    header h1 { font: 700 20px/1.2 'Inter'; margin: 0; color: var(--md-sys-color-on-background); }
-    header .sub { font-size: 12px; color: var(--md-sys-color-on-surface-variant); }
-    .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    #wrap { display: flex; flex-direction: column; height: 100%; }
+
+    /* Top app bar */
+    .appbar { display: flex; align-items: center; gap: 14px; padding: 10px 16px; z-index: 3;
+        background: var(--md-sys-color-surface); box-shadow: var(--md-elevation-1); }
+    .appbar .logo { width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
+    .appbar h1 { font: 700 18px/1.15 'Inter'; margin: 0; color: var(--md-sys-color-on-surface); }
+    .appbar .sub { font-size: 12px; color: var(--md-sys-color-on-surface-variant); }
     .spacer { flex: 1; }
-    .tool { font: 500 14px 'Inter'; }
+
+    /* Dashboard grid: rail | viewport | panel */
+    .dash { flex: 1; min-height: 0; display: grid; grid-template-columns: 92px 1fr 340px; }
+
+    /* Navigation rail (tools) */
+    .rail { display: flex; flex-direction: column; gap: 4px; padding: 12px 8px;
+        background: var(--md-sys-color-surface-container); }
+    .rail-item { display: flex; flex-direction: column; align-items: center; gap: 4px; border: none;
+        background: transparent; cursor: pointer; padding: 6px 0; font: 500 11px 'Inter';
+        color: var(--md-sys-color-on-surface-variant); }
+    .rail-item .ico { width: 56px; height: 32px; display: flex; align-items: center; justify-content: center;
+        border-radius: 16px; transition: background .15s; }
+    .rail-item.on { color: var(--md-sys-color-on-secondary-container); }
+    .rail-item.on .ico { background: var(--md-sys-color-secondary-container); }
+    @media (hover: hover) { .rail-item:not(.on):hover .ico { background: var(--md-sys-color-surface-container-highest); } }
+
+    /* Viewport */
+    .viewport-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 16px; gap: 12px; }
+    .stage-box { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; container-type: size; }
+    #stage { width: 76vmin; height: 76vmin; width: 100cqmin; height: 100cqmin;
+        max-width: 100%; max-height: 100%; position: relative;
+        border-radius: var(--md-shape-lg); overflow: hidden; box-shadow: var(--md-elevation-2);
+        background: #0a0d16; touch-action: none; }
+    #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+    #gen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: #cfe; font: 500 15px 'Inter'; background: #0a0d16; }
+    .vp-overlay { position: absolute; top: 10px; left: 12px; display: flex; gap: 8px; z-index: 2; pointer-events: none; }
+    .vp-tag { background: rgba(12,12,72,.62); color: #e4e1ff; font: 600 12px 'Inter';
+        padding: 4px 10px; border-radius: 999px; backdrop-filter: blur(4px); }
+    .slice-row { display: flex; align-items: center; gap: 12px; }
+    .slice-row input[type=range] { flex: 1; }
+
+    /* Right panel */
+    .panel { background: var(--md-sys-color-surface-container); padding: 14px;
+        display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+    .card { background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline-variant);
+        border-radius: var(--md-shape-md); padding: 14px; }
+    .card h3 { font: 600 11px 'Inter'; text-transform: uppercase; letter-spacing: .07em; margin: 0 0 10px;
+        color: var(--md-sys-color-on-surface-variant); }
+    .meta { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13px; }
+    .meta .mk { color: var(--md-sys-color-on-surface-variant); }
+    .meta .mv { text-align: right; font-weight: 500; }
+    .stat-row { display: flex; justify-content: space-between; align-items: baseline; margin: 8px 0; }
+    .stat-row .lk { font-size: 13px; color: var(--md-sys-color-on-surface-variant); }
+    .stat-row .v { font: 700 18px 'Inter'; font-variant-numeric: tabular-nums; }
+    .stat-row .v.accent { color: var(--md-uoa-lava); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .actions .md-btn { flex: 1 1 40%; }
+    label.range { display: flex; align-items: center; gap: 10px; font-size: 13px;
+        color: var(--md-sys-color-on-surface-variant); }
+    label.range input[type=range] { flex: 1; }
+    input[type=range] { accent-color: var(--md-sys-color-primary); }
+
+    /* Chip toggle (used by the 3D reveal) */
     .chip-toggle { display: inline-flex; border-radius: var(--md-shape-full);
         background: var(--md-sys-color-surface-container); padding: 3px; }
     .chip-toggle button { min-height: 38px; border-radius: var(--md-shape-full); padding: 0 18px; }
     .chip-toggle button:not(.on) { background: transparent; color: var(--md-sys-color-on-surface-variant); }
     .chip-toggle button:not(.on)::after { display: none; }
-    label.range { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
-        color: var(--md-sys-color-on-surface-variant); }
-    input[type=range] { accent-color: var(--md-sys-color-primary); }
-    #stagewrap { display: flex; justify-content: center; }
-    #stage { position: relative; width: min(100%, 560px); aspect-ratio: 1;
-        border-radius: var(--md-shape-lg); overflow: hidden; box-shadow: var(--md-elevation-2);
-        background: #000; touch-action: none; }
-    #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
-    #gen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-        color: #cfe; font: 500 15px 'Inter'; background: #000; }
-    .slice-row { display: flex; align-items: center; gap: 12px; }
-    .slice-row input[type=range] { flex: 1; }
-    #sliceLabel { font-variant-numeric: tabular-nums; font-size: 13px; min-width: 92px;
-        color: var(--md-sys-color-on-surface-variant); }
-    .readouts { display: flex; flex-wrap: wrap; gap: 10px; }
-    .stat { background: var(--md-sys-color-surface-container); border-radius: var(--md-shape-md);
-        padding: 10px 14px; min-width: 120px; }
-    .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-        color: var(--md-sys-color-on-surface-variant); }
-    .stat .v { font: 700 18px 'Inter'; color: var(--md-sys-color-on-background); }
-    .stat .v.accent { color: var(--md-uoa-mahina); }
-    .hint { font-size: 12px; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
-    .result { border-radius: var(--md-shape-md); padding: 12px 16px; font-size: 14px;
+
+    @media (max-width: 960px) {
+        .dash { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+        .rail { flex-direction: row; justify-content: center; }
+        .rail-item { flex-direction: row; gap: 8px; padding: 8px 14px; }
+        .rail-item .ico { width: auto; height: auto; padding: 6px 10px; }
+        .panel { max-height: 42vh; }
+    }
+    .result { border-radius: var(--md-shape-sm); padding: 10px 12px; font-size: 13px; margin-top: 10px;
         background: var(--md-sys-color-surface-container-high); display: none; }
     .result.show { display: block; }
     /* 3D reveal overlay */
@@ -67,58 +110,85 @@
 </head>
 <body>
 <div id="wrap">
-    <header>
+    <div class="appbar">
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>
+        </div>
         <div>
             <h1>Strange Object Segmenter</h1>
-            <div class="sub">Find the foreign object hidden in the scan and paint it across the slices.</div>
+            <div class="sub">Medical image segmentation · foreign-body study</div>
         </div>
-    </header>
-
-    <div class="bar">
-        <span class="chip-toggle">
-            <button id="brushBtn" class="md-btn md-btn--filled on">Brush</button>
-            <button id="eraseBtn" class="md-btn md-btn--filled">Eraser</button>
-        </span>
-        <label class="range tool">Size <input id="size" type="range" min="6" max="60" value="24"></label>
-        <button id="undoBtn" class="md-btn md-btn--tonal">Undo</button>
-        <button id="clearBtn" class="md-btn md-btn--tonal">Clear slice</button>
-        <button id="clearAllBtn" class="md-btn md-btn--outlined">Clear all</button>
         <span class="spacer"></span>
-        <button id="revealBtn" class="md-btn md-btn--filled"
-            style="background: var(--md-uoa-mahina); color: #003544;">Reveal 3D object</button>
-        <button id="checkBtn" class="md-btn md-btn--filled">Check my segmentation</button>
+        <button id="revealBtn" class="md-btn md-btn--filled" style="background: var(--md-uoa-mahina); color: #003544;">Reveal 3D</button>
+        <button id="checkBtn" class="md-btn md-btn--filled">Check</button>
     </div>
 
-    <div id="stagewrap">
-        <div id="stage">
-            <canvas id="view" width="256" height="256"></canvas>
-            <div id="gen">Generating scan…</div>
+    <div class="dash">
+        <!-- Tool rail -->
+        <nav class="rail">
+            <button id="brushBtn" class="rail-item on">
+                <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg></span>
+                Brush
+            </button>
+            <button id="eraseBtn" class="rail-item">
+                <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l10-10a1 1 0 0 1 1.4 0l5.6 5.6a1 1 0 0 1 0 1.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg></span>
+                Eraser
+            </button>
+        </nav>
+
+        <!-- Image viewport -->
+        <div class="viewport-col">
+            <div class="stage-box">
+                <div id="stage">
+                    <canvas id="view" width="256" height="256"></canvas>
+                    <div class="vp-overlay">
+                        <span class="vp-tag">CT · Axial</span>
+                        <span class="vp-tag" id="sliceLabel">Slice 1 / 1</span>
+                    </div>
+                    <div id="gen">Generating scan…</div>
+                </div>
+            </div>
+            <div class="slice-row">
+                <button id="prevBtn" class="md-icon-btn" aria-label="Previous slice"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></button>
+                <input id="slice" type="range" min="0" max="0" value="0">
+                <button id="nextBtn" class="md-icon-btn" aria-label="Next slice"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></button>
+            </div>
         </div>
-    </div>
 
-    <div class="slice-row">
-        <button id="prevBtn" class="md-icon-btn" aria-label="Previous slice">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
-        </button>
-        <input id="slice" type="range" min="0" max="0" value="0">
-        <button id="nextBtn" class="md-icon-btn" aria-label="Next slice">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
-        </button>
-        <span id="sliceLabel">Slice 1 / 1</span>
-    </div>
-
-    <div class="readouts">
-        <div class="stat"><div class="k">Painted (this slice)</div><div class="v" id="areaSlice">0 px</div></div>
-        <div class="stat"><div class="k">Segmented volume</div><div class="v accent" id="volAll">0 voxels</div></div>
-    </div>
-
-    <div class="result" id="result"></div>
-
-    <div class="hint">
-        The foreign object is the <strong>bright, sharp-edged blob</strong> that doesn't look like the soft
-        surrounding tissue. Scrub through the slices, paint over it on each one where it appears, then press
-        <em>Check my segmentation</em> to score how well you traced it, or <em>Reveal 3D object</em> to see
-        what it looks like in 3D.
+        <!-- Right panel -->
+        <aside class="panel">
+            <div class="card">
+                <h3>Study</h3>
+                <div class="meta">
+                    <span class="mk">Patient</span><span class="mv">ANON-0042</span>
+                    <span class="mk">Modality</span><span class="mv">CT</span>
+                    <span class="mk">Series</span><span class="mv">Axial · soft tissue</span>
+                    <span class="mk">Slices</span><span class="mv">24</span>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Tool settings</h3>
+                <label class="range">Brush size <input id="size" type="range" min="6" max="60" value="24"></label>
+            </div>
+            <div class="card">
+                <h3>Segmentation</h3>
+                <div class="stat-row"><span class="lk">Painted (this slice)</span><span class="v" id="areaSlice">0 px</span></div>
+                <div class="stat-row"><span class="lk">Volume</span><span class="v accent" id="volAll">0 voxels</span></div>
+                <div class="result" id="result"></div>
+            </div>
+            <div class="card">
+                <h3>Actions</h3>
+                <div class="actions">
+                    <button id="undoBtn" class="md-btn md-btn--tonal">Undo</button>
+                    <button id="clearBtn" class="md-btn md-btn--tonal">Clear slice</button>
+                    <button id="clearAllBtn" class="md-btn md-btn--outlined">Clear all</button>
+                </div>
+            </div>
+            <div class="card" style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); line-height: 1.55;">
+                Find the <strong style="color: var(--md-uoa-lava)">bright, sharp-edged</strong> foreign object,
+                scrub the slices and paint over it. Then <em>Check</em> your accuracy or <em>Reveal 3D</em>.
+            </div>
+        </aside>
     </div>
 </div>
 
