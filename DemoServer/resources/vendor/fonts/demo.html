@@ -8,71 +8,104 @@
     <script src="/resources/vendor/vue.global.prod.js"></script>
     <!-- Tailwind CSS Play CDN (vendored locally so the hub works offline) -->
     <script src="/resources/vendor/tailwindcss.js"></script>
-    <!-- Material Design 3 foundation (Roboto + tokens + components) -->
-    <link rel="stylesheet" href="/resources/vendor/material.css">
     <style>
         [v-cloak] { display: none; }
+        
+        /* OFFICIAL UNIVERSITY OF AUCKLAND BRAND COLORS */
+        :root {
+            --uoa-navy: #00467F;
+            --uoa-navy-dark: #00335e;
+            --uoa-gold: #EAAA00;
+            --uoa-white: #FFFFFF;
+            --uoa-grey: #717C7D;
+        }
 
+        .bg-uoa-navy { background-color: var(--uoa-navy); }
+        .text-uoa-navy { color: var(--uoa-navy); }
+        .border-uoa-navy { border-color: var(--uoa-navy); }
+        
+        .bg-uoa-gold { background-color: var(--uoa-gold); }
+        .text-uoa-gold { color: var(--uoa-gold); }
+        .border-uoa-gold { border-color: var(--uoa-gold); }
+
+        .hover-uoa-navy:active, .hover-uoa-navy:hover { background-color: var(--uoa-navy-dark); }
+        
         body {
-            background: var(--md-sys-color-background);
-            color: var(--md-sys-color-on-surface);
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f9;
+            /* Prevent double-tap zoom delay on some mobile browsers */
             touch-action: manipulation;
         }
 
-        /* Brand helper names kept, repointed to Material Design 3 tokens so the
-           existing markup renders with the Material palette/shape/type. */
-        .bg-uoa-navy   { background-color: var(--md-sys-color-primary); }
-        .text-uoa-navy { color: var(--md-sys-color-primary); }
-        .border-uoa-navy { border-color: var(--md-sys-color-primary); }
-        .bg-uoa-gold   { background-color: var(--md-sys-color-tertiary-container); }
-        .text-uoa-gold { color: var(--md-sys-color-tertiary); }
-        .border-uoa-gold { border-color: var(--md-sys-color-primary); }
-        .text-uoa-grey { color: var(--md-sys-color-on-surface-variant); }
-        .hover-uoa-navy:active, .hover-uoa-navy:hover { filter: brightness(1.08); }
-
-        /* App card = Material elevated card with a press/hover state layer */
         .app-card {
-            position: relative;
-            background: var(--md-sys-color-surface-container-high);
-            color: var(--md-sys-color-on-surface);
-            border-radius: var(--md-shape-lg);
-            box-shadow: var(--md-elevation-1);
-            transition: box-shadow .2s ease, transform .2s ease;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border-left: 4px solid transparent;
             -webkit-tap-highlight-color: transparent;
-            overflow: hidden;
         }
-        .app-card::after {
-            content: ''; position: absolute; inset: 0; background: var(--md-sys-color-primary);
-            opacity: 0; transition: opacity .15s ease; pointer-events: none;
+        
+        /* Tablet/Mobile friendly active state */
+        .app-card:active {
+            background-color: #f8fafc;
+            transform: scale(0.98);
         }
+
         @media (hover: hover) {
-            .app-card:hover { box-shadow: var(--md-elevation-3); transform: translateY(-2px); }
-            .app-card:hover::after { opacity: .05; }
+            .app-card:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 12px 24px -10px rgba(0, 70, 127, 0.2);
+                border-left-color: var(--uoa-gold);
+            }
         }
-        .app-card:active::after { opacity: .10; }
 
         .hero-gradient {
-            background: linear-gradient(135deg, var(--md-sys-color-primary) 0%, #003258 100%);
-            color: var(--md-sys-color-on-primary);
-            border-radius: var(--md-shape-xl);
+            background: linear-gradient(135deg, #00467F 0%, #002b4e 100%);
         }
 
-        @keyframes progress-loading { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 100%; } }
-        .animate-progress { animation: progress-loading 2s ease-in-out infinite; }
+        @keyframes progress-loading {
+            0% { width: 0%; }
+            50% { width: 70%; }
+            100% { width: 100%; }
+        }
+        
+        .animate-progress {
+            animation: progress-loading 2s ease-in-out infinite;
+        }
 
+        /* Scanline for simulation effect */
         .scanline {
-            height: 2px; background: rgba(0, 97, 164, 0.25); position: absolute;
-            width: 100%; top: 0; z-index: 5; animation: scan 4s linear infinite;
+            height: 2px;
+            background: rgba(234, 170, 0, 0.2);
+            position: absolute;
+            width: 100%;
+            top: 0;
+            z-index: 5;
+            animation: scan 4s linear infinite;
         }
-        @keyframes scan { from { top: 0%; } to { top: 100%; } }
 
+        @keyframes scan {
+            from { top: 0%; }
+            to { top: 100%; }
+        }
+
+        /* Audio Waveform Animation */
         .wave-bar {
-            background-color: var(--md-sys-color-primary); width: 4px; margin: 0 2px;
-            border-radius: 2px; animation: wave-pulse 1s ease-in-out infinite;
+            background-color: var(--uoa-gold);
+            width: 4px;
+            margin: 0 2px;
+            border-radius: 2px;
+            animation: wave-pulse 1s ease-in-out infinite;
         }
-        @keyframes wave-pulse { 0%, 100% { height: 10px; } 50% { height: 40px; } }
 
-        .touch-target { min-height: 44px; min-width: 44px; }
+        @keyframes wave-pulse {
+            0%, 100% { height: 10px; }
+            50% { height: 40px; }
+        }
+        
+        /* Ensure touch targets are accessible */
+        .touch-target {
+            min-height: 44px;
+            min-width: 44px;
+        }
     </style>
 </head>
 <body class="text-slate-800 antialiased overflow-x-hidden">
@@ -136,8 +169,12 @@
                         v-for="cat in categories"
                         :key="cat"
                         @click="selectedCategory = cat"
-                        class="md-chip touch-target whitespace-nowrap"
-                        :class="{ 'md-chip--selected': selectedCategory === cat }"
+                        class="whitespace-nowrap px-5 py-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition-all duration-200 touch-target"
+                        :class="[
+                            selectedCategory === cat 
+                                ? 'border-uoa-gold text-uoa-navy bg-white shadow-sm' 
+                                : 'border-transparent text-slate-500 hover:text-uoa-navy'
+                        ]"
                     >
                         {{ cat }}
                     </button>
@@ -149,10 +186,10 @@
                         v-for="app in filteredApps"
                         :key="app.id"
                         @click="launchApp(app)"
-                        class="app-card p-6 sm:p-8 flex flex-col group cursor-pointer relative"
+                        class="app-card bg-white border border-slate-200 p-6 sm:p-8 flex flex-col group cursor-pointer relative"
                     >
                         <div class="flex items-start justify-between mb-6">
-                            <div class="p-3 rounded-2xl bg-uoa-gold text-uoa-navy transition-colors duration-300" v-html="app.icon"></div>
+                            <div class="p-3 bg-slate-50 text-uoa-navy transition-colors duration-300" v-html="app.icon"></div>
                             <div class="flex flex-col items-end">
                                 <span class="text-[9px] font-bold text-uoa-grey uppercase tracking-widest">{{ app.type }}</span>
                                 <span v-if="app.url" class="mt-1 text-[8px] font-bold text-emerald-600 uppercase flex items-center">
@@ -175,7 +212,7 @@
                             </div>
                             <!-- Info button: stops the card's launch click and opens details -->
                             <button @click.stop="showInfo(app)" title="More info" aria-label="More info"
-                                class="md-icon-btn ml-auto">
+                                class="ml-auto flex items-center justify-center w-9 h-9 rounded-full border border-slate-200 text-slate-400 hover:text-uoa-navy hover:border-uoa-navy transition-colors touch-target">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
                             </button>
                         </div>
@@ -184,7 +221,7 @@
                 
                 <div v-else class="text-center py-20 bg-white border border-slate-200 rounded-lg">
                     <p class="text-uoa-grey font-bold uppercase tracking-widest text-sm">No demos found</p>
-                    <button @click="clearFilters" class="md-btn md-btn--text touch-target mt-4">View all tools</button>
+                    <button @click="clearFilters" class="mt-4 text-uoa-navy font-bold text-xs underline underline-offset-4 decoration-uoa-gold touch-target px-4">View all tools</button>
                 </div>
             </main>
 
@@ -255,14 +292,13 @@
         <!-- INFO MODAL -->
         <div v-if="infoApp" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="closeInfo">
             <div class="absolute inset-0 bg-slate-900/60" @click="closeInfo"></div>
-            <div class="relative w-full max-w-lg p-6 sm:p-8 rounded-[28px]"
-                 style="background: var(--md-sys-color-surface-container-high); box-shadow: var(--md-elevation-3);">
+            <div class="relative bg-white rounded-lg shadow-2xl max-w-lg w-full border-t-4 border-uoa-gold p-6 sm:p-8">
                 <button @click="closeInfo" title="Close" aria-label="Close"
-                    class="md-icon-btn absolute top-3 right-3">
+                    class="absolute top-3 right-3 w-9 h-9 flex items-center justify-center rounded-full text-slate-400 hover:text-uoa-navy hover:bg-slate-100 transition-colors touch-target">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                 </button>
                 <div class="flex items-center mb-4 pr-8">
-                    <div class="p-3 rounded-2xl bg-uoa-gold text-uoa-navy mr-4 shrink-0" v-html="infoApp.icon"></div>
+                    <div class="p-3 bg-slate-50 text-uoa-navy mr-4 shrink-0" v-html="infoApp.icon"></div>
                     <div>
                         <h3 class="text-xl font-black text-uoa-navy leading-tight">{{ infoApp.title }}</h3>
                         <span class="text-[9px] font-bold text-uoa-grey uppercase tracking-widest">{{ infoApp.category }} · {{ infoApp.type }}</span>
@@ -275,7 +311,8 @@
                     </span>
                     <span v-else class="text-[10px] font-bold text-uoa-grey uppercase">Coming soon</span>
                     <span v-if="infoApp.requiresMic" class="text-[10px] font-bold text-red-600 uppercase">Requires audio input</span>
-                    <button @click="launchFromInfo(infoApp)" class="md-btn md-btn--filled touch-target ml-auto">
+                    <button @click="launchFromInfo(infoApp)"
+                        class="ml-auto bg-uoa-navy text-white px-5 py-2.5 rounded-md text-xs font-bold uppercase tracking-widest hover-uoa-navy touch-target">
                         Start Demo
                     </button>
                 </div>
