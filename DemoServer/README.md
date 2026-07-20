@@ -141,8 +141,9 @@ status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
 delay). The type scale, buttons and window are sized for **13–16" portable
-outreach laptops** — it opens fit-to-screen and the KPI cards reflow onto extra
-rows when the window is narrow, so nothing clips.
+outreach laptops** — it opens fit-to-screen (centred, capped so it never exceeds
+the display) and the KPI cards share one equal-width row that fits a 1366-wide
+laptop.
 
 It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it reflects
 any server — even one you started from a terminal or left running when you closed

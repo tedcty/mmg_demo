@@ -64,8 +64,8 @@ QLabel#chip {{ font-size: 14px; font-weight: 700; border-radius: 14px; padding: 
 
 /* Cards */
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
-QLabel#statValue {{ font-size: 28px; font-weight: 800; color: {INK}; }}
-QLabel#statSub {{ color: {LABEL}; font-size: 15px; font-weight: 800; }}
+QLabel#statValue {{ font-size: 23px; font-weight: 800; color: {INK}; }}
+QLabel#statSub {{ color: {LABEL}; font-size: 14px; font-weight: 800; }}
 QLabel#statCaption {{ color: {GREY}; font-size: 11px; font-weight: 700; }}
 QGroupBox {{ margin-top: 28px; padding: 16px; font-weight: 700; color: {INK}; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
@@ -269,71 +269,6 @@ def _shadow(w, blur=24, alpha=26, dy=4):
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
     eff.setColor(QtGui.QColor(12, 12, 72, alpha))
     w.setGraphicsEffect(eff)
-
-
-class FlowLayout(QtWidgets.QLayout):
-    """A layout that lays widgets left-to-right and wraps to the next row when
-    it runs out of width — so the KPI cards reflow instead of clipping on small
-    portable screens."""
-
-    def __init__(self, parent=None, hspacing=16, vspacing=16):
-        super().__init__(parent)
-        self._items = []
-        self._hspace = hspacing
-        self._vspace = vspacing
-        self.setContentsMargins(0, 0, 0, 0)
-
-    def addItem(self, item):
-        self._items.append(item)
-
-    def addWidget(self, w):
-        self.addChildWidget(w)
-        self.addItem(QtWidgets.QWidgetItem(w))
-
-    def count(self):
-        return len(self._items)
-
-    def itemAt(self, i):
-        return self._items[i] if 0 <= i < len(self._items) else None
-
-    def takeAt(self, i):
-        return self._items.pop(i) if 0 <= i < len(self._items) else None
-
-    def expandingDirections(self):
-        return QtCore.Qt.Orientations(QtCore.Qt.Orientation(0))
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        return self._do_layout(QtCore.QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect):
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QtCore.QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        return size
-
-    def _do_layout(self, rect, test_only):
-        x, y, line_h = rect.x(), rect.y(), 0
-        for item in self._items:
-            hint = item.sizeHint()
-            if x + hint.width() > rect.right() + 1 and line_h > 0:
-                x = rect.x()
-                y = y + line_h + self._vspace
-                line_h = 0
-            if not test_only:
-                item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), hint))
-            x = x + hint.width() + self._hspace
-            line_h = max(line_h, hint.height())
-        return y + line_h - rect.y()
 
 
 class StatusWorker(QtCore.QThread):
@@ -626,8 +561,10 @@ class Dashboard(QtWidgets.QWidget):
 
     def _stat_card(self, icon, caption, color):
         card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
-        card.setMinimumSize(196, 92)          # so the flow row wraps cleanly
-        h = QtWidgets.QHBoxLayout(card); h.setContentsMargins(16, 14, 16, 14); h.setSpacing(14)
+        # Fill the row equally; fixed height keeps the single row compact.
+        card.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        card.setMinimumWidth(150); card.setFixedHeight(92)
+        h = QtWidgets.QHBoxLayout(card); h.setContentsMargins(14, 12, 14, 12); h.setSpacing(12)
         ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap(icon, "white", 44, bg=color))
         ic.setFixedSize(44, 44)
         tv = QtWidgets.QVBoxLayout(); tv.setSpacing(2)
@@ -646,18 +583,17 @@ class Dashboard(QtWidgets.QWidget):
 
         v.addWidget(self._build_access_banner())
 
-        cards_box = QtWidgets.QWidget()
-        cards = FlowLayout(cards_box, hspacing=16, vspacing=16)
+        cards = QtWidgets.QHBoxLayout(); cards.setSpacing(14)
         self.c_status, self.k_status, _, self.status_icon = self._stat_card("status", "STATUS", GREY)
-        cards.addWidget(self.c_status)
+        cards.addWidget(self.c_status, 1)     # equal stretch → equal-width cards
         _, self.k_uptime, _ = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
-        _, self.k_clients, _ = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
+        _, self.k_clients, _ = self._stat_card_add(cards, "users", "CLIENTS", GREEN)
         _, self.k_cpu, self.k_cpu_sub = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
         _, self.k_gpu, self.k_gpu_sub = self._stat_card_add(cards, "cpu", "GPU LOAD", GREEN)
         # CPU/GPU cards carry a second "server …" line under the machine total.
         for sub in (self.k_cpu_sub, self.k_gpu_sub):
             sub.setText("server —"); sub.show()
-        v.addWidget(cards_box)
+        v.addLayout(cards)
 
         # Demos + diagnostics side by side
         midrow = QtWidgets.QHBoxLayout(); midrow.setSpacing(16)
@@ -710,7 +646,7 @@ class Dashboard(QtWidgets.QWidget):
 
     def _stat_card_add(self, row, icon, caption, color):
         card, val, sub, _ic = self._stat_card(icon, caption, color)
-        row.addWidget(card)
+        row.addWidget(card, 1)                # equal stretch → equal-width cards
         return card, val, sub
 
     def _qr_card(self, caption, sub):
