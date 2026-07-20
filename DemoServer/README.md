@@ -127,7 +127,12 @@ does whether to fall back to the IP). Any QR can be **clicked to enlarge** into 
 scannable pop-up. The **Demos** card has a **Rebuild frontend** button that runs
 `vite build --base /ssm/` (streaming into the console) so you can fix a stale
 `REBUILD` without a terminal, and if the server process exits unexpectedly a
-dismissable **crash banner** appears. The status icon and chip track state live —
+dismissable **crash banner** appears. A **Keep alive** toggle auto-restarts the
+server after an unexpected exit (with backoff, giving up after a few rapid
+crashes) for unattended events. Launch flags support the same:
+`dashboard.py --autostart` starts the server as soon as the panel opens, and
+`--keep-alive` enables the watchdog — together they make an "open the laptop and
+everything's up" kiosk. The status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
 delay). It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it

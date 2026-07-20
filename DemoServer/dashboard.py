@@ -362,8 +362,9 @@ class Dashboard(QtWidgets.QWidget):
     _exit_sig = QtCore.Signal(object, int)   # (proc, returncode) from the log pump
 
     NAV = [("grid", "Dashboard"), ("term", "Console"), ("link", "Access"), ("cross", "Doctor")]
+    MAX_RESTARTS = 5          # keep-alive gives up after this many rapid crashes
 
-    def __init__(self):
+    def __init__(self, autostart=False, keepalive=False):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("MMG Demo Server — Control Panel")
@@ -381,8 +382,15 @@ class Dashboard(QtWidgets.QWidget):
         self._tablet_ip_url = self._url
         self._trust_url = f"http://localhost:{doctor.HTTP_PORT}/trust"
         self._rebuilding = False
+        self._keepalive = keepalive           # auto-restart on unexpected exit
+        self._crash_count = 0                 # consecutive keep-alive restarts
+        self._last_restart_t = 0.0
+        self._autostart = autostart
+        self._autostart_done = False
 
         self._build_ui()
+        if keepalive:
+            self.keepalive.setChecked(True)
         self._log_sig.connect(self._append_log)
         self._exit_sig.connect(self._on_proc_exit)
         self.timer = QtCore.QTimer(self)
@@ -736,7 +744,7 @@ class Dashboard(QtWidgets.QWidget):
         self.stop_btn = QtWidgets.QPushButton("Stop")
         self.restart_btn = QtWidgets.QPushButton("Restart")
         self.reset_btn = QtWidgets.QPushButton("Reset ports"); self.reset_btn.setObjectName("danger")
-        self.start_btn.clicked.connect(self.start_server)
+        self.start_btn.clicked.connect(self._on_start_clicked)
         self.stop_btn.clicked.connect(self.stop_server)
         self.restart_btn.clicked.connect(self.restart_server)
         self.reset_btn.clicked.connect(self.reset_ports)
@@ -758,6 +766,10 @@ class Dashboard(QtWidgets.QWidget):
         ctl.addWidget(self.busy_lbl); ctl.addWidget(self.busy_bar)
 
         ctl.addStretch(1)
+        self.keepalive = QtWidgets.QCheckBox("Keep alive")
+        self.keepalive.setToolTip("Automatically restart the server if it exits unexpectedly")
+        self.keepalive.toggled.connect(self._toggle_keepalive)
+        ctl.addWidget(self.keepalive)
         self.auto = QtWidgets.QCheckBox("Auto-refresh every"); self.auto.setChecked(True)
         self.auto.toggled.connect(self._toggle_auto)
         self.interval = QtWidgets.QSpinBox()
@@ -796,9 +808,33 @@ class Dashboard(QtWidgets.QWidget):
         self.proc = None
         self._append_log(f"[dashboard] ⚠ server exited unexpectedly (code {rc})")
         QtWidgets.QApplication.beep()
-        self._show_alert(f"Server exited unexpectedly (exit code {rc}). "
-                         f"See the Console for details.")
+        if self._keepalive and self._crash_count < self.MAX_RESTARTS:
+            self._crash_count += 1
+            delay = min(2 ** (self._crash_count - 1), 30)   # 1,2,4,8,16,30s…
+            self._append_log(f"[dashboard] keep-alive: restarting in {delay}s "
+                             f"(attempt {self._crash_count}/{self.MAX_RESTARTS})")
+            self._show_alert(f"Server exited (code {rc}). Auto-restarting in {delay}s "
+                             f"(attempt {self._crash_count}/{self.MAX_RESTARTS})…")
+            QtCore.QTimer.singleShot(int(delay * 1000), self._auto_restart)
+        elif self._keepalive:
+            self._show_alert(f"Server keeps exiting — keep-alive gave up after "
+                             f"{self.MAX_RESTARTS} attempts. Check the Console.")
+            self._append_log("[dashboard] keep-alive: gave up after "
+                             f"{self.MAX_RESTARTS} attempts")
+        else:
+            self._show_alert(f"Server exited unexpectedly (exit code {rc}). "
+                             f"See the Console for details.")
         self.refresh()
+
+    def _auto_restart(self):
+        if not self._keepalive:
+            return                            # toggled off during the backoff wait
+        if self.proc and self.proc.poll() is None:
+            return                            # already back up
+        if doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
+            return                            # something already on the port
+        self._append_log("[dashboard] keep-alive: restarting server…")
+        self.start_server()
 
     def _show_alert(self, msg):
         self.alert.setText(f"⚠  {msg}   (click to dismiss)")
@@ -944,6 +980,18 @@ class Dashboard(QtWidgets.QWidget):
                 self.start_btn.setEnabled(False)
                 self.stop_btn.setEnabled(False)
 
+        # keep-alive: a run that stays healthy long enough clears the backoff.
+        if (running and s.get("https_code") == 200 and self._crash_count
+                and time.time() - self._last_restart_t > 45):
+            self._crash_count = 0
+
+        # autostart: launch once on the first status, only if nothing is up yet.
+        if self._autostart and not self._autostart_done and not self._starting:
+            self._autostart_done = True
+            if not running:
+                self._append_log("[dashboard] autostart: launching server…")
+                self._on_start_clicked()
+
     # ---- controls --------------------------------------------------------
     def start_server(self):
         if doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
@@ -951,6 +999,7 @@ class Dashboard(QtWidgets.QWidget):
             self.refresh(); return
         self._append_log("[dashboard] starting server…")
         self.alert.setVisible(False)          # clear any prior crash notice
+        self._last_restart_t = time.time()    # baseline for keep-alive backoff reset
         self.proc = subprocess.Popen(
             [sys.executable, doctor.SERVER_PY],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1034,6 +1083,7 @@ class Dashboard(QtWidgets.QWidget):
         self.restart_btn.setEnabled(True)
 
     def restart_server(self):
+        self._crash_count = 0                 # manual action = fresh slate
         running = bool(self.proc and self.proc.poll() is None) or \
             bool(doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT]))
         if not running:
@@ -1090,6 +1140,15 @@ class Dashboard(QtWidgets.QWidget):
         self.refresh()                       # refresh the demo build-status chips
 
     # ---- misc ------------------------------------------------------------
+    def _on_start_clicked(self):
+        self._crash_count = 0                 # manual start = fresh slate
+        self.start_server()
+
+    def _toggle_keepalive(self, on):
+        self._keepalive = on
+        self._crash_count = 0
+        self._append_log(f"[dashboard] keep-alive {'on' if on else 'off'}")
+
     def _toggle_auto(self, on):
         if on:
             self.timer.start(self.interval.value() * 1000)
@@ -1124,6 +1183,14 @@ class Dashboard(QtWidgets.QWidget):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="MMG Demo Server control panel")
+    ap.add_argument("--autostart", action="store_true",
+                    help="start the demo server automatically once the panel opens")
+    ap.add_argument("--keep-alive", action="store_true",
+                    help="auto-restart the server if it exits unexpectedly")
+    args = ap.parse_args()
+
     app = QtWidgets.QApplication(sys.argv)
     try:
         from qt_material import apply_stylesheet
@@ -1131,7 +1198,7 @@ def main():
     except Exception:
         pass
     app.setStyleSheet(app.styleSheet() + QSS)
-    win = Dashboard()
+    win = Dashboard(autostart=args.autostart, keepalive=args.keep_alive)
     win.show()
     sys.exit(app.exec())
 
