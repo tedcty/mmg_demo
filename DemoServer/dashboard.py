@@ -93,6 +93,15 @@ QLabel#startupLbl {{ color: {AZURE}; font-size: 12px; font-weight: 700; }}
 QProgressBar#startup {{ background: #e7ecf5; border: none; border-radius: 6px;
                         min-height: 8px; max-height: 8px; }}
 QProgressBar#startup::chunk {{ background: {AZURE}; border-radius: 6px; }}
+
+/* Tablet access banner */
+QFrame#access {{ background: {INK}; border-radius: 16px; }}
+QLabel#accessCap {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight: 800; }}
+QLabel#accessUrl {{ color: white; font-size: 27px; font-weight: 800; }}
+QLabel#accessHint {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight: 600; }}
+QPushButton#accessCopy {{ background: rgba(255,255,255,0.14); color: white; border: none;
+                          border-radius: 10px; padding: 10px 18px; font-weight: 700; }}
+QPushButton#accessCopy:hover {{ background: rgba(255,255,255,0.24); }}
 """
 
 
@@ -374,14 +383,16 @@ class Dashboard(QtWidgets.QWidget):
         tv.addWidget(val); tv.addWidget(cap)
         tv.addStretch(1)
         h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addLayout(tv); h.addStretch(1)
-        return card, val
+        return card, val, ic
 
     def _page_dashboard(self):
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(16)
 
+        v.addWidget(self._build_access_banner())
+
         cards = QtWidgets.QHBoxLayout(); cards.setSpacing(16)
-        self.c_status, self.k_status = self._stat_card("status", "STATUS", GREY)
+        self.c_status, self.k_status, self.status_icon = self._stat_card("status", "STATUS", GREY)
         _, self.k_uptime = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
         _, self.k_clients = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
         _, self.k_cpu = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
@@ -403,8 +414,31 @@ class Dashboard(QtWidgets.QWidget):
         v.addLayout(midrow, 1)
         return w
 
+    def _build_access_banner(self):
+        """Prominent card showing the address to type into the tablet browser."""
+        banner = QtWidgets.QFrame(); banner.setObjectName("access"); _shadow(banner, alpha=40)
+        h = QtWidgets.QHBoxLayout(banner); h.setContentsMargins(22, 16, 18, 16); h.setSpacing(14)
+
+        ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap("link", "white", 46, bg=AZURE))
+        ic.setFixedSize(46, 46)
+
+        tv = QtWidgets.QVBoxLayout(); tv.setSpacing(2)
+        cap = QtWidgets.QLabel("TABLET ACCESS"); cap.setObjectName("accessCap")
+        self.tablet_big = QtWidgets.QLabel("—"); self.tablet_big.setObjectName("accessUrl")
+        self.tablet_big.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.access_hint = QtWidgets.QLabel(""); self.access_hint.setObjectName("accessHint")
+        tv.addWidget(cap); tv.addWidget(self.tablet_big); tv.addWidget(self.access_hint)
+
+        copy = QtWidgets.QPushButton("Copy"); copy.setObjectName("accessCopy")
+        copy.clicked.connect(self._copy_url)
+
+        h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addSpacing(4)
+        h.addLayout(tv); h.addStretch(1)
+        h.addWidget(copy, 0, QtCore.Qt.AlignVCenter)
+        return banner
+
     def _stat_card_add(self, row, icon, caption, color):
-        card, val = self._stat_card(icon, caption, color)
+        card, val, _ic = self._stat_card(icon, caption, color)
         row.addWidget(card)
         return card, val
 
@@ -580,6 +614,7 @@ class Dashboard(QtWidgets.QWidget):
 
         self.k_status.setText("RUNNING" if running else "STOPPED")
         self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{col}")
+        self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=col))
 
         if running and s["create_time"]:
             secs = int(time.time() - s["create_time"])
@@ -624,11 +659,17 @@ class Dashboard(QtWidgets.QWidget):
 
         ip = s["ip"]
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
-        self._tablet_url = f"https://{ip}:{doctor.HTTPS_PORT}"
+        self._tablet_url = f"https://{doctor.MDNS_FQDN}:{doctor.HTTPS_PORT}"
+        self._tablet_ip_url = f"https://{ip}:{doctor.HTTPS_PORT}"
+        self.tablet_big.setText(self._tablet_url)
+        self.access_hint.setText(
+            f"Open in the tablet browser · use {self._tablet_ip_url} if the name won't resolve"
+            if running else "Start the server, then open this on the tablet")
         self.url_lbl.setText(
             f"This device &nbsp;<b>{self._url}</b><br>"
             f"Tablets &nbsp;&nbsp;&nbsp;&nbsp;<b>{self._tablet_url}</b> "
-            f"&nbsp;(or http://{ip}:{doctor.HTTP_PORT} — redirects)")
+            f"&nbsp;(or <b>{self._tablet_ip_url}</b> — by IP; "
+            f"http://{ip}:{doctor.HTTP_PORT} redirects)")
 
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
@@ -647,6 +688,7 @@ class Dashboard(QtWidgets.QWidget):
                     f"font-weight:700;border-radius:13px;padding:5px 14px")
                 self.k_status.setText("STARTING")
                 self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                 self.start_btn.setEnabled(False)
                 self.stop_btn.setEnabled(False)
 
@@ -667,6 +709,7 @@ class Dashboard(QtWidgets.QWidget):
                     f"font-weight:700;border-radius:13px;padding:5px 14px")
                 self.k_status.setText("STOPPING")
                 self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                 self.start_btn.setEnabled(False)
                 self.stop_btn.setEnabled(False)
 
