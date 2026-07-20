@@ -727,8 +727,9 @@ class Dashboard(QtWidgets.QWidget):
         return card, val, sub
 
     def _qr_card(self, caption, sub):
-        """A white card with a title, a QR placeholder and a sub-caption."""
+        """A compact white card with a title, a QR placeholder and a caption."""
         card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
+        card.setFixedWidth(228)            # hug the 196px QR; text wraps within
         v = QtWidgets.QVBoxLayout(card); v.setContentsMargins(16, 14, 16, 14); v.setSpacing(8)
         cap = QtWidgets.QLabel(caption); cap.setObjectName("qrCaption")
         qr = QtWidgets.QLabel(); qr.setObjectName("qrCard")
@@ -865,10 +866,12 @@ class Dashboard(QtWidgets.QWidget):
         al.addLayout(row)
         v.addWidget(acc)
 
-        # Scan-to-open + tablet onboarding QRs.
+        # Scan-to-open (compact QR cards) beside the protocol cheat-sheet, so
+        # the row's width is used instead of leaving the QRs floating in space.
+        row2 = QtWidgets.QHBoxLayout(); row2.setSpacing(16)
+
         scanbox = QtWidgets.QGroupBox("Scan to open"); _shadow(scanbox)
         sl = QtWidgets.QHBoxLayout(scanbox); sl.setSpacing(16)
-
         demo_card, self.qr_demo, self.qr_demo_sub = self._qr_card(
             "Open the demo", "Point a tablet camera here to open the demo.")
         sl.addWidget(demo_card)
@@ -877,15 +880,15 @@ class Dashboard(QtWidgets.QWidget):
             "Trust a new tablet",
             "Do this once per tablet so HTTPS shows no warning (needed for the "
             "EMG mic).")
-        tb = QtWidgets.QHBoxLayout()
+        tb = QtWidgets.QVBoxLayout(); tb.setSpacing(8)   # stack buttons in the narrow card
         self.trust_open_btn = QtWidgets.QPushButton("Open /trust"); self.trust_open_btn.setObjectName("primary")
         self.trust_open_btn.clicked.connect(self._open_trust)
         self.trust_copy_btn = QtWidgets.QPushButton("Copy /trust URL")
         self.trust_copy_btn.clicked.connect(self._copy_trust)
-        tb.addWidget(self.trust_open_btn); tb.addWidget(self.trust_copy_btn); tb.addStretch(1)
+        tb.addWidget(self.trust_open_btn); tb.addWidget(self.trust_copy_btn)
         trust_card.layout().addLayout(tb)
         sl.addWidget(trust_card)
-        v.addWidget(scanbox)
+        row2.addWidget(scanbox, 0)                       # hug the two compact cards
 
         help_box = QtWidgets.QGroupBox("Protocol cheat-sheet"); _shadow(help_box)
         hl = QtWidgets.QVBoxLayout(help_box)
@@ -894,9 +897,13 @@ class Dashboard(QtWidgets.QWidget):
             f"{_dot(GREEN)} <b>http://&lt;host&gt;:{doctor.HTTP_PORT}</b> — redirects to HTTPS<br>"
             f"{_dot(RED)} http://…:{doctor.HTTPS_PORT} or https://…:{doctor.HTTP_PORT} "
             f"— connection reset")
-        tip.setObjectName("url"); tip.setTextFormat(QtCore.Qt.RichText)
-        hl.addWidget(tip)
-        v.addWidget(help_box); v.addStretch(1)
+        tip.setObjectName("url"); tip.setTextFormat(QtCore.Qt.RichText); tip.setWordWrap(True)
+        tip.setAlignment(QtCore.Qt.AlignTop)
+        hl.addWidget(tip); hl.addStretch(1)
+        row2.addWidget(help_box, 1)                      # fill the remaining width
+
+        v.addLayout(row2)
+        v.addStretch(1)
         return w
 
     def _page_doctor(self):
