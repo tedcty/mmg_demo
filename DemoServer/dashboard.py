@@ -387,6 +387,10 @@ class Dashboard(QtWidgets.QWidget):
         self._last_restart_t = 0.0
         self._autostart = autostart
         self._autostart_done = False
+        self._was_running = False             # previous observed running state
+        self._adopted_pid = None              # PID of a server we didn't start
+        self._exit_handled = False            # de-dupe crash handling per run
+        self._last_rc = None                  # exit code from the pump, if known
 
         self._build_ui()
         if keepalive:
@@ -822,20 +826,33 @@ class Dashboard(QtWidgets.QWidget):
         self._exit_sig.emit(proc, proc.wait())
 
     def _on_proc_exit(self, proc, rc):
-        # Ignore processes we deliberately stopped (marked) or already replaced.
+        # Immediate path for a server WE started: the stdout pump saw it exit.
+        # Ignore deliberate stops (marked) or an already-replaced process.
         if getattr(proc, "_intentional", False) or proc is not self.proc:
             return
         if self._starting:
             return            # startup failure is handled in _apply_status
         self.proc = None
-        self._append_log(f"[dashboard] ⚠ server exited unexpectedly (code {rc})")
+        self._last_rc = rc
+        self._maybe_crash()   # the polling path also funnels here (guarded)
+
+    def _maybe_crash(self):
+        """Handle an unexpected server exit exactly once — from either the
+        stdout pump (self-started) or status polling (adopted). Fires the
+        alert/beep and, if keep-alive is on, schedules a backoff restart."""
+        if self._exit_handled:
+            return
+        self._exit_handled = True
+        rc = self._last_rc
+        code = f" (exit code {rc})" if rc is not None else ""
+        self._append_log(f"[dashboard] ⚠ server exited unexpectedly{code}")
         QtWidgets.QApplication.beep()
         if self._keepalive and self._crash_count < self.MAX_RESTARTS:
             self._crash_count += 1
             delay = min(2 ** (self._crash_count - 1), 30)   # 1,2,4,8,16,30s…
             self._append_log(f"[dashboard] keep-alive: restarting in {delay}s "
                              f"(attempt {self._crash_count}/{self.MAX_RESTARTS})")
-            self._show_alert(f"Server exited (code {rc}). Auto-restarting in {delay}s "
+            self._show_alert(f"Server exited{code}. Auto-restarting in {delay}s "
                              f"(attempt {self._crash_count}/{self.MAX_RESTARTS})…")
             QtCore.QTimer.singleShot(int(delay * 1000), self._auto_restart)
         elif self._keepalive:
@@ -844,7 +861,7 @@ class Dashboard(QtWidgets.QWidget):
             self._append_log("[dashboard] keep-alive: gave up after "
                              f"{self.MAX_RESTARTS} attempts")
         else:
-            self._show_alert(f"Server exited unexpectedly (exit code {rc}). "
+            self._show_alert(f"Server exited unexpectedly{code}. "
                              f"See the Console for details.")
         self.refresh()
 
@@ -874,6 +891,28 @@ class Dashboard(QtWidgets.QWidget):
     def _apply_status(self, s):
         self._polling = False
         running = s["running"]
+
+        # --- monitor any server, even one this instance didn't start ---------
+        if running and not self._was_running:
+            # a fresh run appeared → (re)arm crash detection
+            self._exit_handled = False
+            self._last_rc = None
+        if running and self.proc is None and not self._starting:
+            pid = s["pids"][0] if s.get("pids") else None
+            if pid and pid != self._adopted_pid:
+                self._adopted_pid = pid
+                self._append_log(f"[dashboard] found a running server (PID {pid}) — "
+                                 f"monitoring it; Stop / Restart will control it")
+        if not running:
+            self._adopted_pid = None
+        # Unexpected exit (covers adopted servers, and self-started ones if the
+        # pump is slow): running → stopped without us asking. Intentional stops
+        # are excluded by the transition guards below.
+        if (self._was_running and not running and not self._starting
+                and not self._stopping and not self._restart_pending):
+            self._maybe_crash()
+        self._was_running = running
+
         col = GREEN if running else GREY
 
         self.chip.setText("● RUNNING" if running else "○ STOPPED")

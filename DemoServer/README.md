@@ -139,9 +139,14 @@ status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
 delay). It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it
-reflects any
-server — even one you started from a terminal. Run it in the `demo` env so it
-launches the server with the right interpreter.
+reflects any server — even one you started from a terminal or left running when
+you closed a previous panel. It **adopts** an already-running server on open:
+status, **Stop / Restart / Reset**, and the **crash banner + Keep alive**
+watchdog all work on it (control is by port/PID, so it doesn't need to be the
+process this panel spawned). The one thing it can't recover is the **live console
+log** for a server it didn't launch — status and control still work, there's just
+no captured output. Run it in the `demo` env so it launches the server with the
+right interpreter.
 
 ## Tablets & offline use
 
