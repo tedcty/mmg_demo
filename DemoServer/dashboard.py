@@ -1421,6 +1421,13 @@ def main():
                     help="open the panel in full screen (F11 or Esc to leave)")
     args = ap.parse_args()
 
+    # Consistent high-DPI scaling so the window doesn't jump size when it's
+    # dragged across monitors with different Windows scale factors (a laptop +
+    # projector at an event) or on a fractional-scaled single screen. Must be
+    # set before the QApplication is created.
+    QtWidgets.QApplication.setHighDpiScaleFactorRoundingPolicy(
+        QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
     app = QtWidgets.QApplication(sys.argv)
     try:
         from qt_material import apply_stylesheet
