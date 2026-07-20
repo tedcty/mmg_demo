@@ -288,6 +288,15 @@ def _gpu_proc_util(pids):
 
 
 def _shadow(w, blur=24, alpha=26, dy=4):
+    # QGraphicsDropShadowEffect misrenders child widgets at *fractional* device
+    # pixel ratios (e.g. 125%/150% Windows scaling) — it paints them offset, so
+    # QR codes and card contents overlap. Skip the effect there; the cards still
+    # read via their border. Integer scaling (100%/200%) keeps the soft shadow.
+    app = QtWidgets.QApplication.instance()
+    scr = app.primaryScreen() if app else None
+    dpr = scr.devicePixelRatio() if scr else 1.0
+    if abs(dpr - round(dpr)) > 0.01:
+        return
     eff = QtWidgets.QGraphicsDropShadowEffect(w)
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
     eff.setColor(QtGui.QColor(12, 12, 72, alpha))
