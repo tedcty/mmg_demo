@@ -80,6 +80,13 @@ KEY_FILE  = os.path.join(CERT_DIR, 'key.pem')
 ROOTCA_FILE = os.path.join(CERT_DIR, 'rootCA.pem')
 TRUST_HTML  = os.path.join(BASE_DIR, 'trust.html')
 
+# mDNS / Bonjour name — lets tablets reach the server at a fixed
+# https://mmg-demo.local:<port> instead of a DHCP IP that can change between
+# sessions. Resolved natively by iOS/macOS, Windows 10+ and Linux-with-Avahi;
+# the `zeroconf` package bundles its own responder so the host OS needs nothing.
+MDNS_HOST = 'mmg-demo'
+MDNS_FQDN = f'{MDNS_HOST}.local'
+
 
 def _rootca_path():
     if os.path.exists(ROOTCA_FILE):
@@ -416,6 +423,40 @@ def _lan_ip():
         s.close()
 
 
+def _start_mdns(ip, port, https=True):
+    """Advertise MDNS_FQDN -> ip over mDNS so tablets can use the fixed name.
+
+    Returns the Zeroconf instance (keep a reference — closing it withdraws the
+    name) or None if it can't be set up. Never fatal: tablets can still use the
+    raw IP if this fails.
+    """
+    if not ip or ip.startswith('127.'):
+        return None
+    try:
+        from zeroconf import Zeroconf, ServiceInfo
+    except Exception:
+        print('[WARN] zeroconf not installed — no mmg-demo.local name '
+              '(pip install zeroconf). Tablets can still use the IP.')
+        return None
+    try:
+        svc_type = '_https._tcp.local.' if https else '_http._tcp.local.'
+        info = ServiceInfo(
+            svc_type,
+            f'MMG Demo.{svc_type}',
+            addresses=[socket.inet_aton(ip)],
+            port=port,
+            server=f'{MDNS_FQDN}.',          # publishes the A record for the name
+            properties={'path': '/'},
+        )
+        zc = Zeroconf()
+        zc.register_service(info)
+        print(f'[OK]   Advertising {MDNS_FQDN} -> {ip} over mDNS.')
+        return zc
+    except Exception as e:
+        print(f'[WARN] mDNS advertisement failed ({e}). Tablets can use the IP.')
+        return None
+
+
 def _ensure_cert():
     """Return (cert, key) paths for HTTPS, or None if TLS can't be set up.
 
@@ -438,6 +479,7 @@ def _ensure_cert():
         ip = _lan_ip()
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         sans = [x509.DNSName('localhost'),
+                x509.DNSName(MDNS_FQDN),
                 x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]
         try:
             sans.append(x509.IPAddress(ipaddress.ip_address(ip)))
@@ -462,7 +504,8 @@ def _ensure_cert():
                                       serialization.NoEncryption()))
         with open(CERT_FILE, 'wb') as f:
             f.write(cert.public_bytes(serialization.Encoding.PEM))
-        print(f'[OK]   Generated self-signed cert (SANs: localhost, 127.0.0.1, {ip}).')
+        print(f'[OK]   Generated self-signed cert '
+              f'(SANs: localhost, {MDNS_FQDN}, 127.0.0.1, {ip}).')
         return CERT_FILE, KEY_FILE
     except Exception as e:
         print(f'[WARN] Could not set up HTTPS ({e}). Falling back to HTTP.')
@@ -706,16 +749,28 @@ if __name__ == '__main__':
         # HTTPS app on 8443, with a plain-HTTP redirector on 8000 so that
         # typing http://host:8000 auto-upgrades instead of resetting.
         _start_http_redirect(args.http_port, args.https_port)
+        zc = _start_mdns(ip, args.https_port, https=True)
         print(f'Serving HTTPS on 0.0.0.0:{args.https_port}')
         print(f'  This device : https://localhost:{args.https_port}')
-        print(f'  Tablets     : https://{ip}:{args.https_port}')
+        print(f'  Tablets     : https://{MDNS_FQDN}:{args.https_port}')
+        print(f'                https://{ip}:{args.https_port}  (if .local does not resolve)')
         print(f'  (or just open http://<host>:{args.http_port} — it redirects to HTTPS)')
         print(f'  New tablet? open http://{ip}:{args.http_port}/trust to install the cert.')
         print('=' * 50)
-        _serve(args.https_port, ssl_context)
+        try:
+            _serve(args.https_port, ssl_context)
+        finally:
+            if zc:
+                zc.close()
     else:
+        zc = _start_mdns(ip, args.http_port, https=False)
         print(f'Serving HTTP on 0.0.0.0:{args.http_port}  (no TLS — mic only on localhost)')
         print(f'  This device : http://localhost:{args.http_port}')
-        print(f'  Tablets     : http://{ip}:{args.http_port}  (mic blocked without HTTPS)')
+        print(f'  Tablets     : http://{MDNS_FQDN}:{args.http_port}  (mic blocked without HTTPS)')
+        print(f'                http://{ip}:{args.http_port}')
         print('=' * 50)
-        _serve(args.http_port, None)
+        try:
+            _serve(args.http_port, None)
+        finally:
+            if zc:
+                zc.close()

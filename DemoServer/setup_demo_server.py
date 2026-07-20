@@ -322,6 +322,8 @@ def main():
     if launcher:
         print(f"  Double-click:  {os.path.basename(launcher)}")
     print(f"  Or run:        conda run -n {ENV_NAME} python DemoServer/server.py --open")
+    print("\nTablets connect to (same Wi-Fi):")
+    print("  https://mmg-demo.local:8443   (or the LAN IP the server prints on start)")
 
     if args.run and py_ok and fe_ok:
         launch()

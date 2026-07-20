@@ -51,6 +51,9 @@ THREE_JS  = os.path.join(HERE, "resources", "vendor", "three", "three.module.js"
 HTTPS_PORT = 8443
 HTTP_PORT  = 8000
 
+# mDNS name the server advertises (keep in sync with server.py MDNS_FQDN).
+MDNS_FQDN = "mmg-demo.local"
+
 
 # ---- demo build/health status -------------------------------------------
 def _newest_mtime(root, prune=()):

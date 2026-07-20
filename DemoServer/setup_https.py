@@ -27,6 +27,10 @@ CERT_DIR = os.path.join(HERE, "certs")
 CERT_FILE = os.path.join(CERT_DIR, "cert.pem")
 KEY_FILE = os.path.join(CERT_DIR, "key.pem")
 
+# Fixed mDNS name the server advertises (keep in sync with server.py MDNS_FQDN)
+# so the trusted cert also covers https://mmg-demo.local:8443.
+MDNS_FQDN = "mmg-demo.local"
+
 
 def lan_ip():
     """Best-effort primary LAN IP (so tablets on the same network can connect)."""
@@ -96,7 +100,7 @@ def main():
 
     # 2) Generate the leaf cert for localhost, 127.0.0.1, the LAN IP, plus extras.
     os.makedirs(CERT_DIR, exist_ok=True)
-    hosts = ["localhost", "127.0.0.1", lan_ip()] + extra
+    hosts = ["localhost", MDNS_FQDN, "127.0.0.1", lan_ip()] + extra
     seen = set()
     hosts = [h for h in hosts if not (h in seen or seen.add(h))]
     if not run([mkcert, "-cert-file", CERT_FILE, "-key-file", KEY_FILE, *hosts]):

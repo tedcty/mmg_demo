@@ -11,6 +11,9 @@ Flask==3.1.3
 flask-cors==6.0.2
 # HTTPS is on by default; cryptography generates the self-signed cert.
 cryptography
+# Advertises the server as mmg-demo.local over mDNS so tablets can use a fixed
+# name instead of the DHCP IP (offline-friendly; host OS needs nothing extra).
+zeroconf
 # doctor.py uses psutil for reliable cross-platform process/port handling
 # (optional — doctor.py falls back to OS tools if it's absent).
 psutil
