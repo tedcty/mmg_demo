@@ -16,6 +16,7 @@ launch the server with the right interpreter.
 
 import io
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -105,6 +106,8 @@ QPushButton#accessCopy {{ background: rgba(255,255,255,0.14); color: white; bord
                           border-radius: 10px; padding: 10px 18px; font-weight: 700; }}
 QPushButton#accessCopy:hover {{ background: rgba(255,255,255,0.24); }}
 QLabel#qrTile {{ background: #ffffff; border-radius: 8px; }}
+QLabel#alert {{ background: #fdecea; color: {RED}; border: 1px solid #f6c9c7;
+                border-radius: 10px; padding: 10px 14px; font-weight: 700; }}
 
 /* QR / trust panels on the Access page */
 QLabel#qrCard {{ background: #ffffff; border: 1px solid {BORDER}; border-radius: 12px; }}
@@ -316,8 +319,47 @@ class DoctorWorker(QtCore.QThread):
         self.done.emit(buf.getvalue())
 
 
+class RebuildWorker(QtCore.QThread):
+    """Runs `npx vite build --base /ssm/` in the TauriGUI dir, streaming output."""
+    line = QtCore.Signal(str)
+    done = QtCore.Signal(int)
+
+    def __init__(self, gui_dir):
+        super().__init__()
+        self.gui_dir = gui_dir
+
+    def run(self):
+        cmd = ["npx", "vite", "build", "--base", "/ssm/"]
+        use_shell = False
+        # On Windows npx is a .cmd shim CreateProcess can't launch directly;
+        # run it through the shell so PATHEXT resolves it (mirrors setup script).
+        if os.name == "nt":
+            resolved = shutil.which(cmd[0])
+            if not resolved or not resolved.lower().endswith((".exe", ".com")):
+                cmd = subprocess.list2cmdline(cmd)
+                use_shell = True
+        try:
+            p = subprocess.Popen(
+                cmd, cwd=self.gui_dir, shell=use_shell,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            for ln in p.stdout:
+                self.line.emit(ln.rstrip())
+            p.wait()
+            self.done.emit(p.returncode)
+        except FileNotFoundError:
+            self.line.emit("[rebuild] npx/Node not found — run setup_demo_server.py "
+                           "to install Node into the env")
+            self.done.emit(-1)
+        except Exception as e:
+            self.line.emit(f"[rebuild] error: {e}")
+            self.done.emit(-1)
+
+
 class Dashboard(QtWidgets.QWidget):
     _log_sig = QtCore.Signal(str)
+    _exit_sig = QtCore.Signal(object, int)   # (proc, returncode) from the log pump
 
     NAV = [("grid", "Dashboard"), ("term", "Console"), ("link", "Access"), ("cross", "Doctor")]
 
@@ -338,9 +380,11 @@ class Dashboard(QtWidgets.QWidget):
         self._tablet_url = self._url
         self._tablet_ip_url = self._url
         self._trust_url = f"http://localhost:{doctor.HTTP_PORT}/trust"
+        self._rebuilding = False
 
         self._build_ui()
         self._log_sig.connect(self._append_log)
+        self._exit_sig.connect(self._on_proc_exit)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self._toggle_auto(self.auto.isChecked())
@@ -362,6 +406,14 @@ class Dashboard(QtWidgets.QWidget):
         hbtn = QtWidgets.QPushButton("Refresh"); hbtn.clicked.connect(self.refresh)
         hdr.addWidget(self.h1); hdr.addStretch(1); hdr.addWidget(self.chip); hdr.addWidget(hbtn)
         right.addLayout(hdr)
+
+        # Dismissable alert banner (e.g. unexpected server exit) — hidden by default.
+        self.alert = QtWidgets.QLabel(""); self.alert.setObjectName("alert")
+        self.alert.setWordWrap(True); self.alert.setVisible(False)
+        self.alert.setCursor(QtCore.Qt.PointingHandCursor)
+        self.alert.setToolTip("Click to dismiss")
+        self.alert.installEventFilter(self)
+        right.addWidget(self.alert)
 
         # Pages
         self.stack = QtWidgets.QStackedWidget()
@@ -524,10 +576,13 @@ class Dashboard(QtWidgets.QWidget):
         label.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if (event.type() == QtCore.QEvent.MouseButtonRelease
-                and getattr(obj, "_qr_data", None)):
-            self._show_qr_popup(obj._qr_data)
-            return True
+        if event.type() == QtCore.QEvent.MouseButtonRelease:
+            if getattr(obj, "_qr_data", None):
+                self._show_qr_popup(obj._qr_data)
+                return True
+            if obj is getattr(self, "alert", None):
+                self.alert.setVisible(False)
+                return True
         return super().eventFilter(obj, event)
 
     def _show_qr_popup(self, url):
@@ -573,6 +628,11 @@ class Dashboard(QtWidgets.QWidget):
             v.addWidget(item)
             self.demo_rows.append((chip, detail))
         v.addStretch(1)
+        self.rebuild_btn = QtWidgets.QPushButton("Rebuild frontend")
+        self.rebuild_btn.setToolTip("Run `vite build --base /ssm/` — needed after "
+                                    "the SSM UI shows REBUILD")
+        self.rebuild_btn.clicked.connect(self.rebuild_frontend)
+        v.addWidget(self.rebuild_btn)
         return box
 
     def _demo_item(self, name):
@@ -723,6 +783,26 @@ class Dashboard(QtWidgets.QWidget):
     def _pump(self, proc):
         for ln in proc.stdout:
             self._log_sig.emit(ln)
+        # stdout closed → the process has exited; report it so we can flag a
+        # crash if we didn't ask it to stop.
+        self._exit_sig.emit(proc, proc.wait())
+
+    def _on_proc_exit(self, proc, rc):
+        # Ignore processes we deliberately stopped (marked) or already replaced.
+        if getattr(proc, "_intentional", False) or proc is not self.proc:
+            return
+        if self._starting:
+            return            # startup failure is handled in _apply_status
+        self.proc = None
+        self._append_log(f"[dashboard] ⚠ server exited unexpectedly (code {rc})")
+        QtWidgets.QApplication.beep()
+        self._show_alert(f"Server exited unexpectedly (exit code {rc}). "
+                         f"See the Console for details.")
+        self.refresh()
+
+    def _show_alert(self, msg):
+        self.alert.setText(f"⚠  {msg}   (click to dismiss)")
+        self.alert.setVisible(True)
 
     # ---- status refresh --------------------------------------------------
     def refresh(self):
@@ -870,6 +950,7 @@ class Dashboard(QtWidgets.QWidget):
             self._append_log("[dashboard] already running — skipping start")
             self.refresh(); return
         self._append_log("[dashboard] starting server…")
+        self.alert.setVisible(False)          # clear any prior crash notice
         self.proc = subprocess.Popen(
             [sys.executable, doctor.SERVER_PY],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -896,6 +977,7 @@ class Dashboard(QtWidgets.QWidget):
         # Ask the process to exit (non-blocking) — teardown is then tracked by
         # polling in _apply_status so the GUI never freezes.
         if self.proc and self.proc.poll() is None:
+            self.proc._intentional = True     # so its exit isn't flagged as a crash
             self.proc.terminate()
         else:
             self._kill_listeners()
@@ -924,6 +1006,8 @@ class Dashboard(QtWidgets.QWidget):
         self._end_busy()
 
     def _kill_listeners(self):
+        if self.proc is not None:
+            self.proc._intentional = True     # its exit is deliberate, not a crash
         listeners = doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT])
         pids = {pid for hs in listeners.values() for pid, _, _ in hs}
         for pid in sorted(pids):
@@ -983,6 +1067,27 @@ class Dashboard(QtWidgets.QWidget):
     def _doctor_done(self, text):
         self.docout.setPlainText(text)
         self.doctor_btn.setEnabled(True)
+
+    def rebuild_frontend(self):
+        if self._rebuilding:
+            return
+        if not os.path.isdir(doctor.GUI_DIR):
+            self._append_log("[dashboard] TauriGUI dir not found — cannot rebuild")
+            return
+        self._rebuilding = True
+        self.rebuild_btn.setEnabled(False); self.rebuild_btn.setText("Rebuilding…")
+        self._go(1)                          # show the Console so output is visible
+        self._append_log("[dashboard] rebuilding SSM frontend (vite build --base /ssm/)…")
+        self._rw = RebuildWorker(doctor.GUI_DIR)
+        self._rw.line.connect(self._append_log)
+        self._rw.done.connect(self._rebuild_done)
+        self._rw.start()
+
+    def _rebuild_done(self, code):
+        self._rebuilding = False
+        self.rebuild_btn.setEnabled(True); self.rebuild_btn.setText("Rebuild frontend")
+        self._append_log(f"[dashboard] rebuild {'complete' if code == 0 else f'failed (code {code})'}")
+        self.refresh()                       # refresh the demo build-status chips
 
     # ---- misc ------------------------------------------------------------
     def _toggle_auto(self, on):

@@ -123,7 +123,11 @@ and a toggle for auto-refresh. The **Access** tab adds larger QR codes — one t
 open the demo and one for the **`/trust`** page (with **Open /trust** / **Copy**
 buttons) to onboard a new tablet's cert. A **Name** diagnostics row verifies that
 `mmg-demo.local` actually resolves on the network (so you know before a visitor
-does whether to fall back to the IP). The status icon and chip track state live —
+does whether to fall back to the IP). Any QR can be **clicked to enlarge** into a
+scannable pop-up. The **Demos** card has a **Rebuild frontend** button that runs
+`vite build --base /ssm/` (streaming into the console) so you can fix a stale
+`REBUILD` without a terminal, and if the server process exits unexpectedly a
+dismissable **crash banner** appears. The status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
 delay). It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it
