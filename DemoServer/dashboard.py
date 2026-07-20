@@ -91,6 +91,12 @@ QPushButton#primary:disabled {{ background: #b9bdec; }}
 QPushButton#danger {{ background: #fdecea; color: {RED}; border: 1px solid #f6c9c7; }}
 QPushButton#danger:hover {{ background: #fadedb; }}
 
+/* Server control buttons — large, easy-to-hit targets */
+QPushButton[ctl="true"] {{ font-size: 16px; font-weight: 800;
+                           padding: 15px 24px; border-radius: 12px; }}
+/* Start is the primary call-to-action — make it the biggest, boldest one */
+QPushButton#primary[ctl="true"] {{ font-size: 19px; padding: 17px 40px; }}
+
 QPlainTextEdit#console, QPlainTextEdit#docout {{
     background: #0f1424; color: #c7d2e0; border: none; border-radius: 12px;
     padding: 8px; font-family: monospace; font-size: 13px; }}
@@ -164,6 +170,15 @@ def _draw_shape(p, kind, size, color):
         p.setPen(QtCore.Qt.NoPen)
         p.drawRoundedRect(QtCore.QRectF(c - size * 0.07, c - size * 0.24, size * 0.14, size * 0.48), 2, 2)
         p.drawRoundedRect(QtCore.QRectF(c - size * 0.24, c - size * 0.07, size * 0.48, size * 0.14), 2, 2)
+    elif kind == "play":  # start
+        p.setPen(QtCore.Qt.NoPen)
+        p.drawPolygon(QtGui.QPolygonF([
+            QtCore.QPointF(c - size * 0.16, c - size * 0.24),
+            QtCore.QPointF(c - size * 0.16, c + size * 0.24),
+            QtCore.QPointF(c + size * 0.24, c)]))
+    elif kind == "stopsq":  # stop
+        p.setPen(QtCore.Qt.NoPen)
+        p.drawRoundedRect(QtCore.QRectF(c - size * 0.2, c - size * 0.2, size * 0.4, size * 0.4), 2, 2)
 
 
 def _pixmap(kind, color, size=40, bg=None):
@@ -872,7 +887,16 @@ class Dashboard(QtWidgets.QWidget):
         self.stop_btn.setToolTip("Stop the server (Ctrl+K)")
         self.restart_btn.setToolTip("Restart the server (Ctrl+R)")
         self.reset_btn.setToolTip("Force-free ports 8443 + 8000 if a server is stuck")
+
+        # Big, obvious server controls — Start leads with a play icon so it's the
+        # unmistakable "go" button.
+        self.start_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 22)))
+        self.stop_btn.setIcon(QtGui.QIcon(_pixmap("stopsq", INK, 22)))
         for b in (self.start_btn, self.stop_btn, self.restart_btn, self.reset_btn):
+            b.setProperty("ctl", "true")      # enlarged via QSS [ctl="true"]
+            b.setIconSize(QtCore.QSize(18, 18))
+            b.setMinimumHeight(54)            # uniform, easy-to-hit height
+            b.setCursor(QtCore.Qt.PointingHandCursor)
             ctl.addWidget(b)
 
         # Busy indicator — hidden until Start/Stop is pressed, shown while the
