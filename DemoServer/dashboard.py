@@ -1041,6 +1041,38 @@ class Dashboard(QtWidgets.QWidget):
         self.alert.setText(f"⚠  {msg}   (click to dismiss)")
         self.alert.setVisible(True)
 
+    # ---- status value that auto-fits the card width ---------------------
+    MAX_STATUS_PX, MIN_STATUS_PX = 24, 13
+
+    def _set_status_text(self, text, col):
+        self._status_text = text
+        self._status_col = col
+        self.k_status.setText(text)
+        self._refit_status()
+
+    def _refit_status(self):
+        """Shrink the STATUS word until it fits the card (measured against the
+        *card* width, not the label's own — the label hugs its text)."""
+        if not hasattr(self, "_status_text"):
+            return
+        # card width minus icon (44), its spacing (12) and margins (28) + slack
+        avail = self.c_status.width() - 88
+        px = self.MAX_STATUS_PX
+        if avail >= 24:
+            f = QtGui.QFont(self.k_status.font()); f.setBold(True)
+            px = self.MIN_STATUS_PX
+            for size in range(self.MAX_STATUS_PX, self.MIN_STATUS_PX - 1, -1):
+                f.setPixelSize(size)
+                if QtGui.QFontMetrics(f).horizontalAdvance(self._status_text) <= avail:
+                    px = size
+                    break
+        self.k_status.setStyleSheet(
+            f"font-size:{px}px;font-weight:800;color:{self._status_col}")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._refit_status()               # keep the status word fitting the card
+
     # ---- status refresh --------------------------------------------------
     def refresh(self):
         if self._polling:
@@ -1082,8 +1114,7 @@ class Dashboard(QtWidgets.QWidget):
             f"background:{'#e6f7f0' if running else '#eef0f3'};color:{col};"
             f"font-size:12px;font-weight:700;border-radius:13px;padding:5px 14px")
 
-        self.k_status.setText("RUNNING" if running else "STOPPED")
-        self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{col}")
+        self._set_status_text("RUNNING" if running else "STOPPED", col)
         self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=col))
 
         if running and s["create_time"]:
@@ -1181,8 +1212,7 @@ class Dashboard(QtWidgets.QWidget):
                 self.chip.setStyleSheet(
                     f"background:#fff2df;color:{AMBER};font-size:12px;"
                     f"font-weight:700;border-radius:13px;padding:5px 14px")
-                self.k_status.setText("STARTING")
-                self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self._set_status_text("STARTING", AMBER)
                 self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                 self.power_btn.setText("Starting…"); self.power_btn.setEnabled(False)
 
@@ -1201,8 +1231,7 @@ class Dashboard(QtWidgets.QWidget):
                 self.chip.setStyleSheet(
                     f"background:#fff2df;color:{AMBER};font-size:12px;"
                     f"font-weight:700;border-radius:13px;padding:5px 14px")
-                self.k_status.setText("STOPPING")
-                self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self._set_status_text("STOPPING", AMBER)
                 self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                 self.power_btn.setText("Stopping…"); self.power_btn.setEnabled(False)
 
