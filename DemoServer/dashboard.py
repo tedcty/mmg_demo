@@ -467,10 +467,12 @@ class Dashboard(QtWidgets.QWidget):
         self.access_hint = QtWidgets.QLabel(""); self.access_hint.setObjectName("accessHint")
         tv.addWidget(cap); tv.addWidget(self.tablet_big); tv.addWidget(self.access_hint)
 
-        # Scan-to-open QR (white tile so it stays scannable on the dark banner).
+        # Scan-to-open QR (white tile so it stays scannable on the dark banner);
+        # click it for a large pop-up version.
         self.banner_qr = QtWidgets.QLabel(); self.banner_qr.setObjectName("qrTile")
-        self.banner_qr.setFixedSize(74, 74); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
-        scan = QtWidgets.QLabel("SCAN"); scan.setObjectName("accessCap")
+        self.banner_qr.setFixedSize(100, 100); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
+        self._make_qr_clickable(self.banner_qr)
+        scan = QtWidgets.QLabel("SCAN · CLICK TO ENLARGE"); scan.setObjectName("accessCap")
         scan.setAlignment(QtCore.Qt.AlignCenter)
         qv = QtWidgets.QVBoxLayout(); qv.setSpacing(3)
         qv.addWidget(self.banner_qr); qv.addWidget(scan)
@@ -496,6 +498,7 @@ class Dashboard(QtWidgets.QWidget):
         cap = QtWidgets.QLabel(caption); cap.setObjectName("qrCaption")
         qr = QtWidgets.QLabel(); qr.setObjectName("qrCard")
         qr.setFixedSize(196, 196); qr.setAlignment(QtCore.Qt.AlignCenter)
+        self._make_qr_clickable(qr)
         sub_lbl = QtWidgets.QLabel(sub); sub_lbl.setObjectName("qrSub"); sub_lbl.setWordWrap(True)
         sub_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         v.addWidget(cap); v.addWidget(qr, 0, QtCore.Qt.AlignHCenter); v.addWidget(sub_lbl)
@@ -513,6 +516,40 @@ class Dashboard(QtWidgets.QWidget):
         else:                       # segno missing — show a hint once
             label.setText("QR needs\n‘segno’")
             label.setWordWrap(True)
+
+    def _make_qr_clickable(self, label):
+        """Let a QR label be clicked to open a large pop-up of the same code."""
+        label.setCursor(QtCore.Qt.PointingHandCursor)
+        label.setToolTip("Click to enlarge")
+        label.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QtCore.QEvent.MouseButtonRelease
+                and getattr(obj, "_qr_data", None)):
+            self._show_qr_popup(obj._qr_data)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _show_qr_popup(self, url):
+        """Modal card with a large, easy-to-scan QR for `url`."""
+        title = "Trust a new tablet" if "/trust" in url else "Scan to open the demo"
+        dlg = QtWidgets.QDialog(self); dlg.setObjectName("root")
+        dlg.setWindowTitle(title)
+        v = QtWidgets.QVBoxLayout(dlg); v.setContentsMargins(26, 24, 26, 20); v.setSpacing(14)
+        cap = QtWidgets.QLabel(title); cap.setObjectName("qrCaption")
+        cap.setAlignment(QtCore.Qt.AlignCenter)
+        qr = QtWidgets.QLabel(); qr.setObjectName("qrCard")
+        qr.setFixedSize(400, 400); qr.setAlignment(QtCore.Qt.AlignCenter)
+        pm = _qr_pixmap(url, 380)
+        if pm is not None:
+            qr.setPixmap(pm)
+        u = QtWidgets.QLabel(url); u.setObjectName("qrSub"); u.setAlignment(QtCore.Qt.AlignCenter)
+        u.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        close = QtWidgets.QPushButton("Close"); close.setObjectName("primary")
+        close.clicked.connect(dlg.accept)
+        row = QtWidgets.QHBoxLayout(); row.addStretch(1); row.addWidget(close); row.addStretch(1)
+        v.addWidget(cap); v.addWidget(qr, 0, QtCore.Qt.AlignHCenter); v.addWidget(u); v.addLayout(row)
+        dlg.exec()
 
     # ---- demos card ------------------------------------------------------
     CHIP = {  # status -> (label, background, text colour)
