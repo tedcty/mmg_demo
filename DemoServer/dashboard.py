@@ -62,7 +62,7 @@ QLabel#chip {{ font-size: 12px; font-weight: 700; border-radius: 13px; padding: 
 /* Cards */
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
 QLabel#statValue {{ font-size: 24px; font-weight: 800; color: {INK}; }}
-QLabel#statSub {{ color: {LABEL}; font-size: 11px; font-weight: 700; }}
+QLabel#statSub {{ color: {LABEL}; font-size: 14px; font-weight: 800; }}
 QLabel#statCaption {{ color: {GREY}; font-size: 10px; font-weight: 700; }}
 QGroupBox {{ margin-top: 26px; padding: 16px; font-weight: 700; color: {INK}; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
