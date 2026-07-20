@@ -874,6 +874,7 @@ class Dashboard(QtWidgets.QWidget):
         sl = QtWidgets.QHBoxLayout(scanbox); sl.setSpacing(16)
         demo_card, self.qr_demo, self.qr_demo_sub = self._qr_card(
             "Open the demo", "Point a tablet camera here to open the demo.")
+        demo_card.layout().addStretch(1)     # top-align content so QRs line up
         sl.addWidget(demo_card)
 
         trust_card, self.qr_trust, self.qr_trust_sub = self._qr_card(
@@ -887,6 +888,7 @@ class Dashboard(QtWidgets.QWidget):
         self.trust_copy_btn.clicked.connect(self._copy_trust)
         tb.addWidget(self.trust_open_btn); tb.addWidget(self.trust_copy_btn)
         trust_card.layout().addLayout(tb)
+        trust_card.layout().addStretch(1)    # top-align content so QRs line up
         sl.addWidget(trust_card)
         row2.addWidget(scanbox, 0)                       # hug the two compact cards
 
