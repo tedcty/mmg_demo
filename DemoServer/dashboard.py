@@ -36,6 +36,7 @@ RED    = "#e5484d"
 AMBER  = "#e0a100"
 PURPLE = "#7c4dff"
 GREY   = "#8a8f98"
+LABEL  = "#3f4652"   # darker slate for section titles / field labels (readable)
 BG     = "#eef1f6"
 CARD   = "#ffffff"
 BORDER = "#e6e9f0"
@@ -65,7 +66,7 @@ QLabel#statCaption {{ color: {GREY}; font-size: 10px; font-weight: 700; }}
 QGroupBox {{ margin-top: 26px; padding: 16px; font-weight: 700; color: {INK}; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
                     left: 16px; top: 4px; padding: 0 4px;
-                    color: {GREY}; font-size: 13px; font-weight: 800; }}
+                    color: {LABEL}; font-size: 15px; font-weight: 800; }}
 QLabel#diag {{ font-size: 13px; color: {INK}; }}
 QLabel#url {{ font-size: 12px; color: {INK}; }}
 
@@ -806,8 +807,8 @@ class Dashboard(QtWidgets.QWidget):
 
     def _diag_row(self, lay, name):
         row = QtWidgets.QHBoxLayout()
-        n = QtWidgets.QLabel(name); n.setFixedWidth(66); n.setAlignment(QtCore.Qt.AlignTop)
-        n.setStyleSheet(f"color:{GREY};font-weight:700;font-size:12px")
+        n = QtWidgets.QLabel(name); n.setFixedWidth(76); n.setAlignment(QtCore.Qt.AlignTop)
+        n.setStyleSheet(f"color:{LABEL};font-weight:800;font-size:13px")
         val = QtWidgets.QLabel("…"); val.setObjectName("diag")
         val.setTextFormat(QtCore.Qt.RichText); val.setWordWrap(True)
         row.addWidget(n); row.addWidget(val, 1)
