@@ -396,7 +396,22 @@ class Dashboard(QtWidgets.QWidget):
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self._toggle_auto(self.auto.isChecked())
+        self._install_shortcuts()
         self.refresh()
+
+    def _install_shortcuts(self):
+        """Keyboard shortcuts for the common actions (shown in tooltips)."""
+        def sc(seq, fn):
+            QtGui.QShortcut(QtGui.QKeySequence(seq), self, activated=fn)
+        sc("F5", self.refresh)
+        # Respect button enabled-state so Start/Stop can't fire out of turn.
+        sc("Ctrl+S", lambda: self.start_btn.isEnabled() and self._on_start_clicked())
+        sc("Ctrl+K", lambda: self.stop_btn.isEnabled() and self.stop_server())
+        sc("Ctrl+R", self.restart_server)
+        sc("Ctrl+Shift+R", self.rebuild_frontend)
+        sc("Ctrl+D", self.run_doctor)
+        for i in range(len(self.NAV)):
+            sc(f"Alt+{i + 1}", lambda idx=i: self._go(idx))
 
     # ---- UI --------------------------------------------------------------
     def _build_ui(self):
@@ -412,6 +427,7 @@ class Dashboard(QtWidgets.QWidget):
         self.h1 = QtWidgets.QLabel("Dashboard"); self.h1.setObjectName("h1")
         self.chip = QtWidgets.QLabel("…"); self.chip.setObjectName("chip")
         hbtn = QtWidgets.QPushButton("Refresh"); hbtn.clicked.connect(self.refresh)
+        hbtn.setToolTip("Refresh status now (F5)")
         hdr.addWidget(self.h1); hdr.addStretch(1); hdr.addWidget(self.chip); hdr.addWidget(hbtn)
         right.addLayout(hdr)
 
@@ -454,6 +470,7 @@ class Dashboard(QtWidgets.QWidget):
             btn = QtWidgets.QPushButton(name); btn.setObjectName("nav")
             btn.setCheckable(True); btn.setIcon(QtGui.QIcon(_pixmap(icon, "#c7cbe8", 22)))
             btn.setIconSize(QtCore.QSize(18, 18))
+            btn.setToolTip(f"{name} (Alt+{i + 1})")
             btn.clicked.connect(lambda _=False, idx=i: self._go(idx))
             self.nav_group.addButton(btn, i)
             v.addWidget(btn)
@@ -638,7 +655,7 @@ class Dashboard(QtWidgets.QWidget):
         v.addStretch(1)
         self.rebuild_btn = QtWidgets.QPushButton("Rebuild frontend")
         self.rebuild_btn.setToolTip("Run `vite build --base /ssm/` — needed after "
-                                    "the SSM UI shows REBUILD")
+                                    "the SSM UI shows REBUILD (Ctrl+Shift+R)")
         self.rebuild_btn.clicked.connect(self.rebuild_frontend)
         v.addWidget(self.rebuild_btn)
         return box
@@ -729,6 +746,7 @@ class Dashboard(QtWidgets.QWidget):
         v = QtWidgets.QVBoxLayout(w)
         top = QtWidgets.QHBoxLayout()
         self.doctor_btn = QtWidgets.QPushButton("Run doctor"); self.doctor_btn.setObjectName("primary")
+        self.doctor_btn.setToolTip("Run full diagnostics (Ctrl+D)")
         self.doctor_btn.clicked.connect(self.run_doctor)
         top.addWidget(self.doctor_btn); top.addStretch(1)
         v.addLayout(top)
@@ -748,6 +766,10 @@ class Dashboard(QtWidgets.QWidget):
         self.stop_btn.clicked.connect(self.stop_server)
         self.restart_btn.clicked.connect(self.restart_server)
         self.reset_btn.clicked.connect(self.reset_ports)
+        self.start_btn.setToolTip("Start the demo server (Ctrl+S)")
+        self.stop_btn.setToolTip("Stop the server (Ctrl+K)")
+        self.restart_btn.setToolTip("Restart the server (Ctrl+R)")
+        self.reset_btn.setToolTip("Force-free ports 8443 + 8000 if a server is stuck")
         for b in (self.start_btn, self.stop_btn, self.restart_btn, self.reset_btn):
             ctl.addWidget(b)
 

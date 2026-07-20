@@ -132,7 +132,10 @@ server after an unexpected exit (with backoff, giving up after a few rapid
 crashes) for unattended events. Launch flags support the same:
 `dashboard.py --autostart` starts the server as soon as the panel opens, and
 `--keep-alive` enables the watchdog — together they make an "open the laptop and
-everything's up" kiosk. The status icon and chip track state live —
+everything's up" kiosk. Buttons have tooltips and keyboard shortcuts
+(**F5** refresh, **Ctrl+S** start, **Ctrl+K** stop, **Ctrl+R** restart,
+**Ctrl+Shift+R** rebuild, **Ctrl+D** doctor, **Alt+1…4** switch pages). The
+status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
 delay). It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it
