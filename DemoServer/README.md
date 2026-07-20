@@ -115,7 +115,9 @@ conda run -n demo python DemoServer/dashboard.py
 ```
 
 It shows live status (running state, PID, uptime, port/prereq/protocol
-indicators) and a prominent **Tablet access** banner with the
+indicators, and CPU/GPU load with a **server-process** breakdown — the whole
+server tree including SSM prediction subprocesses — under the machine total) and
+a prominent **Tablet access** banner with the
 `https://mmg-demo.local:8443` address, a **scan-to-open QR code**, and a **Copy**
 button, with **Start / Stop / Restart / Reset ports** buttons, a **Run doctor**
 button (prints the full diagnostic report into the log pane), a server-log pane,

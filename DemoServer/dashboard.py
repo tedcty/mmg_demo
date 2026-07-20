@@ -62,6 +62,7 @@ QLabel#chip {{ font-size: 12px; font-weight: 700; border-radius: 13px; padding: 
 /* Cards */
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
 QLabel#statValue {{ font-size: 24px; font-weight: 800; color: {INK}; }}
+QLabel#statSub {{ color: {LABEL}; font-size: 11px; font-weight: 700; }}
 QLabel#statCaption {{ color: {GREY}; font-size: 10px; font-weight: 700; }}
 QGroupBox {{ margin-top: 26px; padding: 16px; font-weight: 700; color: {INK}; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
@@ -231,6 +232,33 @@ def _gpu_stats():
     return None
 
 
+def _gpu_proc_util(pids):
+    """Best-effort GPU SM-utilization (%) summed over `pids`, via NVML's
+    per-process sampler. Returns a float or None if unavailable (needs pynvml
+    and a driver that supports process utilization)."""
+    if _GPU.get("mode") not in ("nvml", "auto"):
+        return None
+    try:
+        import time as _t
+        import pynvml
+        if _GPU.get("handle") is None:
+            pynvml.nvmlInit()
+            _GPU["handle"] = pynvml.nvmlDeviceGetHandleByIndex(0)
+        # samples from ~1s ago; take the latest sample per matching pid
+        since = int((_t.time() - 1.0) * 1_000_000)
+        latest = {}
+        for smp in pynvml.nvmlDeviceGetProcessUtilization(_GPU["handle"], since):
+            if smp.pid in pids:
+                cur = latest.get(smp.pid)
+                if cur is None or smp.timeStamp > cur[0]:
+                    latest[smp.pid] = (smp.timeStamp, smp.smUtil)
+        if not latest:
+            return 0.0
+        return float(min(sum(v[1] for v in latest.values()), 100.0))
+    except Exception:
+        return None
+
+
 def _shadow(w, blur=24, alpha=26, dy=4):
     eff = QtWidgets.QGraphicsDropShadowEffect(w)
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
@@ -256,22 +284,59 @@ class StatusWorker(QtCore.QThread):
             "ip": doctor.lan_ip(),
             "https_code": None, "http_code": None,
             "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
+            "srv_cpu": None, "srv_gpu": None,
             "clients": None, "gpu": None, "gpu_used": None, "gpu_total": None,
             "mdns_ok": None,
         }
 
-        # Machine-wide telemetry — measured regardless of server state, since
-        # SSM predictions run as *child* subprocesses (not the server process)
-        # and the GPU carries the model inference load.
+        # Build the server process tree (listener PIDs + their children) — SSM
+        # predictions run as *child* subprocesses and carry the real load, so
+        # "server" load means the whole tree, not just the listener.
+        srv_tree = []
+        try:
+            import psutil
+            seen = set()
+            for pid in pids:
+                try:
+                    proc = psutil.Process(pid)
+                except Exception:
+                    continue
+                for q in [proc] + proc.children(recursive=True):
+                    if q.pid not in seen:
+                        seen.add(q.pid); srv_tree.append(q)
+            for q in srv_tree:
+                try:
+                    q.cpu_percent(None)      # prime the per-process CPU counter
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Machine-wide CPU. The 0.2s window is shared with the per-process read
+        # below, so both cover the same interval.
         try:
             import psutil
             s["cpu"] = psutil.cpu_percent(interval=0.2)
             s["mem_pct"] = psutil.virtual_memory().percent
+            if srv_tree:
+                ncpu = psutil.cpu_count() or 1
+                cpu_sum = 0.0; rss = 0.0
+                for q in srv_tree:
+                    try:
+                        cpu_sum += q.cpu_percent(None)
+                        rss += q.memory_info().rss
+                    except Exception:
+                        pass
+                s["srv_cpu"] = cpu_sum / ncpu     # % of total machine capacity
+                s["srv_mb"] = rss / 1048576
         except Exception:
             pass
+
         gpu = _gpu_stats()
         if gpu is not None:
             s["gpu"], s["gpu_used"], s["gpu_total"] = gpu
+        if srv_tree:
+            s["srv_gpu"] = _gpu_proc_util({q.pid for q in srv_tree})
 
         try:
             s["demos"] = doctor.demo_status()
@@ -285,7 +350,6 @@ class StatusWorker(QtCore.QThread):
                 import psutil
                 p = psutil.Process(pids[0])
                 s["create_time"] = p.create_time()
-                s["srv_mb"] = p.memory_info().rss / 1048576
                 clients = 0
                 for c in psutil.net_connections(kind="inet"):
                     if c.status == "ESTABLISHED" and c.laddr and c.laddr.port in ports:
@@ -498,11 +562,12 @@ class Dashboard(QtWidgets.QWidget):
         tv = QtWidgets.QVBoxLayout(); tv.setSpacing(2)
         tv.addStretch(1)
         val = QtWidgets.QLabel("—"); val.setObjectName("statValue")
+        sub = QtWidgets.QLabel(""); sub.setObjectName("statSub"); sub.hide()
         cap = QtWidgets.QLabel(caption); cap.setObjectName("statCaption")
-        tv.addWidget(val); tv.addWidget(cap)
+        tv.addWidget(val); tv.addWidget(sub); tv.addWidget(cap)
         tv.addStretch(1)
         h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addLayout(tv); h.addStretch(1)
-        return card, val, ic
+        return card, val, sub, ic
 
     def _page_dashboard(self):
         w = QtWidgets.QWidget()
@@ -511,11 +576,14 @@ class Dashboard(QtWidgets.QWidget):
         v.addWidget(self._build_access_banner())
 
         cards = QtWidgets.QHBoxLayout(); cards.setSpacing(16)
-        self.c_status, self.k_status, self.status_icon = self._stat_card("status", "STATUS", GREY)
-        _, self.k_uptime = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
-        _, self.k_clients = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
-        _, self.k_cpu = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
-        _, self.k_gpu = self._stat_card_add(cards, "cpu", "GPU LOAD", GREEN)
+        self.c_status, self.k_status, _, self.status_icon = self._stat_card("status", "STATUS", GREY)
+        _, self.k_uptime, _ = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
+        _, self.k_clients, _ = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
+        _, self.k_cpu, self.k_cpu_sub = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
+        _, self.k_gpu, self.k_gpu_sub = self._stat_card_add(cards, "cpu", "GPU LOAD", GREEN)
+        # CPU/GPU cards carry a second "server …" line under the machine total.
+        for sub in (self.k_cpu_sub, self.k_gpu_sub):
+            sub.setText("server —"); sub.show()
         cards.insertWidget(0, self.c_status)
         v.addLayout(cards)
 
@@ -569,9 +637,9 @@ class Dashboard(QtWidgets.QWidget):
         return banner
 
     def _stat_card_add(self, row, icon, caption, color):
-        card, val, _ic = self._stat_card(icon, caption, color)
+        card, val, sub, _ic = self._stat_card(icon, caption, color)
         row.addWidget(card)
-        return card, val
+        return card, val, sub
 
     def _qr_card(self, caption, sub):
         """A white card with a title, a QR placeholder and a sub-caption."""
@@ -936,6 +1004,9 @@ class Dashboard(QtWidgets.QWidget):
 
         cpu = s.get("cpu")
         self.k_cpu.setText(f"{cpu:.0f}%" if cpu is not None else "—")
+        srv_cpu = s.get("srv_cpu")
+        self.k_cpu_sub.setText(f"server {srv_cpu:.0f}%" if srv_cpu is not None
+                               else ("server —" if running else "server off"))
 
         gpu = s.get("gpu")
         if gpu is not None:
@@ -944,6 +1015,9 @@ class Dashboard(QtWidgets.QWidget):
         else:
             self.k_gpu.setText("N/A")
             self.k_gpu.setStyleSheet(f"font-size:24px;font-weight:800;color:{GREY}")
+        srv_gpu = s.get("srv_gpu")
+        self.k_gpu_sub.setText(f"server {srv_gpu:.0f}%" if srv_gpu is not None
+                               else ("server —" if running else "server off"))
 
         self._apply_demos(s.get("demos", []))
 
