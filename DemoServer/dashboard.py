@@ -87,6 +87,12 @@ QPlainTextEdit#console, QPlainTextEdit#docout {{
     background: #0f1424; color: #c7d2e0; border: none; border-radius: 12px;
     padding: 8px; font-family: monospace; font-size: 11px; }}
 QCheckBox {{ color: {INK}; font-weight: 600; }}
+
+/* Startup progress (indeterminate) */
+QLabel#startupLbl {{ color: {AZURE}; font-size: 12px; font-weight: 700; }}
+QProgressBar#startup {{ background: #e7ecf5; border: none; border-radius: 6px;
+                        min-height: 8px; max-height: 8px; }}
+QProgressBar#startup::chunk {{ background: {AZURE}; border-radius: 6px; }}
 """
 
 
@@ -279,6 +285,11 @@ class Dashboard(QtWidgets.QWidget):
         self.setMinimumSize(980, 600)
         self.proc = None
         self._polling = False
+        self._starting = False
+        self._stopping = False
+        self._restart_pending = False
+        self._start_t0 = 0.0
+        self._stop_t0 = 0.0
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = self._url
 
@@ -506,6 +517,21 @@ class Dashboard(QtWidgets.QWidget):
         self.reset_btn.clicked.connect(self.reset_ports)
         for b in (self.start_btn, self.stop_btn, self.restart_btn, self.reset_btn):
             ctl.addWidget(b)
+
+        # Busy indicator — hidden until Start/Stop is pressed, shown while the
+        # server subprocess is booting (until HTTPS answers 200) or shutting
+        # down (until the ports go free).
+        self.busy_lbl = QtWidgets.QLabel("")
+        self.busy_lbl.setObjectName("startupLbl")
+        self.busy_bar = QtWidgets.QProgressBar()
+        self.busy_bar.setObjectName("startup")
+        self.busy_bar.setRange(0, 0)          # indeterminate / busy
+        self.busy_bar.setTextVisible(False)
+        self.busy_bar.setFixedWidth(150)
+        self.busy_lbl.hide(); self.busy_bar.hide()
+        ctl.addSpacing(6)
+        ctl.addWidget(self.busy_lbl); ctl.addWidget(self.busy_bar)
+
         ctl.addStretch(1)
         self.auto = QtWidgets.QCheckBox("Auto-refresh every"); self.auto.setChecked(True)
         self.auto.toggled.connect(self._toggle_auto)
@@ -607,6 +633,43 @@ class Dashboard(QtWidgets.QWidget):
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
 
+        if self._starting:
+            ready = running and s.get("https_code") == 200
+            died = self.proc is not None and self.proc.poll() is not None
+            timed_out = time.time() - self._start_t0 > 45
+            if ready or died or timed_out:
+                self._finish_startup(ready)
+            else:
+                # Keep the "starting" affordances until the server truly answers.
+                self.chip.setText("◌ STARTING")
+                self.chip.setStyleSheet(
+                    f"background:#fff2df;color:{AMBER};font-size:12px;"
+                    f"font-weight:700;border-radius:13px;padding:5px 14px")
+                self.k_status.setText("STARTING")
+                self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self.start_btn.setEnabled(False)
+                self.stop_btn.setEnabled(False)
+
+        if self._stopping:
+            elapsed = time.time() - self._stop_t0
+            if not running:
+                self._finish_stopping(True)
+            elif elapsed > 8:
+                self._finish_stopping(False)
+            else:
+                # Force-kill a process that ignored terminate() before giving up.
+                if elapsed > 4 and self.proc is not None and self.proc.poll() is None:
+                    self.proc.kill()
+                    self.proc = None
+                self.chip.setText("◌ STOPPING")
+                self.chip.setStyleSheet(
+                    f"background:#fff2df;color:{AMBER};font-size:12px;"
+                    f"font-weight:700;border-radius:13px;padding:5px 14px")
+                self.k_status.setText("STOPPING")
+                self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
+                self.start_btn.setEnabled(False)
+                self.stop_btn.setEnabled(False)
+
     # ---- controls --------------------------------------------------------
     def start_server(self):
         if doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
@@ -618,35 +681,103 @@ class Dashboard(QtWidgets.QWidget):
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, cwd=doctor.HERE)
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
-        QtCore.QTimer.singleShot(1500, self.refresh)
+        self._begin_startup()
+
+    def _begin_startup(self):
+        """Show the busy indicator and poll (off-thread) until the server is
+        actually serving, rather than assuming a fixed delay."""
+        self._stopping = False
+        self._starting = True
+        self._start_t0 = time.time()
+        self._begin_busy("Starting server…")
+
+    def _finish_startup(self, ok):
+        self._starting = False
+        self._end_busy()
+        self._append_log("[dashboard] server ready"
+                         if ok else "[dashboard] startup did not complete — check console")
 
     def stop_server(self):
         self._append_log("[dashboard] stopping server…")
+        # Ask the process to exit (non-blocking) — teardown is then tracked by
+        # polling in _apply_status so the GUI never freezes.
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
-            try:
-                self.proc.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-            self.proc = None
         else:
-            self.reset_ports(silent=True)
-        QtCore.QTimer.singleShot(800, self.refresh)
+            self._kill_listeners()
+        self._begin_teardown("Stopping server…",
+                             "[dashboard] server stopped",
+                             "[dashboard] stop timed out — try Reset ports")
 
-    def restart_server(self):
-        self.stop_server()
-        QtCore.QTimer.singleShot(1500, self.start_server)
+    def _begin_teardown(self, message, ok_msg, fail_msg):
+        """Enter a 'waiting for the ports to go free' state with the busy
+        indicator, used by both Stop and Reset ports."""
+        self._starting = False
+        self._stopping = True
+        self._stop_t0 = time.time()
+        self._stop_ok_msg = ok_msg
+        self._stop_fail_msg = fail_msg
+        self._begin_busy(message)
 
-    def reset_ports(self, silent=False):
-        if not silent:
-            self._append_log("[dashboard] freeing ports 8443 + 8000…")
+    def _finish_stopping(self, ok):
+        self._stopping = False
+        self._append_log(self._stop_ok_msg if ok else self._stop_fail_msg)
+        if self._restart_pending:
+            self._restart_pending = False
+            if ok:
+                self.start_server()   # ports are free — boot straight away
+                return
+        self._end_busy()
+
+    def _kill_listeners(self):
         listeners = doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT])
         pids = {pid for hs in listeners.values() for pid, _, _ in hs}
         for pid in sorted(pids):
             ok = doctor.kill_pid(pid)
             self._append_log(f"[dashboard] stop PID {pid}: {'ok' if ok else 'FAILED'}")
         self.proc = None
-        QtCore.QTimer.singleShot(800, self.refresh)
+
+    # ---- shared busy indicator ------------------------------------------
+    def _begin_busy(self, message):
+        self.busy_lbl.setText(message)
+        self.busy_lbl.show(); self.busy_bar.show()
+        for b in (self.start_btn, self.stop_btn, self.restart_btn):
+            b.setEnabled(False)
+        if not hasattr(self, "_busy_timer"):
+            self._busy_timer = QtCore.QTimer(self)
+            self._busy_timer.timeout.connect(self.refresh)
+        self._busy_timer.start(600)
+        self.refresh()
+
+    def _end_busy(self):
+        if hasattr(self, "_busy_timer"):
+            self._busy_timer.stop()
+        self.busy_lbl.hide(); self.busy_bar.hide()
+        self.restart_btn.setEnabled(True)
+
+    def restart_server(self):
+        running = bool(self.proc and self.proc.poll() is None) or \
+            bool(doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT]))
+        if not running:
+            self.start_server(); return
+        self._append_log("[dashboard] restarting server…")
+        # Stop first; once the ports go free, _finish_stopping boots it again —
+        # keyed on real state, not a fixed delay.
+        self._restart_pending = True
+        self.stop_server()
+
+    def reset_ports(self, silent=False):
+        # silent=True is the internal path (no listeners tracked); the button
+        # path shows the busy indicator and waits for the ports to go free.
+        if silent:
+            self._kill_listeners()
+            QtCore.QTimer.singleShot(800, self.refresh)
+            return
+        self._append_log("[dashboard] freeing ports 8443 + 8000…")
+        self._kill_listeners()
+        self._begin_teardown("Resetting ports…",
+                             "[dashboard] ports freed",
+                             "[dashboard] some ports still busy — check console")
 
     def run_doctor(self):
         self.doctor_btn.setEnabled(False)
