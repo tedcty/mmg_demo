@@ -33,6 +33,8 @@ INK    = "#0c0c48"
 NAVY   = "#0c0c48"   # sidebar
 GREEN  = "#12b57f"
 RED    = "#e5484d"
+LAVA   = "#f0501e"   # molten orange-red — the live "Stop" button
+LAVA_DK = "#d5400f"
 AMBER  = "#e0a100"
 PURPLE = "#7c4dff"
 GREY   = "#8a8f98"
@@ -94,8 +96,14 @@ QPushButton#danger:hover {{ background: #fadedb; }}
 /* Server control buttons — large, easy-to-hit targets */
 QPushButton[ctl="true"] {{ font-size: 16px; font-weight: 800;
                            padding: 15px 24px; border-radius: 12px; }}
-/* Start is the primary call-to-action — make it the biggest, boldest one */
-QPushButton#primary[ctl="true"] {{ font-size: 19px; padding: 17px 40px; }}
+
+/* The big Start/Stop toggle in the Diagnostics column */
+QPushButton[power="true"] {{ font-size: 21px; font-weight: 800;
+                             padding: 16px; border-radius: 14px; }}
+/* "Stop" state — molten lava so an active/running server is unmistakable */
+QPushButton#lava {{ background: {LAVA}; color: white; border: none; }}
+QPushButton#lava:hover {{ background: {LAVA_DK}; }}
+QPushButton#lava:disabled {{ background: #f4b6a3; color: #fdeee8; }}
 
 QPlainTextEdit#console, QPlainTextEdit#docout {{
     background: #0f1424; color: #c7d2e0; border: none; border-radius: 12px;
@@ -494,8 +502,11 @@ class Dashboard(QtWidgets.QWidget):
             QtGui.QShortcut(QtGui.QKeySequence(seq), self, activated=fn)
         sc("F5", self.refresh)
         # Respect button enabled-state so Start/Stop can't fire out of turn.
-        sc("Ctrl+S", lambda: self.start_btn.isEnabled() and self._on_start_clicked())
-        sc("Ctrl+K", lambda: self.stop_btn.isEnabled() and self.stop_server())
+        # Start only when stopped, Stop only when running (ignore mid-transition).
+        sc("Ctrl+S", lambda: self.power_btn.isEnabled() and not self._running_now()
+           and self._on_start_clicked())
+        sc("Ctrl+K", lambda: self.power_btn.isEnabled() and self._running_now()
+           and self.stop_server())
         sc("Ctrl+R", self.restart_server)
         sc("Ctrl+Shift+R", self.rebuild_frontend)
         sc("Ctrl+D", self.run_doctor)
@@ -642,7 +653,22 @@ class Dashboard(QtWidgets.QWidget):
         self.mdns_lbl = self._diag_row(dl, "Name")
         self.deps_lbl = self._diag_row(dl, "Prereqs")
         dl.addStretch(1)
-        midrow.addWidget(diag, 2)
+
+        # Right column: diagnostics, with the big Start/Stop toggle beneath it.
+        right_col = QtWidgets.QVBoxLayout(); right_col.setSpacing(16)
+        right_col.addWidget(diag, 1)
+        self.power_btn = QtWidgets.QPushButton("Start"); self.power_btn.setObjectName("primary")
+        self.power_btn.setProperty("power", "true")
+        self.power_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 24)))
+        self.power_btn.setIconSize(QtCore.QSize(22, 22))
+        self.power_btn.setMinimumHeight(64)
+        self.power_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.power_btn.setToolTip("Start / Stop the demo server (Ctrl+S / Ctrl+K)")
+        self.power_btn.clicked.connect(self._on_power_clicked)
+        right_col.addWidget(self.power_btn)
+
+        right_box = QtWidgets.QWidget(); right_box.setLayout(right_col)
+        midrow.addWidget(right_box, 2)
         v.addLayout(midrow, 1)
         return w
 
@@ -875,26 +901,16 @@ class Dashboard(QtWidgets.QWidget):
 
     def _control_bar(self):
         ctl = QtWidgets.QHBoxLayout(); ctl.setSpacing(10)
-        self.start_btn = QtWidgets.QPushButton("Start"); self.start_btn.setObjectName("primary")
-        self.stop_btn = QtWidgets.QPushButton("Stop")
+        # Start/Stop live in the big power toggle (Diagnostics column). The bar
+        # keeps the secondary controls.
         self.restart_btn = QtWidgets.QPushButton("Restart")
         self.reset_btn = QtWidgets.QPushButton("Reset ports"); self.reset_btn.setObjectName("danger")
-        self.start_btn.clicked.connect(self._on_start_clicked)
-        self.stop_btn.clicked.connect(self.stop_server)
         self.restart_btn.clicked.connect(self.restart_server)
         self.reset_btn.clicked.connect(self.reset_ports)
-        self.start_btn.setToolTip("Start the demo server (Ctrl+S)")
-        self.stop_btn.setToolTip("Stop the server (Ctrl+K)")
         self.restart_btn.setToolTip("Restart the server (Ctrl+R)")
         self.reset_btn.setToolTip("Force-free ports 8443 + 8000 if a server is stuck")
-
-        # Big, obvious server controls — Start leads with a play icon so it's the
-        # unmistakable "go" button.
-        self.start_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 22)))
-        self.stop_btn.setIcon(QtGui.QIcon(_pixmap("stopsq", INK, 22)))
-        for b in (self.start_btn, self.stop_btn, self.restart_btn, self.reset_btn):
+        for b in (self.restart_btn, self.reset_btn):
             b.setProperty("ctl", "true")      # enlarged via QSS [ctl="true"]
-            b.setIconSize(QtCore.QSize(18, 18))
             b.setMinimumHeight(54)            # uniform, easy-to-hit height
             b.setCursor(QtCore.Qt.PointingHandCursor)
             ctl.addWidget(b)
@@ -1127,8 +1143,7 @@ class Dashboard(QtWidgets.QWidget):
         self.qr_trust_sub.setText(
             f"Install the cert once per tablet (needed for the EMG mic).\n{self._trust_url}")
 
-        self.start_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
+        self._update_power(running)
 
         if self._starting:
             ready = running and s.get("https_code") == 200
@@ -1145,8 +1160,7 @@ class Dashboard(QtWidgets.QWidget):
                 self.k_status.setText("STARTING")
                 self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
                 self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
-                self.start_btn.setEnabled(False)
-                self.stop_btn.setEnabled(False)
+                self.power_btn.setText("Starting…"); self.power_btn.setEnabled(False)
 
         if self._stopping:
             elapsed = time.time() - self._stop_t0
@@ -1166,8 +1180,7 @@ class Dashboard(QtWidgets.QWidget):
                 self.k_status.setText("STOPPING")
                 self.k_status.setStyleSheet(f"font-size:24px;font-weight:800;color:{AMBER}")
                 self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
-                self.start_btn.setEnabled(False)
-                self.stop_btn.setEnabled(False)
+                self.power_btn.setText("Stopping…"); self.power_btn.setEnabled(False)
 
         # keep-alive: a run that stays healthy long enough clears the backoff.
         if (running and s.get("https_code") == 200 and self._crash_count
@@ -1257,7 +1270,7 @@ class Dashboard(QtWidgets.QWidget):
     def _begin_busy(self, message):
         self.busy_lbl.setText(message)
         self.busy_lbl.show(); self.busy_bar.show()
-        for b in (self.start_btn, self.stop_btn, self.restart_btn):
+        for b in (self.power_btn, self.restart_btn):
             b.setEnabled(False)
         if not hasattr(self, "_busy_timer"):
             self._busy_timer = QtCore.QTimer(self)
@@ -1327,6 +1340,32 @@ class Dashboard(QtWidgets.QWidget):
         self.rebuild_btn.setEnabled(True); self.rebuild_btn.setText("Rebuild frontend")
         self._append_log(f"[dashboard] rebuild {'complete' if code == 0 else f'failed (code {code})'}")
         self.refresh()                       # refresh the demo build-status chips
+
+    # ---- power toggle (Start / Stop in one button) ----------------------
+    def _running_now(self):
+        return bool(self.proc and self.proc.poll() is None) or \
+            bool(doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT))
+
+    def _on_power_clicked(self):
+        if self._running_now():
+            self.stop_server()
+        else:
+            self._on_start_clicked()
+
+    def _update_power(self, running):
+        """Point the single Start/Stop button at the right action + look."""
+        want = "lava" if running else "primary"
+        if self.power_btn.objectName() != want:
+            self.power_btn.setObjectName(want)
+            self._repolish(self.power_btn)     # re-apply QSS after id change
+        self.power_btn.setText("Stop" if running else "Start")
+        self.power_btn.setIcon(QtGui.QIcon(
+            _pixmap("stopsq" if running else "play", "white", 24)))
+        self.power_btn.setEnabled(True)
+
+    @staticmethod
+    def _repolish(w):
+        w.style().unpolish(w); w.style().polish(w); w.update()
 
     # ---- misc ------------------------------------------------------------
     def _on_start_clicked(self):

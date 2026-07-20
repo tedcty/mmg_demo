@@ -119,7 +119,9 @@ indicators, and CPU/GPU load with a **server-process** breakdown — the whole
 server tree including SSM prediction subprocesses — under the machine total) and
 a prominent **Tablet access** banner with the
 `https://mmg-demo.local:8443` address, a **scan-to-open QR code**, and a **Copy**
-button, with **Start / Stop / Restart / Reset ports** buttons, a **Run doctor**
+button, with one big **Start/Stop toggle** below the Diagnostics panel (green
+azure **Start** when stopped, molten-lava **Stop** when running) plus **Restart /
+Reset ports** and a **Run doctor**
 button (prints the full diagnostic report into the log pane), a server-log pane,
 and a toggle for auto-refresh. The **Access** tab adds larger QR codes — one to
 open the demo and one for the **`/trust`** page (with **Open /trust** / **Copy**
