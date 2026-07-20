@@ -41,45 +41,48 @@ BG     = "#eef1f6"
 CARD   = "#ffffff"
 BORDER = "#e6e9f0"
 
+# Type scale is deliberately generous — the panel is used on 13–16" portable
+# outreach laptops, so labels/values are sized to read at arm's length.
 QSS = f"""
 QWidget#root {{ background: {BG}; }}
+QToolTip {{ font-size: 13px; }}
 
 /* Sidebar */
 QFrame#sidebar {{ background: {NAVY}; }}
-QLabel#brand {{ color: white; font-size: 16px; font-weight: 800; }}
-QLabel#brandSub {{ color: rgba(255,255,255,0.55); font-size: 10px; font-weight: 600; }}
+QLabel#brand {{ color: white; font-size: 18px; font-weight: 800; }}
+QLabel#brandSub {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight: 600; }}
 QPushButton#nav {{ color: #c7cbe8; background: transparent; border: none;
-                   text-align: left; padding: 11px 16px; border-radius: 10px;
-                   font-size: 13px; font-weight: 600; }}
+                   text-align: left; padding: 13px 16px; border-radius: 10px;
+                   font-size: 15px; font-weight: 600; }}
 QPushButton#nav:hover {{ background: rgba(255,255,255,0.07); color: white; }}
 QPushButton#nav:checked {{ background: {AZURE}; color: white; }}
-QLabel#sideFoot {{ color: rgba(255,255,255,0.4); font-size: 10px; }}
+QLabel#sideFoot {{ color: rgba(255,255,255,0.4); font-size: 11px; }}
 
 /* Header */
-QLabel#h1 {{ color: {INK}; font-size: 20px; font-weight: 800; }}
-QLabel#chip {{ font-size: 12px; font-weight: 700; border-radius: 13px; padding: 5px 14px; }}
+QLabel#h1 {{ color: {INK}; font-size: 23px; font-weight: 800; }}
+QLabel#chip {{ font-size: 14px; font-weight: 700; border-radius: 14px; padding: 6px 15px; }}
 
 /* Cards */
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
-QLabel#statValue {{ font-size: 24px; font-weight: 800; color: {INK}; }}
-QLabel#statSub {{ color: {LABEL}; font-size: 14px; font-weight: 800; }}
-QLabel#statCaption {{ color: {GREY}; font-size: 10px; font-weight: 700; }}
-QGroupBox {{ margin-top: 26px; padding: 16px; font-weight: 700; color: {INK}; }}
+QLabel#statValue {{ font-size: 28px; font-weight: 800; color: {INK}; }}
+QLabel#statSub {{ color: {LABEL}; font-size: 15px; font-weight: 800; }}
+QLabel#statCaption {{ color: {GREY}; font-size: 11px; font-weight: 700; }}
+QGroupBox {{ margin-top: 28px; padding: 16px; font-weight: 700; color: {INK}; }}
 QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
                     left: 16px; top: 4px; padding: 0 4px;
-                    color: {LABEL}; font-size: 15px; font-weight: 800; }}
-QLabel#diag {{ font-size: 13px; color: {INK}; }}
-QLabel#url {{ font-size: 12px; color: {INK}; }}
+                    color: {LABEL}; font-size: 16px; font-weight: 800; }}
+QLabel#diag {{ font-size: 15px; color: {INK}; }}
+QLabel#url {{ font-size: 14px; color: {INK}; }}
 
 /* Demo list items */
 QFrame#demoItem {{ background: #f7f9fc; border: 1px solid {BORDER}; border-radius: 12px; }}
-QLabel#demoName {{ color: {INK}; font-size: 13px; font-weight: 800; }}
-QLabel#demoDetail {{ color: {GREY}; font-size: 11px; font-weight: 600; }}
-QLabel#demoChip {{ font-size: 10px; font-weight: 800; border-radius: 10px; padding: 3px 10px; }}
+QLabel#demoName {{ color: {INK}; font-size: 15px; font-weight: 800; }}
+QLabel#demoDetail {{ color: {GREY}; font-size: 13px; font-weight: 600; }}
+QLabel#demoChip {{ font-size: 11px; font-weight: 800; border-radius: 10px; padding: 3px 10px; }}
 
 /* Buttons */
 QPushButton {{ background: #f1f4f9; color: {INK}; border: 1px solid #dde3ec;
-               border-radius: 10px; padding: 9px 16px; font-weight: 700; }}
+               border-radius: 10px; padding: 11px 18px; font-size: 14px; font-weight: 700; }}
 QPushButton:hover {{ background: #e7ecf5; }}
 QPushButton:disabled {{ color: #b3bac6; background: #f4f6fa; }}
 QPushButton#primary {{ background: {AZURE}; color: white; border: none; }}
@@ -90,31 +93,33 @@ QPushButton#danger:hover {{ background: #fadedb; }}
 
 QPlainTextEdit#console, QPlainTextEdit#docout {{
     background: #0f1424; color: #c7d2e0; border: none; border-radius: 12px;
-    padding: 8px; font-family: monospace; font-size: 11px; }}
-QCheckBox {{ color: {INK}; font-weight: 600; }}
+    padding: 8px; font-family: monospace; font-size: 13px; }}
+QCheckBox {{ color: {INK}; font-size: 14px; font-weight: 600; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; }}
+QSpinBox {{ font-size: 14px; padding: 4px 6px; }}
 
 /* Startup progress (indeterminate) */
-QLabel#startupLbl {{ color: {AZURE}; font-size: 12px; font-weight: 700; }}
+QLabel#startupLbl {{ color: {AZURE}; font-size: 13px; font-weight: 700; }}
 QProgressBar#startup {{ background: #e7ecf5; border: none; border-radius: 6px;
-                        min-height: 8px; max-height: 8px; }}
+                        min-height: 9px; max-height: 9px; }}
 QProgressBar#startup::chunk {{ background: {AZURE}; border-radius: 6px; }}
 
 /* Tablet access banner */
 QFrame#access {{ background: {INK}; border-radius: 16px; }}
-QLabel#accessCap {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight: 800; }}
-QLabel#accessUrl {{ color: white; font-size: 27px; font-weight: 800; }}
-QLabel#accessHint {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight: 600; }}
+QLabel#accessCap {{ color: rgba(255,255,255,0.55); font-size: 12px; font-weight: 800; }}
+QLabel#accessUrl {{ color: white; font-size: 29px; font-weight: 800; }}
+QLabel#accessHint {{ color: rgba(255,255,255,0.6); font-size: 12px; font-weight: 600; }}
 QPushButton#accessCopy {{ background: rgba(255,255,255,0.14); color: white; border: none;
-                          border-radius: 10px; padding: 10px 18px; font-weight: 700; }}
+                          border-radius: 10px; padding: 11px 18px; font-weight: 700; }}
 QPushButton#accessCopy:hover {{ background: rgba(255,255,255,0.24); }}
 QLabel#qrTile {{ background: #ffffff; border-radius: 8px; }}
 QLabel#alert {{ background: #fdecea; color: {RED}; border: 1px solid #f6c9c7;
-                border-radius: 10px; padding: 10px 14px; font-weight: 700; }}
+                border-radius: 10px; padding: 11px 15px; font-size: 14px; font-weight: 700; }}
 
 /* QR / trust panels on the Access page */
 QLabel#qrCard {{ background: #ffffff; border: 1px solid {BORDER}; border-radius: 12px; }}
-QLabel#qrCaption {{ color: {INK}; font-size: 13px; font-weight: 800; }}
-QLabel#qrSub {{ color: {GREY}; font-size: 11px; font-weight: 600; }}
+QLabel#qrCaption {{ color: {INK}; font-size: 15px; font-weight: 800; }}
+QLabel#qrSub {{ color: {GREY}; font-size: 13px; font-weight: 600; }}
 """
 
 
@@ -264,6 +269,71 @@ def _shadow(w, blur=24, alpha=26, dy=4):
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
     eff.setColor(QtGui.QColor(12, 12, 72, alpha))
     w.setGraphicsEffect(eff)
+
+
+class FlowLayout(QtWidgets.QLayout):
+    """A layout that lays widgets left-to-right and wraps to the next row when
+    it runs out of width — so the KPI cards reflow instead of clipping on small
+    portable screens."""
+
+    def __init__(self, parent=None, hspacing=16, vspacing=16):
+        super().__init__(parent)
+        self._items = []
+        self._hspace = hspacing
+        self._vspace = vspacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def addWidget(self, w):
+        self.addChildWidget(w)
+        self.addItem(QtWidgets.QWidgetItem(w))
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return QtCore.Qt.Orientations(QtCore.Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QtCore.QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QtCore.QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x, y, line_h = rect.x(), rect.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > rect.right() + 1 and line_h > 0:
+                x = rect.x()
+                y = y + line_h + self._vspace
+                line_h = 0
+            if not test_only:
+                item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), hint))
+            x = x + hint.width() + self._hspace
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.y()
 
 
 class StatusWorker(QtCore.QThread):
@@ -433,8 +503,8 @@ class Dashboard(QtWidgets.QWidget):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("MMG Demo Server — Control Panel")
-        self.resize(1200, 720)
-        self.setMinimumSize(980, 600)
+        self.resize(1200, 760)
+        self.setMinimumSize(880, 560)         # fits small 13" portable screens
         self.proc = None
         self._polling = False
         self._starting = False
@@ -556,6 +626,7 @@ class Dashboard(QtWidgets.QWidget):
 
     def _stat_card(self, icon, caption, color):
         card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
+        card.setMinimumSize(196, 92)          # so the flow row wraps cleanly
         h = QtWidgets.QHBoxLayout(card); h.setContentsMargins(16, 14, 16, 14); h.setSpacing(14)
         ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap(icon, "white", 44, bg=color))
         ic.setFixedSize(44, 44)
@@ -575,8 +646,10 @@ class Dashboard(QtWidgets.QWidget):
 
         v.addWidget(self._build_access_banner())
 
-        cards = QtWidgets.QHBoxLayout(); cards.setSpacing(16)
+        cards_box = QtWidgets.QWidget()
+        cards = FlowLayout(cards_box, hspacing=16, vspacing=16)
         self.c_status, self.k_status, _, self.status_icon = self._stat_card("status", "STATUS", GREY)
+        cards.addWidget(self.c_status)
         _, self.k_uptime, _ = self._stat_card_add(cards, "clock", "UPTIME", AZURE)
         _, self.k_clients, _ = self._stat_card_add(cards, "users", "ACTIVE CLIENTS", GREEN)
         _, self.k_cpu, self.k_cpu_sub = self._stat_card_add(cards, "cpu", "CPU LOAD", PURPLE)
@@ -584,8 +657,7 @@ class Dashboard(QtWidgets.QWidget):
         # CPU/GPU cards carry a second "server …" line under the machine total.
         for sub in (self.k_cpu_sub, self.k_gpu_sub):
             sub.setText("server —"); sub.show()
-        cards.insertWidget(0, self.c_status)
-        v.addLayout(cards)
+        v.addWidget(cards_box)
 
         # Demos + diagnostics side by side
         midrow = QtWidgets.QHBoxLayout(); midrow.setSpacing(16)
@@ -875,8 +947,8 @@ class Dashboard(QtWidgets.QWidget):
 
     def _diag_row(self, lay, name):
         row = QtWidgets.QHBoxLayout()
-        n = QtWidgets.QLabel(name); n.setFixedWidth(76); n.setAlignment(QtCore.Qt.AlignTop)
-        n.setStyleSheet(f"color:{LABEL};font-weight:800;font-size:13px")
+        n = QtWidgets.QLabel(name); n.setFixedWidth(84); n.setAlignment(QtCore.Qt.AlignTop)
+        n.setStyleSheet(f"color:{LABEL};font-weight:800;font-size:14px")
         val = QtWidgets.QLabel("…"); val.setObjectName("diag")
         val.setTextFormat(QtCore.Qt.RichText); val.setWordWrap(True)
         row.addWidget(n); row.addWidget(val, 1)
@@ -1335,6 +1407,15 @@ def main():
         pass
     app.setStyleSheet(app.styleSheet() + QSS)
     win = Dashboard(autostart=args.autostart, keepalive=args.keep_alive)
+
+    # Size to fit the actual screen (small portable laptops) and centre it,
+    # so the larger type never pushes content off-screen.
+    scr = app.primaryScreen().availableGeometry()
+    w = min(1200, int(scr.width() * 0.94))
+    h = min(760, int(scr.height() * 0.94))
+    win.resize(w, h)
+    win.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
+
     win.show()
     sys.exit(app.exec())
 
