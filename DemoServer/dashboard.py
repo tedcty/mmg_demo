@@ -484,8 +484,25 @@ class Dashboard(QtWidgets.QWidget):
         sc("Ctrl+R", self.restart_server)
         sc("Ctrl+Shift+R", self.rebuild_frontend)
         sc("Ctrl+D", self.run_doctor)
+        sc("F11", self._toggle_fullscreen)
+        sc("Esc", self._exit_fullscreen)
         for i in range(len(self.NAV)):
             sc(f"Alt+{i + 1}", lambda idx=i: self._go(idx))
+
+    def _toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+        self._sync_fs_btn()
+
+    def _exit_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self._sync_fs_btn()
+
+    def _sync_fs_btn(self):
+        self.fs_btn.setText("Exit full screen" if self.isFullScreen() else "Full screen")
 
     # ---- UI --------------------------------------------------------------
     def _build_ui(self):
@@ -502,7 +519,11 @@ class Dashboard(QtWidgets.QWidget):
         self.chip = QtWidgets.QLabel("…"); self.chip.setObjectName("chip")
         hbtn = QtWidgets.QPushButton("Refresh"); hbtn.clicked.connect(self.refresh)
         hbtn.setToolTip("Refresh status now (F5)")
-        hdr.addWidget(self.h1); hdr.addStretch(1); hdr.addWidget(self.chip); hdr.addWidget(hbtn)
+        self.fs_btn = QtWidgets.QPushButton("Full screen")
+        self.fs_btn.setToolTip("Toggle full screen (F11 · Esc to exit)")
+        self.fs_btn.clicked.connect(self._toggle_fullscreen)
+        hdr.addWidget(self.h1); hdr.addStretch(1)
+        hdr.addWidget(self.chip); hdr.addWidget(self.fs_btn); hdr.addWidget(hbtn)
         right.addLayout(hdr)
 
         # Dismissable alert banner (e.g. unexpected server exit) — hidden by default.
@@ -1333,6 +1354,8 @@ def main():
                     help="start the demo server automatically once the panel opens")
     ap.add_argument("--keep-alive", action="store_true",
                     help="auto-restart the server if it exits unexpectedly")
+    ap.add_argument("--fullscreen", action="store_true",
+                    help="open the panel in full screen (F11 or Esc to leave)")
     args = ap.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
@@ -1352,7 +1375,11 @@ def main():
     win.resize(w, h)
     win.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
 
-    win.show()
+    if args.fullscreen:
+        win.showFullScreen()
+        win._sync_fs_btn()
+    else:
+        win.show()
     sys.exit(app.exec())
 
 

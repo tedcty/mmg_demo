@@ -132,11 +132,12 @@ scannable pop-up. The **Demos** card has a **Rebuild frontend** button that runs
 dismissable **crash banner** appears. A **Keep alive** toggle auto-restarts the
 server after an unexpected exit (with backoff, giving up after a few rapid
 crashes) for unattended events. Launch flags support the same:
-`dashboard.py --autostart` starts the server as soon as the panel opens, and
-`--keep-alive` enables the watchdog — together they make an "open the laptop and
-everything's up" kiosk. Buttons have tooltips and keyboard shortcuts
-(**F5** refresh, **Ctrl+S** start, **Ctrl+K** stop, **Ctrl+R** restart,
-**Ctrl+Shift+R** rebuild, **Ctrl+D** doctor, **Alt+1…4** switch pages). The
+`dashboard.py --autostart` starts the server as soon as the panel opens,
+`--keep-alive` enables the watchdog, and `--fullscreen` opens it borderless for a
+kiosk display — together they make an "open the laptop and everything's up"
+setup. Buttons have tooltips and keyboard shortcuts (**F5** refresh, **Ctrl+S**
+start, **Ctrl+K** stop, **Ctrl+R** restart, **Ctrl+Shift+R** rebuild, **Ctrl+D**
+doctor, **Alt+1…4** switch pages, **F11** full screen / **Esc** to exit). The
 status icon and chip track state live —
 green when running, amber while **STARTING / STOPPING** — with a progress bar
 during those transitions, driven by the server actually answering (not a fixed
