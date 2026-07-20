@@ -288,15 +288,6 @@ def _gpu_proc_util(pids):
 
 
 def _shadow(w, blur=24, alpha=26, dy=4):
-    # QGraphicsDropShadowEffect misrenders child widgets at *fractional* device
-    # pixel ratios (e.g. 125%/150% Windows scaling) — it paints them offset, so
-    # QR codes and card contents overlap. Skip the effect there; the cards still
-    # read via their border. Integer scaling (100%/200%) keeps the soft shadow.
-    app = QtWidgets.QApplication.instance()
-    scr = app.primaryScreen() if app else None
-    dpr = scr.devicePixelRatio() if scr else 1.0
-    if abs(dpr - round(dpr)) > 0.01:
-        return
     eff = QtWidgets.QGraphicsDropShadowEffect(w)
     eff.setBlurRadius(blur); eff.setXOffset(0); eff.setYOffset(dy)
     eff.setColor(QtGui.QColor(12, 12, 72, alpha))
@@ -524,6 +515,20 @@ class Dashboard(QtWidgets.QWidget):
         for i in range(len(self.NAV)):
             sc(f"Alt+{i + 1}", lambda idx=i: self._go(idx))
 
+    def _scrollable(self, page):
+        """Wrap a page so it scrolls vertically when taller than the viewport
+        (keeps cards at full size instead of squashing them until they overlap)."""
+        sa = QtWidgets.QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QtWidgets.QFrame.NoFrame)
+        sa.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # Keep the app's background showing through the viewport + page (the
+        # cards keep their own white via #stat / #qrCard styling).
+        sa.setStyleSheet("QScrollArea { background: transparent; }"
+                         " QScrollArea > QWidget > QWidget { background: transparent; }")
+        sa.setWidget(page)
+        return sa
+
     def _toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
@@ -569,12 +574,13 @@ class Dashboard(QtWidgets.QWidget):
         self.alert.installEventFilter(self)
         right.addWidget(self.alert)
 
-        # Pages
+        # Pages — each wrapped in a scroll area so a page taller than the window
+        # scrolls instead of compressing its cards (which would overlap).
         self.stack = QtWidgets.QStackedWidget()
-        self.stack.addWidget(self._page_dashboard())
-        self.stack.addWidget(self._page_console())
-        self.stack.addWidget(self._page_access())
-        self.stack.addWidget(self._page_doctor())
+        self.stack.addWidget(self._scrollable(self._page_dashboard()))
+        self.stack.addWidget(self._scrollable(self._page_console()))
+        self.stack.addWidget(self._scrollable(self._page_access()))
+        self.stack.addWidget(self._scrollable(self._page_doctor()))
         right.addWidget(self.stack, 1)
 
         # Persistent control bar
@@ -619,7 +625,7 @@ class Dashboard(QtWidgets.QWidget):
         card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
         # Fill the row equally; fixed height keeps the single row compact.
         card.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        card.setMinimumWidth(150); card.setFixedHeight(92)
+        card.setMinimumWidth(150); card.setFixedHeight(86)
         h = QtWidgets.QHBoxLayout(card); h.setContentsMargins(14, 12, 14, 12); h.setSpacing(12)
         ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap(icon, "white", 44, bg=color))
         ic.setFixedSize(44, 44)
@@ -635,7 +641,7 @@ class Dashboard(QtWidgets.QWidget):
 
     def _page_dashboard(self):
         w = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(16)
+        v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(12)
 
         v.addWidget(self._build_access_banner())
 
@@ -670,7 +676,7 @@ class Dashboard(QtWidgets.QWidget):
         self.power_btn.setProperty("power", "true")
         self.power_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 24)))
         self.power_btn.setIconSize(QtCore.QSize(22, 22))
-        self.power_btn.setMinimumHeight(64)
+        self.power_btn.setMinimumHeight(56)
         self.power_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.power_btn.setToolTip("Start / Stop the demo server (Ctrl+S / Ctrl+K)")
         self.power_btn.clicked.connect(self._on_power_clicked)
@@ -699,7 +705,7 @@ class Dashboard(QtWidgets.QWidget):
         # Scan-to-open QR (white tile so it stays scannable on the dark banner);
         # click it for a large pop-up version.
         self.banner_qr = QtWidgets.QLabel(); self.banner_qr.setObjectName("qrTile")
-        self.banner_qr.setFixedSize(100, 100); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
+        self.banner_qr.setFixedSize(84, 84); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
         self._make_qr_clickable(self.banner_qr)
         scan = QtWidgets.QLabel("SCAN · CLICK TO ENLARGE"); scan.setObjectName("accessCap")
         scan.setAlignment(QtCore.Qt.AlignCenter)
