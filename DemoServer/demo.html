@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ABI Musculoskeletal Modelling - MMG Outreach Hub</title>
     <!-- Vue 3 Global Build (vendored locally so the hub works offline) -->
     <script src="/resources/vendor/vue.global.prod.js"></script>
@@ -75,6 +75,28 @@
         @keyframes wave-pulse { 0%, 100% { height: 10px; } 50% { height: 40px; } }
 
         .touch-target { min-height: 44px; min-width: 44px; }
+
+        /* Visible keyboard focus ring (only for keyboard users, not mouse).
+           Navy on light surfaces; bright Māhina cyan on the dark nav bar. */
+        :focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
+        .app-card:focus-visible { box-shadow: var(--md-elevation-3); }
+        nav :focus-visible { outline-color: var(--md-uoa-mahina); }
+
+        /* Respect users who prefer reduced motion (vestibular safety) */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: .001ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: .001ms !important;
+                scroll-behavior: auto !important;
+            }
+        }
+
+        /* Visually hidden, still available to screen readers */
+        .sr-only {
+            position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+            overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+        }
     </style>
 </head>
 <body class="text-slate-800 antialiased overflow-x-hidden">
@@ -97,16 +119,19 @@
                     </div>
                     
                     <div class="relative flex-grow max-w-xs">
+                        <label for="demo-search" class="sr-only">Search demos</label>
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <svg class="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                             </svg>
                         </div>
                         <input
+                            id="demo-search"
                             v-model="searchQuery"
                             type="text"
                             placeholder="Search..."
-                            class="block w-full pl-9 pr-4 py-2.5 border-2 border-slate-100 rounded-md bg-slate-50 text-sm focus:border-uoa-navy focus:bg-white focus:outline-none transition-all shadow-inner touch-target"
+                            aria-label="Search demos"
+                            class="block w-full pl-9 pr-4 py-2.5 border-2 border-slate-100 rounded-md bg-slate-50 text-sm focus:border-uoa-navy focus:bg-white transition-all shadow-inner touch-target"
                         />
                     </div>
                 </div>
@@ -134,12 +159,15 @@
                     </div>
                 </div>
 
-                <!-- Category Tabs -->
-                <div class="flex overflow-x-auto pb-4 mb-8 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap items-center gap-2 no-scrollbar">
+                <!-- Category filter chips -->
+                <div role="group" aria-label="Filter demos by category"
+                     class="flex overflow-x-auto pb-4 mb-8 -mx-4 px-4 sm:mx-0 sm:px-0 sm:flex-wrap items-center gap-2 no-scrollbar">
                     <button
                         v-for="cat in categories"
                         :key="cat"
                         @click="selectedCategory = cat"
+                        :aria-pressed="selectedCategory === cat ? 'true' : 'false'"
+                        :aria-label="'Filter by ' + cat"
                         class="md-chip touch-target whitespace-nowrap"
                         :class="{ 'md-chip--selected': selectedCategory === cat }"
                     >
@@ -153,24 +181,29 @@
                         v-for="app in filteredApps"
                         :key="app.id"
                         @click="launchApp(app)"
+                        @keydown.enter="launchApp(app)"
+                        @keydown.space.prevent="launchApp(app)"
+                        role="button"
+                        tabindex="0"
+                        :aria-label="'Start ' + app.title + (app.url ? '' : ' (coming soon)')"
                         class="app-card p-6 sm:p-8 flex flex-col group cursor-pointer relative"
                     >
                         <div class="flex items-start justify-between mb-6">
-                            <div class="p-3 rounded-2xl bg-uoa-gold text-uoa-navy transition-colors duration-300" v-html="app.icon"></div>
+                            <div class="p-3 rounded-2xl bg-uoa-gold text-uoa-navy transition-colors duration-300" v-html="app.icon" aria-hidden="true"></div>
                             <div class="flex flex-col items-end">
-                                <span class="text-[9px] font-bold text-uoa-grey uppercase tracking-widest">{{ app.type }}</span>
-                                <span v-if="app.url" class="mt-1 text-[8px] font-bold text-emerald-600 uppercase flex items-center">
+                                <span class="text-[11px] font-bold text-uoa-grey uppercase tracking-widest">{{ app.type }}</span>
+                                <span v-if="app.url" class="mt-1 text-[10px] font-bold text-emerald-700 uppercase flex items-center">
                                     <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse"></span>
                                     Live
                                 </span>
-                                <span v-if="app.requiresMic" class="mt-1 text-[8px] font-bold text-red-600 uppercase flex items-center">
-                                    <svg class="w-2.5 h-2.5 mr-1" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                                <span v-if="app.requiresMic" class="mt-1 text-[10px] font-bold text-red-600 uppercase flex items-center">
+                                    <svg class="w-2.5 h-2.5 mr-1" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
                                     Audio
                                 </span>
                             </div>
                         </div>
                         <h3 class="text-lg font-bold text-uoa-navy mb-2 leading-tight">{{ app.title }}</h3>
-                        <p class="text-sm text-slate-500 leading-relaxed mb-6 flex-grow">{{ app.description }}</p>
+                        <p class="text-sm text-slate-600 leading-relaxed mb-6 flex-grow">{{ app.description }}</p>
                         
                         <div class="flex items-center mt-auto py-2">
                             <div class="flex items-center text-xs font-bold text-uoa-navy">
@@ -186,7 +219,7 @@
                     </div>
                 </div>
                 
-                <div v-else class="text-center py-20 bg-white border border-slate-200 rounded-lg">
+                <div v-else role="status" aria-live="polite" class="text-center py-20 bg-white border border-slate-200 rounded-lg">
                     <p class="text-uoa-grey font-bold uppercase tracking-widest text-sm">No demos found</p>
                     <button @click="clearFilters" class="md-btn md-btn--text touch-target mt-4">View all tools</button>
                 </div>
@@ -197,7 +230,7 @@
                 <div class="bg-uoa-navy text-white px-4 py-2 font-bold text-[10px] uppercase tracking-[0.3em] mb-4">
                     ABI Musculoskeletal Group
                 </div>
-                <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest">© Musculoskeletal Modelling Group, Auckland Bioengineering Institute</p>
+                <p class="text-slate-600 text-[11px] font-bold uppercase tracking-widest">© Musculoskeletal Modelling Group, Auckland Bioengineering Institute</p>
             </footer>
         </template>
 
@@ -215,7 +248,7 @@
                     </div>
                     <div class="flex items-center space-x-2">
                         <div class="w-2 h-2 rounded-full bg-uoa-gold animate-pulse"></div>
-                        <span class="text-[9px] font-bold tracking-widest uppercase opacity-70 hidden sm:inline">Active</span>
+                        <span class="text-[10px] font-bold tracking-widest uppercase opacity-70 hidden sm:inline">Preview</span>
                     </div>
                 </nav>
 
@@ -223,32 +256,32 @@
                     <div class="scanline"></div>
                     
                     <div class="max-w-3xl w-full bg-white border-t-4 border-uoa-gold shadow-2xl p-8 sm:p-12 text-center relative z-10 rounded-sm">
-                        <div class="text-uoa-navy mb-6 sm:mb-8 flex justify-center" v-html="activeApp.icon.replace('24', '64')"></div>
-                        
+                        <div class="text-uoa-navy mb-6 sm:mb-8 flex justify-center" v-html="activeApp.icon.replace('24', '64')" aria-hidden="true"></div>
+
+                        <span class="inline-block px-3 py-1 rounded-full bg-uoa-gold text-uoa-navy text-[11px] font-bold uppercase tracking-widest mb-4">
+                            Coming soon
+                        </span>
                         <h3 class="text-2xl sm:text-3xl font-black text-uoa-navy mb-4">{{ activeApp.title }}</h3>
                         <p class="text-uoa-grey text-sm sm:text-lg mb-8 leading-relaxed">{{ activeApp.description }}</p>
-                        
-                        <!-- Visualizer for Sensor Inputs -->
+
+                        <!-- Sensor preview (illustrative — the live demo isn't built yet) -->
                         <div v-if="activeApp.requiresMic || activeApp.id === 5" class="mb-8 p-6 bg-slate-900 rounded shadow-inner">
-                            <div class="flex justify-center items-end space-x-1 h-12 mb-4">
+                            <div class="flex justify-center items-end space-x-1 h-12 mb-4" aria-hidden="true">
                                 <div v-for="i in 15" :key="i" class="wave-bar" :style="{ animationDelay: (i * 0.1) + 's' }"></div>
                             </div>
-                            <p class="text-[9px] font-bold text-uoa-gold uppercase tracking-[0.2em]">
-                                {{ activeApp.id === 5 ? 'Tracking Kinect Motion...' : 'Processing EMG Stream...' }}
+                            <p class="text-[10px] font-bold text-uoa-gold uppercase tracking-[0.2em]">
+                                {{ activeApp.id === 5 ? 'Kinect motion — preview' : 'EMG sensor — preview' }}
                             </p>
                         </div>
 
                         <div class="bg-slate-50 border border-slate-100 p-6 rounded-sm mb-6 text-left">
-                            <div class="flex justify-between text-[10px] font-bold text-uoa-navy uppercase tracking-widest mb-3">
-                                <span>Computation Status</span>
-                                <span>Ready</span>
+                            <div class="flex justify-between text-[11px] font-bold text-uoa-navy uppercase tracking-widest mb-3">
+                                <span>Status</span>
+                                <span>Coming soon</span>
                             </div>
-                            <div class="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                                <div class="bg-uoa-navy h-full animate-progress" style="width: 100%"></div>
-                            </div>
-                            <p class="mt-4 text-[10px] font-mono text-slate-400">
-                                Interface: outreach-tablet-01<br>
-                                Environment: abi-lan-event
+                            <p class="text-sm text-slate-600 leading-relaxed">
+                                This demo is on the way — check back at the next event. Tap
+                                <span class="font-bold text-uoa-navy">Exit</span> to explore the demos that are live now.
                             </p>
                         </div>
                     </div>
@@ -257,9 +290,10 @@
         </template>
 
         <!-- INFO MODAL -->
-        <div v-if="infoApp" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="closeInfo">
+        <div v-if="infoApp" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="closeInfo" @keydown.esc="closeInfo">
             <div class="absolute inset-0 bg-slate-900/60" @click="closeInfo"></div>
-            <div class="relative w-full max-w-lg p-6 sm:p-8 rounded-[28px]"
+            <div role="dialog" aria-modal="true" :aria-label="infoApp.title + ' details'"
+                 class="relative w-full max-w-lg p-6 sm:p-8 rounded-[28px]"
                  style="background: var(--md-sys-color-surface-container-high); box-shadow: var(--md-elevation-3);">
                 <button @click="closeInfo" title="Close" aria-label="Close"
                     class="md-icon-btn absolute top-3 right-3">
