@@ -57,8 +57,9 @@ python server.py --check        # preflight doctor only: checks env/frontend/cer
 - **Node.js + npm** (for the frontend build) — auto-installed into the conda
   env by `setup_demo_server.py` if not already on your PATH
 - Python deps pinned in [`requirements.txt`](requirements.txt): Flask +
-  flask-cors for the server, and the SSM stack (numpy, pandas, scipy,
-  scikit-learn, vtk, plus `gias3` and `ptb_mmg`). All are on PyPI.
+  flask-cors for the server, `zeroconf` for the `mmg-demo.local` mDNS name, and
+  the SSM stack (numpy, pandas, scipy, scikit-learn, vtk, plus `gias3` and
+  `ptb_mmg`). All are on PyPI.
 
 ## ⚠️ Rebuild the frontend after pulling
 
@@ -114,12 +115,16 @@ conda run -n demo python DemoServer/dashboard.py
 ```
 
 It shows live status (running state, PID, uptime, port/prereq/protocol
-indicators) and the correct URLs, with **Start / Stop / Restart / Reset ports**
-buttons, a **Run doctor** button (prints the full diagnostic report into the
-log pane), a server-log pane, and a toggle for auto-refresh. It's the same
-`doctor.py` logic behind a PySide6 + qt-material UI, so it reflects any server —
-even one you started from a terminal. Run it in the `demo` env so it launches
-the server with the right interpreter.
+indicators) and a prominent **Tablet access** banner with the
+`https://mmg-demo.local:8443` address (and a **Copy** button), with
+**Start / Stop / Restart / Reset ports** buttons, a **Run doctor** button
+(prints the full diagnostic report into the log pane), a server-log pane, and a
+toggle for auto-refresh. The status icon and chip track state live — green when
+running, amber while **STARTING / STOPPING** — with a progress bar during those
+transitions, driven by the server actually answering (not a fixed delay). It's
+the same `doctor.py` logic behind a PySide6 + qt-material UI, so it reflects any
+server — even one you started from a terminal. Run it in the `demo` env so it
+launches the server with the right interpreter.
 
 ## Tablets & offline use
 
@@ -133,20 +138,40 @@ For outreach events on iPad/Android tablets, note:
   on a non-`localhost` HTTP origin. The EMG audio worklet is served as a file
   (`web/emg-worklet.js`, not a `blob:` URL) so it also works on iOS/iPad.
 
+### Reaching the server (`mmg-demo.local`)
+
+The server advertises itself over **mDNS / Bonjour** as a fixed name, so tablets
+can use **`https://mmg-demo.local:8443`** instead of a LAN IP that changes with
+DHCP. This needs no router config and works fully offline — the `zeroconf`
+package (in `requirements.txt`) bundles its own responder, so the host PC needs
+nothing extra installed.
+
+- Resolves natively on **iOS/iPadOS**, **macOS**, **Windows 10+**, and **Linux
+  with Avahi** (installed by default on most desktops).
+- **Android is unreliable** with `.local`, so the server also prints its **LAN
+  IP** on startup as a fallback — the dashboard's *Tablet access* banner shows
+  the name with the IP as a fallback hint.
+- The name is baked into the cert SANs (below), so it's warning-free once the
+  cert is trusted.
+
+To use a different name, change `MDNS_HOST` in `server.py` (keep the matching
+`MDNS_FQDN` in `doctor.py` and `setup_https.py` in sync).
+
 ### HTTPS (on by default)
 
 The server serves **HTTPS on port 8443 by default**, plus a plain-HTTP
 redirector on **:8000** that 302s to HTTPS — so `http://<host>:8000` (what
 browsers assume when you type `host:8000`) auto-upgrades instead of resetting.
 On first run it auto-generates a persistent self-signed cert in `certs/`
-(git-ignored) whose SANs include `localhost`, `127.0.0.1` and the detected LAN
-IP. Requires the `cryptography` package (in `requirements.txt`). Use `--http`
-to opt out (plain HTTP on :8000, mic then only on localhost); `--https-port` /
-`--http-port` change the ports.
+(git-ignored) whose SANs include `localhost`, `mmg-demo.local`, `127.0.0.1` and
+the detected LAN IP. Requires the `cryptography` package (in `requirements.txt`).
+Use `--http` to opt out (plain HTTP on :8000, mic then only on localhost);
+`--https-port` / `--http-port` change the ports.
 
-Open the tablet at **`http://<server-ip>:8000`** (redirects) or
-**`https://<server-ip>:8443`** directly. A self-signed cert triggers a browser
-warning:
+Open the tablet at **`https://mmg-demo.local:8443`** (see
+[Reaching the server](#reaching-the-server-mmg-demolocal)), or use the LAN IP:
+**`http://<server-ip>:8000`** (redirects) or **`https://<server-ip>:8443`**
+directly. A self-signed cert triggers a browser warning:
 
 - **Android Chrome** — tap **Advanced → Proceed**; the mic then prompts normally.
 - **iOS/iPad Safari** — Safari will *not* grant the mic to an untrusted cert
@@ -160,14 +185,15 @@ python DemoServer/setup_https.py        # installs a local CA + writes certs/
 
 This runs `mkcert` (auto-installed via conda-forge if needed): it trusts a local
 CA on **this** machine and writes `certs/cert.pem` + `certs/key.pem` for
-`localhost`, `127.0.0.1` and your LAN IP. `server.py` prefers those over the
-self-signed cert, so **this PC and Android show no warning** after a restart.
-Pass extra hostnames/IPs as arguments if needed. Equivalent manual steps:
+`localhost`, `mmg-demo.local`, `127.0.0.1` and your LAN IP. `server.py` prefers
+those over the self-signed cert, so **this PC and Android show no warning** after
+a restart. Pass extra hostnames/IPs as arguments if needed. Equivalent manual
+steps:
 
 ```bash
 mkcert -install
 mkcert -cert-file DemoServer/certs/cert.pem -key-file DemoServer/certs/key.pem \
-       <server-lan-ip> localhost 127.0.0.1
+       mmg-demo.local <server-lan-ip> localhost 127.0.0.1
 ```
 
 ### Trusting tablets (self-serve)
@@ -184,10 +210,13 @@ reach it **before** they trust the cert:
 
 **Do this once per tablet when you prep the kit**, not at every event: because
 you own the tablets and the mkcert CA lasts ~10 years, a tablet trusted once
-stays trusted. Keep it stable by giving the **server a static LAN IP** on your
-router and always using the same server machine (its CA and the cert's IP SAN
-won't change). If the server IP changes, re-run
-`python DemoServer/setup_https.py <new-ip>` and re-trust the tablets.
+stays trusted. The **`mmg-demo.local`** name already gives tablets a stable
+address even if the DHCP IP changes, and it's in the cert's SANs — so prefer it
+on the tablets and you won't need to re-issue the cert when the IP moves. (A
+static LAN IP or DHCP reservation for the server is still a good backstop for
+Android, which may not resolve `.local`.) If you do re-issue the cert for a new
+IP, re-run `python DemoServer/setup_https.py <new-ip>` — `mmg-demo.local` is
+always included automatically.
 
 > **Windows tablet clients** are the exception: installing a root CA there is a
 > manual Certificate Import Wizard step and may be **blocked by policy** on
