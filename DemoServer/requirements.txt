@@ -20,6 +20,8 @@ psutil
 # dashboard.py: Material Design theme for the PySide6 control panel.
 # (PySide6 itself already comes in via ptb_mmg.)
 qt-material
+# dashboard.py: pure-Python QR codes for the tablet access / trust URLs.
+segno
 
 # --- SSM prediction pipeline ---
 # Imported at server startup (generate_isb_joints) and by the headless

@@ -116,13 +116,18 @@ conda run -n demo python DemoServer/dashboard.py
 
 It shows live status (running state, PID, uptime, port/prereq/protocol
 indicators) and a prominent **Tablet access** banner with the
-`https://mmg-demo.local:8443` address (and a **Copy** button), with
-**Start / Stop / Restart / Reset ports** buttons, a **Run doctor** button
-(prints the full diagnostic report into the log pane), a server-log pane, and a
-toggle for auto-refresh. The status icon and chip track state live — green when
-running, amber while **STARTING / STOPPING** — with a progress bar during those
-transitions, driven by the server actually answering (not a fixed delay). It's
-the same `doctor.py` logic behind a PySide6 + qt-material UI, so it reflects any
+`https://mmg-demo.local:8443` address, a **scan-to-open QR code**, and a **Copy**
+button, with **Start / Stop / Restart / Reset ports** buttons, a **Run doctor**
+button (prints the full diagnostic report into the log pane), a server-log pane,
+and a toggle for auto-refresh. The **Access** tab adds larger QR codes — one to
+open the demo and one for the **`/trust`** page (with **Open /trust** / **Copy**
+buttons) to onboard a new tablet's cert. A **Name** diagnostics row verifies that
+`mmg-demo.local` actually resolves on the network (so you know before a visitor
+does whether to fall back to the IP). The status icon and chip track state live —
+green when running, amber while **STARTING / STOPPING** — with a progress bar
+during those transitions, driven by the server actually answering (not a fixed
+delay). It's the same `doctor.py` logic behind a PySide6 + qt-material UI, so it
+reflects any
 server — even one you started from a terminal. Run it in the `demo` env so it
 launches the server with the right interpreter.
 

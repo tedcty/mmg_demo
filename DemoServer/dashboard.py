@@ -14,7 +14,9 @@ custom stylesheet layered on top. Run it in the `demo` conda env so it can
 launch the server with the right interpreter.
 """
 
+import io
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -102,6 +104,12 @@ QLabel#accessHint {{ color: rgba(255,255,255,0.55); font-size: 11px; font-weight
 QPushButton#accessCopy {{ background: rgba(255,255,255,0.14); color: white; border: none;
                           border-radius: 10px; padding: 10px 18px; font-weight: 700; }}
 QPushButton#accessCopy:hover {{ background: rgba(255,255,255,0.24); }}
+QLabel#qrTile {{ background: #ffffff; border-radius: 8px; }}
+
+/* QR / trust panels on the Access page */
+QLabel#qrCard {{ background: #ffffff; border: 1px solid {BORDER}; border-radius: 12px; }}
+QLabel#qrCaption {{ color: {INK}; font-size: 13px; font-weight: 800; }}
+QLabel#qrSub {{ color: {GREY}; font-size: 11px; font-weight: 600; }}
 """
 
 
@@ -161,6 +169,22 @@ def _pixmap(kind, color, size=40, bg=None):
 
 def _dot(color):
     return f'<span style="color:{color};font-size:15px">●</span>'
+
+
+def _qr_pixmap(data, size, dark=INK):
+    """Render `data` as a QR-code QPixmap sized to `size` px, or None if the
+    `segno` package isn't available. Pure-Python, no network/Pillow needed."""
+    try:
+        import segno
+    except Exception:
+        return None
+    qr = segno.make(data, error="m")
+    buf = io.BytesIO()
+    qr.save(buf, kind="png", scale=10, border=2, dark=dark, light="#ffffff")
+    pm = QtGui.QPixmap()
+    pm.loadFromData(buf.getvalue(), "PNG")
+    # FastTransformation keeps the modules crisp (smooth-scaling blurs QR edges).
+    return pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
 
 
 # ---- GPU telemetry (best effort: pynvml → nvidia-smi → none) -------------
@@ -229,6 +253,7 @@ class StatusWorker(QtCore.QThread):
             "https_code": None, "http_code": None,
             "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
             "clients": None, "gpu": None, "gpu_used": None, "gpu_total": None,
+            "mdns_ok": None,
         }
 
         # Machine-wide telemetry — measured regardless of server state, since
@@ -264,6 +289,16 @@ class StatusWorker(QtCore.QThread):
                 s["clients"] = clients
             except Exception:
                 pass
+
+            # mDNS reachability: a TCP connect to the advertised name both
+            # resolves it (proving the name works from a separate process, a
+            # good proxy for the tablets) and confirms the port is open.
+            try:
+                with socket.create_connection(
+                        (doctor.MDNS_FQDN, doctor.HTTPS_PORT), timeout=1.5):
+                    s["mdns_ok"] = True
+            except Exception:
+                s["mdns_ok"] = False
         self.done.emit(s)
 
 
@@ -301,6 +336,8 @@ class Dashboard(QtWidgets.QWidget):
         self._stop_t0 = 0.0
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = self._url
+        self._tablet_ip_url = self._url
+        self._trust_url = f"http://localhost:{doctor.HTTP_PORT}/trust"
 
         self._build_ui()
         self._log_sig.connect(self._append_log)
@@ -408,6 +445,7 @@ class Dashboard(QtWidgets.QWidget):
         dl = QtWidgets.QVBoxLayout(diag); dl.setSpacing(10)
         self.ports_lbl = self._diag_row(dl, "Ports")
         self.health_lbl = self._diag_row(dl, "Health")
+        self.mdns_lbl = self._diag_row(dl, "Name")
         self.deps_lbl = self._diag_row(dl, "Prereqs")
         dl.addStretch(1)
         midrow.addWidget(diag, 2)
@@ -429,11 +467,20 @@ class Dashboard(QtWidgets.QWidget):
         self.access_hint = QtWidgets.QLabel(""); self.access_hint.setObjectName("accessHint")
         tv.addWidget(cap); tv.addWidget(self.tablet_big); tv.addWidget(self.access_hint)
 
+        # Scan-to-open QR (white tile so it stays scannable on the dark banner).
+        self.banner_qr = QtWidgets.QLabel(); self.banner_qr.setObjectName("qrTile")
+        self.banner_qr.setFixedSize(74, 74); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
+        scan = QtWidgets.QLabel("SCAN"); scan.setObjectName("accessCap")
+        scan.setAlignment(QtCore.Qt.AlignCenter)
+        qv = QtWidgets.QVBoxLayout(); qv.setSpacing(3)
+        qv.addWidget(self.banner_qr); qv.addWidget(scan)
+
         copy = QtWidgets.QPushButton("Copy"); copy.setObjectName("accessCopy")
         copy.clicked.connect(self._copy_url)
 
         h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addSpacing(4)
         h.addLayout(tv); h.addStretch(1)
+        h.addLayout(qv); h.addSpacing(8)
         h.addWidget(copy, 0, QtCore.Qt.AlignVCenter)
         return banner
 
@@ -441,6 +488,31 @@ class Dashboard(QtWidgets.QWidget):
         card, val, _ic = self._stat_card(icon, caption, color)
         row.addWidget(card)
         return card, val
+
+    def _qr_card(self, caption, sub):
+        """A white card with a title, a QR placeholder and a sub-caption."""
+        card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
+        v = QtWidgets.QVBoxLayout(card); v.setContentsMargins(16, 14, 16, 14); v.setSpacing(8)
+        cap = QtWidgets.QLabel(caption); cap.setObjectName("qrCaption")
+        qr = QtWidgets.QLabel(); qr.setObjectName("qrCard")
+        qr.setFixedSize(196, 196); qr.setAlignment(QtCore.Qt.AlignCenter)
+        sub_lbl = QtWidgets.QLabel(sub); sub_lbl.setObjectName("qrSub"); sub_lbl.setWordWrap(True)
+        sub_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        v.addWidget(cap); v.addWidget(qr, 0, QtCore.Qt.AlignHCenter); v.addWidget(sub_lbl)
+        return card, qr, sub_lbl
+
+    def _set_qr(self, label, data):
+        """Render `data` into `label` as a QR, caching so we don't regenerate
+        the (identical) pixmap on every refresh."""
+        if getattr(label, "_qr_data", None) == data:
+            return
+        pm = _qr_pixmap(data, min(label.width(), label.height()) - 12)
+        if pm is not None:
+            label.setPixmap(pm)
+            label._qr_data = data
+        else:                       # segno missing — show a hint once
+            label.setText("QR needs\n‘segno’")
+            label.setWordWrap(True)
 
     # ---- demos card ------------------------------------------------------
     CHIP = {  # status -> (label, background, text colour)
@@ -512,6 +584,28 @@ class Dashboard(QtWidgets.QWidget):
         row.addWidget(self.open_btn); row.addWidget(self.copy_btn); row.addStretch(1)
         al.addLayout(row)
         v.addWidget(acc)
+
+        # Scan-to-open + tablet onboarding QRs.
+        scanbox = QtWidgets.QGroupBox("Scan to open"); _shadow(scanbox)
+        sl = QtWidgets.QHBoxLayout(scanbox); sl.setSpacing(16)
+
+        demo_card, self.qr_demo, self.qr_demo_sub = self._qr_card(
+            "Open the demo", "Point a tablet camera here to open the demo.")
+        sl.addWidget(demo_card)
+
+        trust_card, self.qr_trust, self.qr_trust_sub = self._qr_card(
+            "Trust a new tablet",
+            "Do this once per tablet so HTTPS shows no warning (needed for the "
+            "EMG mic).")
+        tb = QtWidgets.QHBoxLayout()
+        self.trust_open_btn = QtWidgets.QPushButton("Open /trust"); self.trust_open_btn.setObjectName("primary")
+        self.trust_open_btn.clicked.connect(self._open_trust)
+        self.trust_copy_btn = QtWidgets.QPushButton("Copy /trust URL")
+        self.trust_copy_btn.clicked.connect(self._copy_trust)
+        tb.addWidget(self.trust_open_btn); tb.addWidget(self.trust_copy_btn); tb.addStretch(1)
+        trust_card.layout().addLayout(tb)
+        sl.addWidget(trust_card)
+        v.addWidget(scanbox)
 
         help_box = QtWidgets.QGroupBox("Protocol cheat-sheet"); _shadow(help_box)
         hl = QtWidgets.QVBoxLayout(help_box)
@@ -651,6 +745,14 @@ class Dashboard(QtWidgets.QWidget):
             self.ports_lbl.setText(f'<span style="color:{GREY}">8443 / 8000 free</span>')
             self.health_lbl.setText(f'<span style="color:{GREY}">—</span>')
 
+        if not running:
+            self.mdns_lbl.setText(f'<span style="color:{GREY}">—</span>')
+        elif s.get("mdns_ok"):
+            self.mdns_lbl.setText(f"{_dot(GREEN)} mmg-demo.local resolves")
+        else:
+            self.mdns_lbl.setText(
+                f"{_dot(AMBER)} mmg-demo.local not resolving — tablets use the IP")
+
         self.deps_lbl.setText(
             f"{_dot(GREEN if s['dist'] else RED)} dist &nbsp; "
             f"{_dot(GREEN if s['model'] else RED)} model &nbsp; "
@@ -670,6 +772,18 @@ class Dashboard(QtWidgets.QWidget):
             f"Tablets &nbsp;&nbsp;&nbsp;&nbsp;<b>{self._tablet_url}</b> "
             f"&nbsp;(or <b>{self._tablet_ip_url}</b> — by IP; "
             f"http://{ip}:{doctor.HTTP_PORT} redirects)")
+
+        # QR codes encode the IP-based URLs — most reliable across tablets
+        # (incl. Android, which may not resolve .local). Updated only when the
+        # underlying URL changes (see _set_qr caching).
+        self._trust_url = f"http://{ip}:{doctor.HTTP_PORT}/trust"
+        self._set_qr(self.banner_qr, self._tablet_ip_url)
+        self._set_qr(self.qr_demo, self._tablet_ip_url)
+        self._set_qr(self.qr_trust, self._trust_url)
+        self.qr_demo_sub.setText(
+            f"Point a tablet camera here to open the demo.\n{self._tablet_ip_url}")
+        self.qr_trust_sub.setText(
+            f"Install the cert once per tablet (needed for the EMG mic).\n{self._trust_url}")
 
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
@@ -846,6 +960,13 @@ class Dashboard(QtWidgets.QWidget):
     def _copy_url(self):
         QtWidgets.QApplication.clipboard().setText(self._tablet_url)
         self._append_log("[dashboard] tablet URL copied to clipboard")
+
+    def _open_trust(self):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._trust_url))
+
+    def _copy_trust(self):
+        QtWidgets.QApplication.clipboard().setText(self._trust_url)
+        self._append_log("[dashboard] /trust URL copied to clipboard")
 
     def closeEvent(self, e):
         if self.proc and self.proc.poll() is None:
