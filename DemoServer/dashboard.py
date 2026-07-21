@@ -299,7 +299,8 @@ class StatusWorker(QtCore.QThread):
 
     def run(self):
         ports = [doctor.HTTPS_PORT, doctor.HTTP_PORT]
-        listeners = doctor.find_listeners(ports)
+        # Only adopt our own server.py — not whatever else may hold the port.
+        listeners = doctor.find_server_listeners(ports)
         pids = sorted({pid for hs in listeners.values() for pid, _, _ in hs})
         s = {
             "running": bool(pids), "pids": pids,
@@ -1250,7 +1251,12 @@ class Dashboard(QtWidgets.QWidget):
     # ---- controls --------------------------------------------------------
     def start_server(self):
         if doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
-            self._append_log("[dashboard] already running — skipping start")
+            # Port is busy — but is it *our* server, or something else squatting?
+            if doctor.find_server_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
+                self._append_log("[dashboard] already running — skipping start")
+            else:
+                self._append_log("[dashboard] port 8443 is held by another process "
+                                 "(not the MMG server) — use Reset ports to free it")
             self.refresh(); return
         self._append_log("[dashboard] starting server…")
         self.alert.setVisible(False)          # clear any prior crash notice
@@ -1309,10 +1315,13 @@ class Dashboard(QtWidgets.QWidget):
                 return
         self._end_busy()
 
-    def _kill_listeners(self):
+    def _kill_listeners(self, only_ours=True):
+        # only_ours=True (Stop): touch just our own server.py. False (Reset ports):
+        # free the ports outright, whatever process is squatting on them.
         if self.proc is not None:
             self.proc._intentional = True     # its exit is deliberate, not a crash
-        listeners = doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT])
+        find = doctor.find_server_listeners if only_ours else doctor.find_listeners
+        listeners = find([doctor.HTTPS_PORT, doctor.HTTP_PORT])
         pids = {pid for hs in listeners.values() for pid, _, _ in hs}
         for pid in sorted(pids):
             ok = doctor.kill_pid(pid)
@@ -1340,7 +1349,8 @@ class Dashboard(QtWidgets.QWidget):
     def restart_server(self):
         self._crash_count = 0                 # manual action = fresh slate
         running = bool(self.proc and self.proc.poll() is None) or \
-            bool(doctor.find_listeners([doctor.HTTPS_PORT, doctor.HTTP_PORT]))
+            bool(any(doctor.find_server_listeners(
+                [doctor.HTTPS_PORT, doctor.HTTP_PORT]).values()))
         if not running:
             self.start_server(); return
         self._append_log("[dashboard] restarting server…")
@@ -1353,11 +1363,11 @@ class Dashboard(QtWidgets.QWidget):
         # silent=True is the internal path (no listeners tracked); the button
         # path shows the busy indicator and waits for the ports to go free.
         if silent:
-            self._kill_listeners()
+            self._kill_listeners(only_ours=False)
             QtCore.QTimer.singleShot(800, self.refresh)
             return
         self._append_log("[dashboard] freeing ports 8443 + 8000…")
-        self._kill_listeners()
+        self._kill_listeners(only_ours=False)
         self._begin_teardown("Resetting ports…",
                              "[dashboard] ports freed",
                              "[dashboard] some ports still busy — check console")

@@ -216,6 +216,23 @@ def _listeners_os(ports):
 def find_listeners(ports):
     return _listeners_psutil(ports) or _listeners_os(ports)
 
+def is_demo_server(cmdline):
+    """True if a listener's `cmdline` looks like our own server.py, rather than
+    some unrelated process that merely grabbed port 8443/8000. Unknown/placeholder
+    cmdlines (the OS-tool fallback yields "(ss)"/"(lsof)"/"?" instead of a real
+    command line) are treated as ours, so we never hide a server we simply can't
+    introspect."""
+    if not cmdline or cmdline == "?" or cmdline.startswith("("):
+        return True
+    return "server.py" in cmdline.replace("\\", "/").lower()
+
+def find_server_listeners(ports):
+    """`find_listeners` filtered to just the MMG demo server — drops PIDs whose
+    cmdline shows they're a different service holding the port."""
+    listeners = find_listeners(ports)
+    return {p: [hit for hit in hits if is_demo_server(hit[2])]
+            for p, hits in listeners.items()}
+
 def kill_pid(pid):
     try:
         import psutil
