@@ -59,6 +59,14 @@
             border-radius: var(--md-shape-xl);
         }
 
+        /* Cross-fading hero figures (stacked; the active one fades in) */
+        .hero-fig {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: cover; object-position: 50% 0%;
+            opacity: 0; transition: opacity 1s ease;
+        }
+        .hero-fig.is-active { opacity: 1; }
+
         @keyframes progress-loading { 0% { width: 0%; } 50% { width: 70%; } 100% { width: 100%; } }
         .animate-progress { animation: progress-loading 2s ease-in-out infinite; }
 
@@ -151,11 +159,12 @@
                             Select a demo below to see how we model and analyse the musculoskeletal system.
                         </p>
                     </div>
-                    <!-- Anatomy figures (cropped to head–torso) -->
-                    <div class="absolute right-4 xl:right-10 bottom-0 w-96 xl:w-[32rem] pointer-events-none select-none hidden lg:block"
+                    <!-- Hero figures — cross-fade through a few outreach images -->
+                    <div class="hero-figs absolute right-4 xl:right-10 bottom-0 w-96 xl:w-[32rem] pointer-events-none select-none hidden lg:block"
                          style="aspect-ratio: 3 / 2; overflow: hidden;">
-                        <img src="/posters/resources/talking.png" alt="Musculoskeletal anatomy figures"
-                             class="w-full h-full" style="object-fit: cover; object-position: 50% 0%;" />
+                        <img v-for="(img, i) in heroImages" :key="img" :src="img"
+                             alt="Musculoskeletal outreach figures" aria-hidden="true"
+                             class="hero-fig" :class="{ 'is-active': i === heroIndex }" />
                     </div>
                 </div>
 
@@ -415,6 +424,17 @@
                 const infoApp = ref(null);
                 const categories = ['All', 'Modelling', 'Biofeedback', 'Imaging', 'Clinical', 'Motion Capture'];
 
+                // Hero figures cross-fade through these every few seconds.
+                const heroImages = [
+                    '/posters/resources/talking.png',
+                    '/posters/resources/ultrasound_cut.png',
+                    '/posters/resources/video_game_cut.png',
+                ];
+                const heroIndex = ref(0);
+                setInterval(() => {
+                    heroIndex.value = (heroIndex.value + 1) % heroImages.length;
+                }, 6000);
+
                 const filteredApps = computed(() => {
                     return outreachDemos.filter(app => {
                         const matchesCat = selectedCategory.value === 'All' || app.category === selectedCategory.value;
@@ -450,6 +470,7 @@
 
                 return {
                     searchQuery, selectedCategory, activeApp, infoApp, categories,
+                    heroImages, heroIndex,
                     filteredApps, clearFilters, launchApp, showInfo, closeInfo, launchFromInfo,
                 };
             }
