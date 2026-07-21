@@ -727,14 +727,16 @@ class Dashboard(QtWidgets.QWidget):
         row.addWidget(card, 1)                # equal stretch → equal-width cards
         return card, val, sub
 
-    def _qr_card(self, caption, sub):
-        """A compact white card with a title, a QR placeholder and a caption."""
+    def _qr_card(self, caption, sub, qr_px=196):
+        """A compact white card with a title, a QR placeholder and a caption.
+        `qr_px` sizes the code — shrink it when several cards share a row on a
+        small portable screen."""
         card = QtWidgets.QFrame(); card.setObjectName("stat"); _shadow(card)
-        card.setFixedWidth(228)            # hug the 196px QR; text wraps within
+        card.setFixedWidth(qr_px + 32)     # hug the QR; text wraps within
         v = QtWidgets.QVBoxLayout(card); v.setContentsMargins(16, 14, 16, 14); v.setSpacing(8)
         cap = QtWidgets.QLabel(caption); cap.setObjectName("qrCaption")
         qr = QtWidgets.QLabel(); qr.setObjectName("qrCard")
-        qr.setFixedSize(196, 196); qr.setAlignment(QtCore.Qt.AlignCenter)
+        qr.setFixedSize(qr_px, qr_px); qr.setAlignment(QtCore.Qt.AlignCenter)
         self._make_qr_clickable(qr)
         sub_lbl = QtWidgets.QLabel(sub); sub_lbl.setObjectName("qrSub"); sub_lbl.setWordWrap(True)
         sub_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
@@ -873,15 +875,27 @@ class Dashboard(QtWidgets.QWidget):
 
         scanbox = QtWidgets.QGroupBox("Scan to open"); _shadow(scanbox)
         sl = QtWidgets.QHBoxLayout(scanbox); sl.setSpacing(16)
+        # Three codes share this row, so use a slightly smaller QR to stay on a 13"
+        # screen. Two demo codes: the named mmg-demo.local (iPhone/iPad resolve it
+        # via Bonjour) and a direct-IP fallback for tablets — mainly Android — that
+        # can't resolve .local names.
         demo_card, self.qr_demo, self.qr_demo_sub = self._qr_card(
-            "Open the demo", "Point a tablet camera here to open the demo.")
+            "Open the demo (name)", "Point a tablet camera here to open the demo.",
+            qr_px=158)
         demo_card.layout().addStretch(1)     # top-align content so QRs line up
         sl.addWidget(demo_card)
+
+        demo_ip_card, self.qr_demo_ip, self.qr_demo_ip_sub = self._qr_card(
+            "Android fallback (IP)",
+            "Use this if the tablet can't open the name above — mainly Android.",
+            qr_px=158)
+        demo_ip_card.layout().addStretch(1)
+        sl.addWidget(demo_ip_card)
 
         trust_card, self.qr_trust, self.qr_trust_sub = self._qr_card(
             "Trust a new tablet",
             "Do this once per tablet so HTTPS shows no warning (needed for the "
-            "EMG mic).")
+            "EMG mic).", qr_px=158)
         tb = QtWidgets.QVBoxLayout(); tb.setSpacing(8)   # stack buttons in the narrow card
         self.trust_open_btn = QtWidgets.QPushButton("Open /trust"); self.trust_open_btn.setObjectName("primary")
         self.trust_open_btn.clicked.connect(self._open_trust)
@@ -1187,15 +1201,20 @@ class Dashboard(QtWidgets.QWidget):
             f"&nbsp;(or <b>{self._tablet_ip_url}</b> — by IP; "
             f"http://{ip}:{doctor.HTTP_PORT} redirects)")
 
-        # QR codes encode the IP-based URLs — most reliable across tablets
-        # (incl. Android, which may not resolve .local). Updated only when the
-        # underlying URL changes (see _set_qr caching).
+        # Two demo QRs: the named .local URL (iPhone/iPad resolve it via Bonjour)
+        # and a direct-IP fallback for tablets — mainly Android — that can't
+        # resolve .local. The small banner QR stays on the IP, since it's the one
+        # code that works on any device. Updated only when the underlying URL
+        # changes (see _set_qr caching).
         self._trust_url = f"http://{ip}:{doctor.HTTP_PORT}/trust"
         self._set_qr(self.banner_qr, self._tablet_ip_url)
-        self._set_qr(self.qr_demo, self._tablet_ip_url)
+        self._set_qr(self.qr_demo, self._tablet_url)
+        self._set_qr(self.qr_demo_ip, self._tablet_ip_url)
         self._set_qr(self.qr_trust, self._trust_url)
         self.qr_demo_sub.setText(
-            f"Point a tablet camera here to open the demo.\n{self._tablet_ip_url}")
+            f"Point a tablet camera here to open the demo.\n{self._tablet_url}")
+        self.qr_demo_ip_sub.setText(
+            f"Use this if the name won't open — mainly Android.\n{self._tablet_ip_url}")
         self.qr_trust_sub.setText(
             f"Install the cert once per tablet (needed for the EMG mic).\n{self._trust_url}")
 
