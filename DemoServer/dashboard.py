@@ -1471,6 +1471,7 @@ class Dashboard(QtWidgets.QWidget):
     def _copy_url(self):
         QtWidgets.QApplication.clipboard().setText(self._tablet_url)
         self._append_log("[dashboard] tablet URL copied to clipboard")
+        self._flash_copied(self.sender())
 
     def _open_trust(self):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._trust_url))
@@ -1478,6 +1479,16 @@ class Dashboard(QtWidgets.QWidget):
     def _copy_trust(self):
         QtWidgets.QApplication.clipboard().setText(self._trust_url)
         self._append_log("[dashboard] /trust URL copied to clipboard")
+        self._flash_copied(self.sender())
+
+    def _flash_copied(self, btn):
+        """Briefly change a Copy button to 'Copied ✓' so the copy is obvious."""
+        if not isinstance(btn, QtWidgets.QPushButton):
+            return
+        if getattr(btn, "_orig_text", None) is None:
+            btn._orig_text = btn.text()
+        btn.setText("Copied ✓")
+        QtCore.QTimer.singleShot(1500, lambda: btn.setText(btn._orig_text))
 
     def closeEvent(self, e):
         if self.proc and self.proc.poll() is None:
