@@ -715,6 +715,9 @@ class Dashboard(QtWidgets.QWidget):
 
         copy = QtWidgets.QPushButton("Copy"); copy.setObjectName("accessCopy")
         copy.clicked.connect(self._copy_url)
+        # Reserve width for the wider "Copied ✓" flash so the button never resizes.
+        copy.ensurePolished()
+        copy.setFixedWidth(copy.fontMetrics().horizontalAdvance("Copied ✓") + 42)
 
         h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addSpacing(4)
         h.addLayout(tv); h.addStretch(1)
