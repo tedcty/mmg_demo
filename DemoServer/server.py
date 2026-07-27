@@ -9,6 +9,7 @@ Routes:
   GET  /                         → demo.html
   GET  /resources/<path>         → landing-page assets (ABI logo, etc.)
   GET  /posters/<path>           → info/poster PDFs (info-button targets)
+  GET  /doc-resources/<path>     → shared outreach figures (Documents/resources)
   GET  /trust                    → tablet cert-trust instructions (also on HTTP)
   GET  /rootCA.crt               → the CA to install on a tablet (also on HTTP)
   GET  /ssm/                     → SSM Demo (built Vite dist)
@@ -61,6 +62,7 @@ EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
 SEG_WEB_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter', 'web'))
 ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
 POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
+DOC_RES_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'resources'))  # shared outreach figures
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
 RES_DIR     = os.path.join(SSM_DIR, 'Resources')
 GUI_DIR     = os.path.join(SSM_DIR, 'TauriGUI')
@@ -184,6 +186,12 @@ def root_ca():
 def posters(path):
     """Info/poster PDFs opened from the landing-page info buttons."""
     return send_from_directory(POSTERS_DIR, path)
+
+
+@app.route('/doc-resources/<path:path>')
+def doc_resources(path):
+    """Shared outreach figures (hero images, etc.) under Documents/resources."""
+    return send_from_directory(DOC_RES_DIR, path)
 
 
 @app.route('/bones.json')
