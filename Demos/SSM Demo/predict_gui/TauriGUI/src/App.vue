@@ -8,6 +8,7 @@ import * as THREE from 'three';
 const sessionId = (crypto?.randomUUID?.())
   || `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js';
 
 // Paths
 const anthro_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/anthro_data.csv");
@@ -49,6 +50,9 @@ const PIPELINE_STAGES: { match: string; pct: number }[] = [
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
 const isKinematicVisible = ref(false);
+// Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
+// full-screen; toggled open with the hamburger button.
+const isPanelOpen = ref(false);
 // Dev mode — gates developer-only tools (e.g. Run FABRIK). Toggle with
 // Ctrl+Shift+D; persisted so it survives reloads. Hidden from demo users.
 const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
@@ -146,6 +150,7 @@ const initialPositions = {
 };
 
 const viewerContainer = ref<HTMLElement | null>(null);
+const gizmoCanvas = ref<HTMLCanvasElement | null>(null);
 let globalScene: THREE.Scene | null = null;
 let globalCamera: THREE.PerspectiveCamera | null = null;
 let globalControls: OrbitControls | null = null;
@@ -157,6 +162,8 @@ let isFirstLoad = true;
 const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
+// Viewport model picker — the label doubles as a dropdown to switch models.
+const isModelListOpen = ref(false);
 const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
 const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
@@ -735,6 +742,22 @@ onMounted(async () => {
     globalControls = controls;
     loadBones();
 
+    // Blender-style orientation gizmo, drawn in its own 128×128 canvas above the
+    // toolbar. Its centre shares the OrbitControls target so axis snaps orbit the
+    // model. Clicking an axis animates the main camera to that view.
+    let viewHelper: ViewHelper | null = null;
+    let gizmoRenderer: THREE.WebGLRenderer | null = null;
+    if (gizmoCanvas.value) {
+      gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas.value, alpha: true, antialias: true });
+      gizmoRenderer.setPixelRatio(window.devicePixelRatio);
+      gizmoRenderer.setSize(128, 128);
+      viewHelper = new ViewHelper(camera, gizmoCanvas.value);
+      viewHelper.center = controls.target; // share reference so it tracks re-centring
+      gizmoCanvas.value.addEventListener('click', (e) => {
+        if (viewHelper) viewHelper.handleClick(e);
+      });
+    }
+
     const updateLabels = (side: 'right' | 'left', joint: 'sc' | 'ac' | 'gh') => {
         const markerC = jointMarkersC[side][joint];
         const label = jointLabels[side][joint];
@@ -962,12 +985,17 @@ onMounted(async () => {
       }
     };
 
+    const clock = new THREE.Clock();
     const animate = () => {
       requestAnimationFrame(animate);
+      const delta = clock.getDelta();
       updateKinematicChain('right');
       updateKinematicChain('left');
+      if (viewHelper && viewHelper.animating) viewHelper.update(delta);
       controls.update();
       renderer.render(scene, camera);
+      // Gizmo overlays its own canvas; skip while hidden behind the panel.
+      if (viewHelper && gizmoRenderer && !isPanelOpen.value) viewHelper.render(gizmoRenderer);
     };
     animate();
 
@@ -1115,6 +1143,14 @@ function toggleComparison() {
   // render still picks meanModelData vs predictedModelData via isViewingOriginal.
   loadBones(predictedModelData);
 }
+
+// Pick a model from the viewport dropdown. `viewOriginal` true = mean model,
+// false = predicted mesh. Re-renders only when the choice actually changes.
+function selectModel(viewOriginal: boolean) {
+  isModelListOpen.value = false;
+  if (isViewingOriginal.value === viewOriginal) return;
+  toggleComparison();
+}
 </script>
 
 <template>
@@ -1124,43 +1160,78 @@ function toggleComparison() {
            <div class="floating-frame" ref="viewerContainer">
              <!-- Three.js Canvas -->
            </div>
-           
-           <!-- Viewport Overlay Label -->
-           <div class="viewport-label animate-in">
-              <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
-              <span class="label-text">
-                {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? 'Predicted Patient-Specific Mesh' : 'Initial Model') }}
-              </span>
+
+           <!-- Floating toolbar — opens the panel straight to a given view. -->
+           <div v-show="!isPanelOpen" class="viewport-tools">
+              <!-- Blender-style axis gizmo — click an axis to snap the view. -->
+              <canvas ref="gizmoCanvas" class="view-gizmo" title="Click an axis to orient the view"></canvas>
+              <button @click="isPanelOpen = true; isKinematicVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+              </button>
+              <button @click="isPanelOpen = true; isKinematicVisible = true; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
+              </button>
+              <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              </button>
            </div>
+
+           <!-- Viewport Overlay Label — doubles as a model picker dropdown -->
+           <div class="model-selector animate-in">
+              <button class="viewport-label" :class="{ open: isModelListOpen }" @click="isModelListOpen = !isModelListOpen" title="Switch model">
+                 <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
+                 <span class="label-text">
+                   {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? 'Predicted Patient-Specific Mesh' : 'Initial Model') }}
+                 </span>
+                 <svg class="chevron" :class="{ flipped: isModelListOpen }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div v-if="isModelListOpen" class="model-list">
+                 <button class="model-option" :class="{ active: isViewingOriginal }" @click="selectModel(true)">
+                    <div class="status-indicator"></div>
+                    <span>Mean Anatomical Model</span>
+                 </button>
+                 <button v-if="hasPrediction" class="model-option" :class="{ active: !isViewingOriginal }" @click="selectModel(false)">
+                    <div class="status-indicator active"></div>
+                    <span>Predicted Patient-Specific Mesh</span>
+                 </button>
+                 <div v-else class="model-empty">Run a prediction to add a patient-specific mesh.</div>
+              </div>
+           </div>
+           <!-- Click-away catcher for the model dropdown -->
+           <div v-if="isModelListOpen" class="dropdown-backdrop" @pointerdown="isModelListOpen = false"></div>
 
            <div class="frame-reflection"></div>
         </div>
      </div>
 
-    <div class="right-pane">
+    <!-- Tap anywhere on the viewport (outside the panel) to dismiss the drawer. -->
+    <div v-if="isPanelOpen" class="panel-backdrop" @pointerdown="isPanelOpen = false"></div>
+
+    <div class="right-pane" :class="{ open: isPanelOpen }">
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
               <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : 'Shoulder Predictor') }}</h2>
               <div class="header-actions">
-                <button @click="toggleTheme" class="icon-btn" :title="isLightMode ? 'Switch to dark mode' : 'Switch to light mode'">
-                    <svg v-if="isLightMode" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-                    <svg v-else xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-                </button>
                 <button v-if="hasPrediction" @click="toggleComparison" class="comparison-btn header-compare" :class="{ original: isViewingOriginal }">
                    <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
                    <span v-else>📏 View Mean Model</span>
                 </button>
-                <button @click="isKinematicVisible = !isKinematicVisible; isSettingsVisible = false" class="icon-btn" :class="{ active: isKinematicVisible }" title="Kinematic Alignment">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
-                </button>
-                <button @click="isSettingsVisible = !isSettingsVisible; isKinematicVisible = false" class="icon-btn" :class="{ active: isSettingsVisible }" title="Configurations">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <button @click="isPanelOpen = false" class="icon-btn" title="Close panel" aria-label="Close panel">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
             </div>
 
             <div v-if="isSettingsVisible" class="settings-view animate-in">
+              <div class="card transparent-card">
+                <h3 style="color: #f59e0b">🎨 Appearance</h3>
+                <p class="hint">Choose a colour theme for the interface.</p>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" :checked="!isLightMode" @change="toggleTheme" id="darkModeToggle" />
+                  <label for="darkModeToggle">Dark Mode</label>
+                </div>
+              </div>
               <div class="card transparent-card">
                 <h3 style="color: #3d49d8">📂 Backend Path Configuration</h3>
                 <p class="hint">Configure the internal directories for anatomical processing.</p>
@@ -1409,7 +1480,7 @@ html, body, #app {
   font-family: 'Inter', system-ui, sans-serif;
 }
 .left-pane {
-  flex: 1.5; /* Give visual priority to the model */
+  flex: 1; /* Full-screen 3D viewport */
   background: transparent;
   overflow: hidden;
   position: relative;
@@ -1419,11 +1490,16 @@ html, body, #app {
 }
 .viewer-wrapper {
   position: relative;
-  width: 90%;
-  height: 85%;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+/* Full-bleed viewport: drop the inset/rounding so the model fills the window. */
+.left-pane .floating-frame {
+  border-radius: 0;
+  border: none;
 }
 .floating-frame {
   width: 100%;
@@ -1449,19 +1525,46 @@ html, body, #app {
   pointer-events: none;
 }
 .right-pane {
-  flex: 1;
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(460px, 92vw);
   padding: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   background: transparent;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: stretch;
+  z-index: 50;
+  transform: translateX(100%);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.right-pane.open {
+  transform: translateX(0);
+}
+/* Invisible scrim over the viewport while the drawer is open; a press dismisses
+   it. Sits above the viewport toolbar (z 20) but below the drawer (z 50), so the
+   model stays visible and taps on the panel itself don't close it. */
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+  cursor: pointer;
+}
+/* In drawer mode the panel fills its full height, edge to edge. */
+.right-pane .viewer-wrapper {
+  width: 100%;
+  height: 100%;
 }
 .right-content {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: 0;
+  box-shadow: -20px 0 60px -15px rgba(0, 0, 0, 0.7);
 }
 .pane-header {
   padding: 15px 25px;
@@ -1470,13 +1573,25 @@ html, body, #app {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 14px;
+  gap: 10px 14px;
+  /* In the narrow drawer, let the actions drop to a second row under the title
+     rather than clip — but keep them together on one line (see header-actions). */
+  flex-wrap: wrap;
+}
+.pane-header h2 {
+  min-width: 0;
 }
 .header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: nowrap; /* keep theme / compare / close on a single row */
+  justify-content: flex-end;
+  margin-left: auto; /* pin to the right when it wraps below the title */
+}
+.header-compare {
+  white-space: nowrap;
 }
 .main-view, .settings-view {
   padding: 15px 25px;
@@ -1565,6 +1680,42 @@ label {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+/* Floating toolbar — stacks over the full-screen viewport to open the panel. */
+.viewport-tools {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end; /* keep icon buttons at 46px, right-aligned under the gizmo */
+  gap: 12px;
+}
+.view-gizmo {
+  width: 128px;
+  height: 128px;
+  cursor: pointer;
+}
+.tool-btn {
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(26, 26, 46, 0.55);
+  color: #e0e0e0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  transition: all 0.2s;
+}
+.tool-btn:hover {
+  background: rgba(62, 62, 102, 0.7);
+  color: #fff;
+  transform: translateY(-1px);
 }
 .icon-btn:hover {
   background: #3e3e66;
@@ -1718,10 +1869,17 @@ input[type="range"] {
   box-shadow: 0 12px 24px rgba(59, 130, 246, 0.3);
 }
 
-.viewport-label {
+.model-selector {
   position: absolute;
   top: 30px;
   left: 30px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.viewport-label {
   padding: 10px 20px;
   background: rgba(15, 23, 42, 0.6);
   backdrop-filter: blur(12px);
@@ -1730,9 +1888,73 @@ input[type="range"] {
   display: flex;
   align-items: center;
   gap: 12px;
-  z-index: 10;
-  pointer-events: none;
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.2s, border-color 0.2s;
+}
+.viewport-label:hover,
+.viewport-label.open {
+  background: rgba(30, 41, 59, 0.75);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.chevron {
+  color: #94a3b8;
+  transition: transform 0.25s ease;
+}
+.chevron.flipped {
+  transform: rotate(180deg);
+}
+/* Transparent frame listing the available models. */
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  min-width: 260px;
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+  animation: fadeIn 0.2s ease-out;
+}
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.03rem;
+  color: #cbd5e1;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.model-option:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+.model-option.active {
+  background: rgba(31, 43, 212, 0.25);
+  color: #f8fafc;
+}
+.model-empty {
+  padding: 8px 14px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+.dropdown-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  background: transparent;
 }
 
 .label-text {
@@ -1842,6 +2064,15 @@ input[type="range"] {
   background: #d5dce8;
   color: #0f172a;
 }
+.light-mode .tool-btn {
+  background: rgba(255, 255, 255, 0.75);
+  color: #475569;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+.light-mode .tool-btn:hover {
+  background: #ffffff;
+  color: #0f172a;
+}
 .light-mode .secondary-btn {
   background: #e8ecf4;
   color: #1e293b;
@@ -1866,7 +2097,27 @@ input[type="range"] {
   border: 1px solid rgba(0, 0, 0, 0.08);
   box-shadow: 0 8px 32px rgba(30, 41, 59, 0.15);
 }
+.light-mode .viewport-label:hover,
+.light-mode .viewport-label.open {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(0, 0, 0, 0.15);
+}
 .light-mode .label-text { color: #0f172a; }
+.light-mode .model-list {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 32px rgba(30, 41, 59, 0.15), inset 0 1px 0 rgba(255,255,255,0.7);
+}
+.light-mode .model-option { color: #475569; }
+.light-mode .model-option:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #0f172a;
+}
+.light-mode .model-option.active {
+  background: rgba(31, 43, 212, 0.12);
+  color: #0f172a;
+}
+.light-mode .model-empty { color: #64748b; }
 
 /* ── Touch targets (tablet, landscape) ─────────────────────────────────────
    Enlarge the fiddly native controls so they're finger-friendly. */
