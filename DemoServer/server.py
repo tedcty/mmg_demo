@@ -102,6 +102,12 @@ SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
 SESSION_TTL  = 30 * 60  # 30 minutes
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
+# Shared EMG-game high-score leaderboard (persisted to a JSON file so it
+# survives restarts and is shared by every tablet hitting this server).
+EMG_SCORES_FILE = os.path.join(BASE_DIR, 'emg_scores.json')
+EMG_TOP_N       = 10
+_emg_lock       = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
@@ -245,6 +251,53 @@ def segment_app(path):
     if os.path.exists(target):
         return send_from_directory(SEG_WEB_DIR, path)
     return send_from_directory(SEG_WEB_DIR, 'index.html')
+
+
+# ---------------------------------------------------------------------------
+# EMG-game leaderboard  (shared high scores)
+# ---------------------------------------------------------------------------
+
+def _load_emg_scores():
+    """Read the score list from disk; tolerate a missing/corrupt file."""
+    try:
+        with open(EMG_SCORES_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+@app.route('/api/emg/scores', methods=['GET'])
+def emg_scores_get():
+    """Top scores, highest first."""
+    scores = sorted(_load_emg_scores(), key=lambda s: s.get('score', 0), reverse=True)
+    return jsonify(scores[:EMG_TOP_N])
+
+
+@app.route('/api/emg/scores', methods=['POST'])
+def emg_scores_post():
+    """Record a score. Returns the updated top list. Name is sanitised to a
+    short label; score is range-checked so a bad client can't poison the board."""
+    data = request.get_json(force=True, silent=True) or {}
+    name = re.sub(r'[^A-Za-z0-9 _\-]', '', str(data.get('name', ''))).strip()[:12] or 'Anon'
+    try:
+        score = int(data.get('score'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'invalid score'}), 400
+    if not (0 <= score <= 100000):
+        return jsonify({'error': 'score out of range'}), 400
+
+    with _emg_lock:
+        scores = _load_emg_scores()
+        scores.append({'name': name, 'score': score, 'ts': int(time.time())})
+        scores.sort(key=lambda s: s.get('score', 0), reverse=True)
+        scores = scores[:100]   # keep the file bounded
+        try:
+            with open(EMG_SCORES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(scores, f)
+        except OSError as e:
+            return jsonify({'error': f'could not save: {e}'}), 500
+    return jsonify(scores[:EMG_TOP_N])
 
 
 # ---------------------------------------------------------------------------

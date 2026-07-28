@@ -51,10 +51,6 @@
         background: #f1eff9; color: #1b1b1f; font-size: 14px;
         min-height: 44px; max-width: 320px; font-family: 'Inter', sans-serif;
     }
-    #score {
-        margin-left: auto; background: #f1eff9; padding: 8px 16px;
-        border-radius: 999px; font-size: 18px; font-weight: 700; color: var(--waitemata);
-    }
     #stage {
         position: relative; width: 100%; aspect-ratio: 1000 / 700;
         background: #000; border-radius: 16px; overflow: hidden;
@@ -66,6 +62,52 @@
     }
     .hint { font-size: 12px; color: #45464f; }
     a { color: var(--azure); }
+
+    /* Name-entry overlay (shown over the stage on a qualifying game over) */
+    .overlay-form {
+        position: absolute; inset: 0; z-index: 5;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(12,12,72,0.55);
+    }
+    .overlay-form[hidden] { display: none; }
+    .of-card {
+        background: #fff; border-radius: 16px; padding: 22px 26px; text-align: center;
+        max-width: 380px; width: 84%; box-shadow: 0 10px 40px rgba(0,0,0,.4);
+    }
+    .of-title { font-size: 22px; font-weight: 700; color: var(--waitemata); }
+    .of-score { margin: 6px 0 14px; color: #45464f; }
+    .of-card input {
+        width: 100%; padding: 12px 14px; font-size: 20px; text-align: center;
+        text-transform: uppercase; letter-spacing: 3px; border: 2px solid #c7c5d0;
+        border-radius: 10px; font-family: inherit;
+    }
+    .of-card input:focus { outline: none; border-color: var(--azure); }
+    .of-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .of-actions button { flex: 1; padding: 0 12px; }
+    .of-actions button.secondary { background: #e6e4ef; color: #1b1b1f; }
+
+    /* Info button + How-to-play modal */
+    .info-btn { background: #e6e4ef; color: #1b1b1f; margin-left: auto; }
+    .modal {
+        position: fixed; inset: 0; z-index: 20; padding: 16px;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(12,12,72,0.55);
+    }
+    .modal[hidden] { display: none; }
+    .modal-card {
+        position: relative; background: #fff; border-radius: 20px;
+        padding: 26px 28px; max-width: 460px; width: 100%;
+        box-shadow: 0 16px 50px rgba(0,0,0,.4);
+    }
+    .modal-card h2 { margin: 0 0 14px; color: var(--waitemata); font-size: 22px; }
+    .modal-close {
+        position: absolute; top: 12px; right: 12px; width: 36px; height: 36px;
+        min-height: 36px; padding: 0; border-radius: 50%;
+        background: #e6e4ef; color: #1b1b1f; font-size: 22px; line-height: 1;
+    }
+    .info-steps { margin: 0; padding-left: 22px; color: #1b1b1f; }
+    .info-steps li { margin-bottom: 10px; line-height: 1.4; }
+    .info-note { margin: 16px 0 0; font-size: 13px; color: #45464f; }
 </style>
 </head>
 <body>
@@ -78,14 +120,37 @@
         <button id="startBtn" disabled>Start the game</button>
         <button id="againBtn" disabled>Play again</button>
         <button id="quitBtn" disabled>Quit game</button>
-        <div id="score">Score: 0</div>
+        <button id="infoBtn" class="info-btn">ℹ️ How to play</button>
     </div>
-    <div id="stage"><canvas id="cv" width="1000" height="700"></canvas></div>
-    <div id="status">Press "Enable microphone" and allow audio access when prompted.</div>
-    <div class="hint">
-        Plug the SpikerBox into your device's audio input and select it above. The game reads the
-        live audio stream, band-passes it (20–300&nbsp;Hz), and turns your muscle activation into the
-        bird's height. Calibrate (relax, then contract) and catch the worms 🐛, avoid the cats 🐱.
+    <div id="stage">
+        <canvas id="cv" width="1000" height="700"></canvas>
+        <div id="nameEntry" class="overlay-form" hidden>
+            <div class="of-card">
+                <div class="of-title">New high score! 🎉</div>
+                <div class="of-score">Your score: <strong id="nameScore">0</strong></div>
+                <input id="nameInput" maxlength="12" placeholder="Your initials"
+                       autocomplete="off" autocapitalize="characters" spellcheck="false">
+                <div class="of-actions">
+                    <button id="skipScoreBtn" class="secondary">Skip</button>
+                    <button id="submitScoreBtn">Add score</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="status">Press "Enable microphone" to begin — tap “ℹ️ How to play” for a quick guide.</div>
+
+    <div id="infoModal" class="modal" hidden>
+        <div class="modal-card">
+            <button id="infoClose" class="modal-close" aria-label="Close">×</button>
+            <h2>How to play</h2>
+            <ol class="info-steps">
+                <li>Press <strong>Enable microphone</strong> and allow audio access when prompted.</li>
+                <li>Plug the SpikerBox into your device's audio input and <strong>select it</strong> from the dropdown.</li>
+                <li>Press <strong>Start the game</strong> to calibrate — <strong>relax</strong>, then <strong>contract</strong> your muscle when prompted.</li>
+                <li>Your muscle activation moves the bird up and down. Catch the worms 🐛, avoid the cats 🐱!</li>
+            </ol>
+            <p class="info-note">The game reads the live audio stream and band-passes it (20–300&nbsp;Hz) to turn your muscle activation into the bird's height.</p>
+        </div>
     </div>
 </div>
 
@@ -124,8 +189,67 @@ const deviceSel = document.getElementById('device');
 const startBtn = document.getElementById('startBtn');
 const againBtn = document.getElementById('againBtn');
 const quitBtn = document.getElementById('quitBtn');
-const scoreEl = document.getElementById('score');
 const statusEl = document.getElementById('status');
+const nameEntryEl = document.getElementById('nameEntry');
+const nameInputEl = document.getElementById('nameInput');
+const nameScoreEl = document.getElementById('nameScore');
+const submitScoreBtn = document.getElementById('submitScoreBtn');
+const skipScoreBtn = document.getElementById('skipScoreBtn');
+
+// ---- Leaderboard (shared high scores, stored on the DemoServer) ----
+const SCORES_API = '/api/emg/scores';
+const LB_TOP_N = 10;
+let leaderboard = [];
+let lastSubmittedTs = 0;   // highlights the row this player just added
+
+async function fetchScores() {
+    try {
+        const r = await fetch(SCORES_API);
+        if (r.ok) leaderboard = await r.json();
+    } catch (e) { /* server offline / standalone — keep what we have */ }
+    return leaderboard;   // the canvas render loop paints it
+}
+function qualifies(sc) {
+    if (sc <= 0) return false;
+    if (leaderboard.length < LB_TOP_N) return true;
+    return sc > leaderboard[leaderboard.length - 1].score;
+}
+async function onGameOver() {
+    await fetchScores();
+    if (qualifies(score)) {
+        nameScoreEl.textContent = score;
+        nameInputEl.value = '';
+        nameEntryEl.hidden = false;
+        setTimeout(() => nameInputEl.focus(), 60);
+    }
+}
+async function submitScore() {
+    const name = (nameInputEl.value || '').trim() || 'Anon';
+    submitScoreBtn.disabled = true;
+    try {
+        const r = await fetch(SCORES_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, score }),
+        });
+        if (r.ok) {
+            leaderboard = await r.json();
+            const mine = leaderboard.find(s => s.name === name && s.score === score);
+            lastSubmittedTs = mine ? mine.ts : 0;
+        }
+    } catch (e) { /* ignore — offline */ }
+    submitScoreBtn.disabled = false;
+    nameEntryEl.hidden = true;
+}
+submitScoreBtn.addEventListener('click', submitScore);
+skipScoreBtn.addEventListener('click', () => { nameEntryEl.hidden = true; });
+nameInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitScore(); });
+
+// ---- How-to-play info modal ----
+const infoModal = document.getElementById('infoModal');
+document.getElementById('infoBtn').addEventListener('click', () => { infoModal.hidden = false; });
+document.getElementById('infoClose').addEventListener('click', () => { infoModal.hidden = true; });
+infoModal.addEventListener('click', e => { if (e.target === infoModal) infoModal.hidden = true; });
 
 // ---- Images ----
 const imgs = {};
@@ -311,15 +435,17 @@ againBtn.addEventListener('click', () => startGame());
 quitBtn.addEventListener('click', () => {
     calibrateEmg = false; gameActive = false; calibrationActive = false;
     coin.active = penalty.active = false;
+    nameEntryEl.hidden = true;
     againBtn.disabled = true;
-    score = 0; scoreEl.textContent = 'Score: 0';
+    score = 0;
     statusEl.textContent = 'Stopped. Press "Start the game" to calibrate again.';
 });
 
 function startGame() {
     calibrateEmg = true;
     coin.active = penalty.active = false;
-    score = 0; scoreEl.textContent = 'Score: 0';
+    nameEntryEl.hidden = true;
+    score = 0;
     gameStart = now();
     gameActive = true;
 }
@@ -327,6 +453,7 @@ function startGame() {
 function endGame() {
     gameActive = false;
     coin.active = penalty.active = false;
+    onGameOver();   // record/offer to submit the score, refresh the leaderboard
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +517,7 @@ function update() {
             else {
                 coin.x = W - p * W;
                 if (Math.abs(coin.x - W / 2) < X_HIT && Math.abs(coin.y - birdY) < Y_HIT) {
-                    coin.active = false; score += 1; scoreEl.textContent = 'Score: ' + score;
+                    coin.active = false; score += 1;
                 }
             }
         }
@@ -400,7 +527,7 @@ function update() {
             else {
                 penalty.x = W - p * W;
                 if (Math.abs(penalty.x - W / 2) < X_HIT && Math.abs(penalty.y - birdY) < Y_HIT) {
-                    penalty.active = false; score -= 1; scoreEl.textContent = 'Score: ' + score;
+                    penalty.active = false; score -= 1;
                 }
             }
         }
@@ -444,6 +571,52 @@ function overlay(lines, sub) {
     ctx2d.restore();
 }
 
+// Arcade high-score table, drawn straight on the canvas.
+function drawLeaderboard(yTop) {
+    ctx2d.save();
+    ctx2d.textAlign = 'center';
+    ctx2d.fillStyle = '#ffd54a';
+    ctx2d.font = 'bold 32px Segoe UI, sans-serif';
+    ctx2d.fillText('🏆 HIGH SCORES', W / 2, yTop);
+    const rows = leaderboard.slice(0, LB_TOP_N);
+    if (!rows.length) {
+        ctx2d.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx2d.font = '22px Segoe UI, sans-serif';
+        ctx2d.fillText('No scores yet — be the first!', W / 2, yTop + 48);
+        ctx2d.restore();
+        return;
+    }
+    ctx2d.font = 'bold 26px "Courier New", monospace';
+    const rowH = 40, xL = W / 2 - 210, xR = W / 2 + 210;
+    rows.forEach((s, i) => {
+        const y = yTop + 48 + i * rowH;
+        ctx2d.fillStyle = (s.ts && s.ts === lastSubmittedTs) ? '#00e5ff' : '#ffffff';
+        ctx2d.textAlign = 'left';
+        ctx2d.fillText(`${String(i + 1).padStart(2, ' ')}.  ${s.name}`, xL, y);
+        ctx2d.textAlign = 'right';
+        ctx2d.fillText(String(s.score), xR, y);
+    });
+    ctx2d.restore();
+}
+
+// Attract / game-over screen: title up top, high-score table below.
+function drawBoardScreen(title, subtitle) {
+    ctx2d.save();
+    ctx2d.fillStyle = 'rgba(0,0,0,0.62)';   // dark wash so the arcade text pops
+    ctx2d.fillRect(0, 0, W, H);
+    ctx2d.textAlign = 'center';
+    ctx2d.fillStyle = '#fff';
+    ctx2d.font = 'bold 40px Segoe UI, sans-serif';
+    ctx2d.fillText(title, W / 2, 66);
+    if (subtitle) {
+        ctx2d.font = '22px Segoe UI, sans-serif';
+        ctx2d.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx2d.fillText(subtitle, W / 2, 102);
+    }
+    ctx2d.restore();
+    drawLeaderboard(165);
+}
+
 function draw(t) {
     // Background
     if (imgs.background) ctx2d.drawImage(imgs.background, 0, 0, W, H);
@@ -459,11 +632,12 @@ function draw(t) {
     }
 
     if (!gameActive && !calibrateEmg) {
-        // Idle: show bird + items in the middle with the rules.
-        drawImageCentered(imgs.bird, W / 2, H / 2, BIRD_SIZE);
-        drawImageCentered(imgs.coin, W / 2 + 120, H / 2, ITEM_SIZE);
-        drawImageCentered(imgs.penalty, W / 2 - 120, H / 2, ITEM_SIZE);
-        overlay('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
+        // Attract mode: rules up top, high-score table below (arcade style),
+        // with the characters flanking the board so they stay clear of it.
+        drawBoardScreen('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
+        drawImageCentered(imgs.bird, 150, 400, BIRD_SIZE);
+        drawImageCentered(imgs.coin, W - 150, 340, ITEM_SIZE);
+        drawImageCentered(imgs.penalty, W - 150, 470, ITEM_SIZE);
         return;
     }
 
@@ -472,19 +646,26 @@ function draw(t) {
     if (coin.active) drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
     if (penalty.active) drawImageCentered(imgs.penalty, penalty.x, penalty.y, ITEM_SIZE);
 
-    // Countdown
+    // Score (top-left) + countdown (top-right)
     if (gameActive) {
-        const remain = Math.max(0, GAME_DURATION - (t - gameStart));
         ctx2d.save();
+        ctx2d.font = 'bold 26px Segoe UI, sans-serif';
+        // Score
+        ctx2d.textAlign = 'left';
+        ctx2d.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx2d.fillRect(12, 12, 190, 44);
+        ctx2d.fillStyle = '#fff';
+        ctx2d.fillText('Score: ' + score, 22, 44);
+        // Countdown
+        const remain = Math.max(0, GAME_DURATION - (t - gameStart));
         ctx2d.textAlign = 'right';
         ctx2d.fillStyle = 'rgba(0,0,0,0.5)';
         ctx2d.fillRect(W - 130, 12, 118, 44);
         ctx2d.fillStyle = '#fff';
-        ctx2d.font = 'bold 26px Segoe UI, sans-serif';
         ctx2d.fillText(remain.toFixed(1) + 's', W - 22, 44);
         ctx2d.restore();
     } else {
-        overlay('Game Over!', 'Final Score: ' + score);
+        drawBoardScreen('Game Over!  Final Score: ' + score, 'Press "Play again" for another go');
     }
 }
 
@@ -499,6 +680,7 @@ function draw(t) {
         loadImg('penalty', 'resources/cat.png'),
     ]);
     requestAnimationFrame(update);
+    fetchScores();   // populate the leaderboard on load
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         statusEl.textContent = 'This browser has no Web Audio input support.';
         enableBtn.disabled = true;
