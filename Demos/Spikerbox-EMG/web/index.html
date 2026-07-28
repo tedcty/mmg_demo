@@ -844,6 +844,51 @@ function drawParaglider(x, y, t) {
     ctx2d.restore();
 }
 
+// A worm piloting a paper plane (a dart pointing left, the way it flies). Drawn
+// in two layers so the worm sits *in* the crease: the upper wing goes behind the
+// worm, the lower wing wraps in front of its belly. Call Back → worm → Front.
+const PLANE_DROP = 16;   // how far the plane sits below the worm centre
+function drawPaperPlaneBack(x, y, t) {
+    ctx2d.save();
+    ctx2d.translate(x, y + PLANE_DROP + Math.sin(t * 5) * 2.5);
+    ctx2d.lineJoin = 'round';
+    // soft ground shadow
+    ctx2d.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx2d.beginPath(); ctx2d.ellipse(-6, 30, 48, 7, 0, 0, Math.PI * 2); ctx2d.fill();
+    // upper wing (behind the worm), shaded — mirror of the front pentagon
+    ctx2d.fillStyle = '#b9c0ca';
+    ctx2d.beginPath();
+    ctx2d.moveTo(-60, 0);   // nose
+    ctx2d.lineTo(2, 2);     // crease
+    ctx2d.lineTo(40, -2);   // tail
+    ctx2d.lineTo(40, -30);  // wing tip
+    ctx2d.lineTo(-8, -34);  // roof
+    ctx2d.closePath();
+    ctx2d.fill();
+    ctx2d.strokeStyle = '#6b7280'; ctx2d.lineWidth = 2; ctx2d.stroke();
+    ctx2d.restore();
+}
+function drawPaperPlaneFront(x, y, t) {
+    ctx2d.save();
+    ctx2d.translate(x, y + PLANE_DROP + Math.sin(t * 5) * 2.5);
+    ctx2d.lineJoin = 'round';
+    // Near side of the plane as ONE piece — wing + belly — so the wings enclose
+    // the worm's underside with no separate triangle poking out.
+    ctx2d.fillStyle = '#ffffff';
+    ctx2d.beginPath();
+    ctx2d.moveTo(-60, 0);   // nose
+    ctx2d.lineTo(2, -2);    // crease, tucked just under the worm
+    ctx2d.lineTo(40, 2);    // tail top
+    ctx2d.lineTo(40, 30);   // wing tip
+    ctx2d.lineTo(-8, 34);   // belly
+    ctx2d.closePath();
+    ctx2d.fill();
+    ctx2d.strokeStyle = '#6b7280'; ctx2d.lineWidth = 2; ctx2d.stroke();
+    // centre crease the worm rides in
+    ctx2d.beginPath(); ctx2d.moveTo(-60, 0); ctx2d.lineTo(2, -2); ctx2d.stroke();
+    ctx2d.restore();
+}
+
 function draw(t) {
     // Background
     if (imgs.background) ctx2d.drawImage(imgs.background, 0, 0, W, H);
@@ -863,17 +908,26 @@ function draw(t) {
         // with the characters flanking the board so they stay clear of it.
         drawBoardScreen('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
         drawImageCentered(imgs.bird, 150, 400, BIRD_SIZE);
+        drawPaperPlaneBack(W - 150, 340, t);
         drawImageCentered(imgs.coin, W - 150, 340, ITEM_SIZE);
+        drawPaperPlaneFront(W - 150, 340, t);
+        drawParaglider(W - 150, 470, t);
         drawImageCentered(imgs.penalty, W - 150, 470, ITEM_SIZE);
         return;
     }
 
     // Playing
     drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);
-    if (coin.active) drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
+    if (coin.active) {
+        drawPaperPlaneBack(coin.x, coin.y, t);
+        drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
+        drawPaperPlaneFront(coin.x, coin.y, t);
+    }
     if (trailer.active) {
         if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y, t);
+        else drawPaperPlaneBack(trailer.x, trailer.y, t);
         drawImageCentered(trailer.type === 'worm' ? imgs.coin : imgs.penalty, trailer.x, trailer.y, ITEM_SIZE);
+        if (trailer.active && trailer.type === 'worm') drawPaperPlaneFront(trailer.x, trailer.y, t);
     }
     if (penalty.active) {
         let px = penalty.x;
