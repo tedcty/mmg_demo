@@ -86,8 +86,8 @@
     .of-actions button { flex: 1; padding: 0 12px; }
     .of-actions button.secondary { background: #e6e4ef; color: #1b1b1f; }
 
-    /* Info button + How-to-play modal */
-    .info-btn { background: #e6e4ef; color: #1b1b1f; margin-left: auto; }
+    /* Hamburger menu button + modal */
+    .menu-btn { background: #e6e4ef; color: #1b1b1f; }
     .modal {
         position: fixed; inset: 0; z-index: 20; padding: 16px;
         display: flex; align-items: center; justify-content: center;
@@ -100,6 +100,10 @@
         box-shadow: 0 16px 50px rgba(0,0,0,.4);
     }
     .modal-card h2 { margin: 0 0 14px; color: var(--waitemata); font-size: 22px; }
+    .modal-card h3 { margin: 0 0 12px; color: var(--waitemata); font-size: 18px; }
+    .menu-controls { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+    .menu-controls select { width: 100%; max-width: none; }
+    .menu-div { border: none; border-top: 1px solid #e2e0ec; margin: 18px 0; }
     .modal-close {
         position: absolute; top: 12px; right: 12px; width: 36px; height: 36px;
         min-height: 36px; padding: 0; border-radius: 50%;
@@ -108,19 +112,31 @@
     .info-steps { margin: 0; padding-left: 22px; color: #1b1b1f; }
     .info-steps li { margin-bottom: 10px; line-height: 1.4; }
     .info-note { margin: 16px 0 0; font-size: 13px; color: #45464f; }
+
+    /* Mic/keyboard toggle switch */
+    .mode-pill { display: inline-flex; align-items: center; gap: 10px; background: #f1eff9; border-radius: 999px; padding: 6px 16px 6px 8px; min-height: 44px; }
+    .switch { position: relative; display: inline-block; width: 52px; height: 30px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider { position: absolute; inset: 0; cursor: pointer; background: #c7c5d0; border-radius: 999px; transition: background .2s; }
+    .switch .slider::before { content: ''; position: absolute; height: 24px; width: 24px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+    .switch input:checked + .slider { background: var(--azure); }
+    .switch input:checked + .slider::before { transform: translateX(22px); }
+    .switch input:disabled + .slider { opacity: .5; cursor: not-allowed; }
+    #modeLabel { font-size: 14px; font-weight: 500; color: #1b1b1f; min-width: 104px; }
 </style>
 </head>
 <body>
 <div id="wrap">
     <div class="bar">
-        <button id="enableBtn">Enable microphone</button>
-        <select id="device" title="Audio input device" disabled>
-            <option value="">Enable microphone first…</option>
+        <button id="menuBtn" class="menu-btn" title="Input &amp; how to play">☰ Menu</button>
+        <select id="difficulty" title="Difficulty">
+            <option value="easy">Easy 🐛</option>
+            <option value="normal" selected>Normal</option>
+            <option value="hard">Hard 🐱</option>
         </select>
         <button id="startBtn" disabled>Start the game</button>
         <button id="againBtn" disabled>Play again</button>
         <button id="quitBtn" disabled>Quit game</button>
-        <button id="infoBtn" class="info-btn">ℹ️ How to play</button>
     </div>
     <div id="stage">
         <canvas id="cv" width="1000" height="700"></canvas>
@@ -137,19 +153,30 @@
             </div>
         </div>
     </div>
-    <div id="status">Press "Enable microphone" to begin — tap “ℹ️ How to play” for a quick guide.</div>
+    <div id="status">Press "Start the game" to play with ↑ / ↓, or open ☰ Menu to use the SpikerBox microphone.</div>
 
-    <div id="infoModal" class="modal" hidden>
+    <div id="menuModal" class="modal" hidden>
         <div class="modal-card">
-            <button id="infoClose" class="modal-close" aria-label="Close">×</button>
-            <h2>How to play</h2>
+            <button id="menuClose" class="modal-close" aria-label="Close">×</button>
+            <h2>Menu</h2>
+            <div class="menu-controls">
+                <span class="mode-pill" title="Switch between SpikerBox microphone and keyboard control">
+                    <label class="switch"><input type="checkbox" id="micToggle"><span class="slider"></span></label>
+                    <span id="modeLabel">⌨️ Keyboard</span>
+                </span>
+                <select id="device" title="Audio input device" disabled>
+                    <option value="">Keyboard mode</option>
+                </select>
+            </div>
+            <hr class="menu-div">
+            <h3>How to play</h3>
             <ol class="info-steps">
-                <li>Press <strong>Enable microphone</strong> and allow audio access when prompted.</li>
-                <li>Plug the SpikerBox into your device's audio input and <strong>select it</strong> from the dropdown.</li>
-                <li>Press <strong>Start the game</strong> to calibrate — <strong>relax</strong>, then <strong>contract</strong> your muscle when prompted.</li>
-                <li>Your muscle activation moves the bird up and down. Catch the worms 🐛, avoid the cats 🐱!</li>
+                <li>Choose your control: <strong>keyboard</strong> (↑ / ↓ arrows) or flip the switch to the <strong>SpikerBox microphone</strong> and allow audio access.</li>
+                <li>For the microphone: plug the SpikerBox into your device's audio input and <strong>select it</strong> from the dropdown above.</li>
+                <li>Press <strong>Start the game</strong>. In microphone mode you calibrate first — <strong>relax</strong>, then <strong>contract</strong> when prompted; keyboard mode starts right away.</li>
+                <li>Move the bird up and down to catch the worms 🐛 and avoid the cats 🐱!</li>
             </ol>
-            <p class="info-note">The game reads the live audio stream and band-passes it (20–300&nbsp;Hz) to turn your muscle activation into the bird's height.</p>
+            <p class="info-note">In microphone mode the game reads the live audio stream and band-passes it (20–300&nbsp;Hz) to turn your muscle activation into the bird's height.</p>
         </div>
     </div>
 </div>
@@ -166,8 +193,16 @@
 // ---- Game / signal constants (from main.py) ----
 const GAME_DURATION = 30.0;      // seconds
 const WINDOW_SECONDS = 2;        // object travel time base — smaller = faster
-const COIN_CHANCE = 0.7;         // worm vs. cat spawn probability
 const COIN_DISAPPEAR = 0.6;      // object vanishes after this fraction of WINDOW_SECONDS
+
+// Difficulty presets. coinChance = P(worm) vs cat; catJumpChance = of the cats,
+// the fraction that pounce from the floor (the rest fly across on a paramotor).
+const DIFFICULTY = {
+    easy:   { coinChance: 0.80, catJumpChance: 0 },     // lots of worms, few (flying) cats
+    normal: { coinChance: 0.60, catJumpChance: 0 },     // balanced, slightly more worms
+    hard:   { coinChance: 0.35, catJumpChance: 0.6 },   // more cats: a mix of pouncing + flying
+};
+let diff = DIFFICULTY.normal;    // active preset, locked in at game start
 const RMS_WIN = 0.02;            // RMS envelope window (s)
 const CURSOR_SMOOTHING_SECONDS = 0.5;
 const LOWCUT = 20.0, HIGHCUT = 300.0;   // EMG band-pass (Hz)
@@ -180,12 +215,21 @@ const TOTAL_CAL = BASELINE_DURATION + MVC_DURATION;
 const W = 1000, H = 700;
 const X_HIT = 50, Y_HIT = 30;
 const BIRD_SIZE = 90, ITEM_SIZE = 70;
+// Hard-mode pouncing cat
+const CAT_BOTTOM_Y = H - 55;         // resting height of a pouncing cat
+const CAT_SPEED = 8.5;               // ground speed (px/frame)
+const CAT_CROUCH = 0.72;             // wiggle time at the jump point (s)
+const CAT_JUMP_DUR = 0.5;            // pounce arc duration (s)
+const CAT_JUMP_SPAN = 2 * BIRD_SIZE; // horizontal reach of the arc (~2 birds)
+const CAT_MAX_UP = H / 4;            // highest it can reach (3/4 up the screen)
 
 // ---- DOM ----
 const cv = document.getElementById('cv');
 const ctx2d = cv.getContext('2d');
-const enableBtn = document.getElementById('enableBtn');
+const micToggle = document.getElementById('micToggle');
+const modeLabel = document.getElementById('modeLabel');
 const deviceSel = document.getElementById('device');
+const difficultySel = document.getElementById('difficulty');
 const startBtn = document.getElementById('startBtn');
 const againBtn = document.getElementById('againBtn');
 const quitBtn = document.getElementById('quitBtn');
@@ -226,6 +270,8 @@ async function onGameOver() {
 async function submitScore() {
     const name = (nameInputEl.value || '').trim() || 'Anon';
     submitScoreBtn.disabled = true;
+    const entry = { name, score, ts: Math.floor(Date.now() / 1000) };
+    let saved = false, detail = '';
     try {
         const r = await fetch(SCORES_API, {
             method: 'POST',
@@ -235,9 +281,21 @@ async function submitScore() {
         if (r.ok) {
             leaderboard = await r.json();
             const mine = leaderboard.find(s => s.name === name && s.score === score);
-            lastSubmittedTs = mine ? mine.ts : 0;
+            lastSubmittedTs = mine ? mine.ts : entry.ts;
+            saved = true;
+            statusEl.textContent = 'Score added to the leaderboard! 🏆';
+        } else {
+            detail = ` (server said ${r.status})`;
         }
-    } catch (e) { /* ignore — offline */ }
+    } catch (e) { detail = ` (${e.message})`; }
+    if (!saved) {
+        // Server unreachable — still show the score on this device so it isn't
+        // lost, and flag that the shared leaderboard didn't record it.
+        leaderboard = [...leaderboard, entry].sort((a, b) => b.score - a.score).slice(0, LB_TOP_N);
+        lastSubmittedTs = entry.ts;
+        statusEl.textContent = 'Saved on this device only — the leaderboard server isn\'t reachable' + detail
+            + '. If you just added it, restart the demo server.';
+    }
     submitScoreBtn.disabled = false;
     nameEntryEl.hidden = true;
 }
@@ -245,11 +303,11 @@ submitScoreBtn.addEventListener('click', submitScore);
 skipScoreBtn.addEventListener('click', () => { nameEntryEl.hidden = true; });
 nameInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitScore(); });
 
-// ---- How-to-play info modal ----
-const infoModal = document.getElementById('infoModal');
-document.getElementById('infoBtn').addEventListener('click', () => { infoModal.hidden = false; });
-document.getElementById('infoClose').addEventListener('click', () => { infoModal.hidden = true; });
-infoModal.addEventListener('click', e => { if (e.target === infoModal) infoModal.hidden = true; });
+// ---- Menu modal (input mode + how to play) ----
+const menuModal = document.getElementById('menuModal');
+document.getElementById('menuBtn').addEventListener('click', () => { menuModal.hidden = false; });
+document.getElementById('menuClose').addEventListener('click', () => { menuModal.hidden = true; });
+menuModal.addEventListener('click', e => { if (e.target === menuModal) menuModal.hidden = true; });
 
 // ---- Images ----
 const imgs = {};
@@ -276,6 +334,15 @@ let score = 0;
 let birdY = H / 2;
 let coin = { active: false, x: 0, y: 0, start: 0 };
 let penalty = { active: false, x: 0, y: 0, start: 0 };
+// A worm or flying cat that trails a pouncing cat by ~1s (hard mode).
+let trailer = { active: false, pending: false, type: 'worm', x: 0, y: 0, start: 0, spawnAt: 0 };
+const TRAILER_CHANCE = 0.75, TRAILER_DELAY = 1.0;   // P(trailer) and its lag (s)
+
+// Input mode: keyboard (dev, no mic/calibration) vs microphone (EMG). Default
+// keyboard so the game is instantly playable; flip the switch to use the mic.
+let keyboardMode = true;
+let keyUp = false, keyDown = false;
+const KEY_SPEED = 11;            // bird px per frame under keyboard control
 
 function now() { return performance.now() / 1000; }
 
@@ -285,10 +352,9 @@ function now() { return performance.now() / 1000; }
 // The worklet posts the instantaneous RMS envelope back to the main thread.
 // ---------------------------------------------------------------------------
 async function initDevices() {
-    // Must be called from a user gesture (button tap): iOS blocks getUserMedia
-    // outside a gesture entirely, and it's the reliable way to surface the
-    // permission prompt on desktop Chrome too.
-    enableBtn.disabled = true;
+    // Must be called from a user gesture (the toggle flip): iOS blocks
+    // getUserMedia outside a gesture entirely, and it's the reliable way to
+    // surface the permission prompt on desktop Chrome too.
     statusEl.textContent = 'Requesting microphone access…';
     try {
         // A first getUserMedia unlocks device labels in enumerateDevices().
@@ -310,14 +376,14 @@ async function initDevices() {
             msg = `Could not access audio input (${e.name}: ${e.message}).`;
         }
         statusEl.textContent = msg;
-        enableBtn.disabled = false;   // let the user fix it and retry
+        setKeyboardMode();            // revert to keyboard control on failure
         return;
     }
     const devs = (await navigator.mediaDevices.enumerateDevices())
         .filter(d => d.kind === 'audioinput');
     if (!devs.length) {
         statusEl.textContent = 'No audio input devices detected. Connect the SpikerBox and try again.';
-        enableBtn.disabled = false;
+        setKeyboardMode();
         return;
     }
     deviceSel.innerHTML = '';
@@ -329,9 +395,40 @@ async function initDevices() {
     });
     deviceSel.disabled = false;
     startBtn.disabled = false;
-    enableBtn.textContent = 'Microphone enabled ✓';
     statusEl.textContent = 'Select your SpikerBox input above, then press "Start the game" to calibrate.';
 }
+
+// ---- Input mode (keyboard vs microphone) ----
+function setKeyboardMode() {
+    keyboardMode = true;
+    micToggle.checked = false;
+    modeLabel.textContent = '⌨️ Keyboard';
+    deviceSel.disabled = true;
+    startBtn.disabled = false;
+    statusEl.textContent = 'Keyboard mode — press "Start the game", then use ↑ / ↓ to move the bird.';
+}
+micToggle.addEventListener('change', () => {
+    if (micToggle.checked) {
+        // Microphone mode — this toggle flip is the user gesture that lets us
+        // request mic access.
+        keyboardMode = false;
+        modeLabel.textContent = '🎤 Microphone';
+        startBtn.disabled = true;
+        initDevices();
+    } else {
+        setKeyboardMode();
+    }
+});
+// Keyboard control of the bird (only used in keyboard mode).
+window.addEventListener('keydown', e => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
+    if (e.key === 'ArrowUp') { keyUp = true; e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { keyDown = true; e.preventDefault(); }
+});
+window.addEventListener('keyup', e => {
+    if (e.key === 'ArrowUp') keyUp = false;
+    else if (e.key === 'ArrowDown') keyDown = false;
+});
 
 async function startAudio(deviceId) {
     if (audioCtx) return;   // already running
@@ -410,6 +507,13 @@ function waitForAudio(timeout = 4000) {
 }
 
 startBtn.addEventListener('click', async () => {
+    // Keyboard mode: skip mic + calibration and drop straight into the game.
+    if (keyboardMode) {
+        startGame();
+        quitBtn.disabled = false;
+        statusEl.textContent = 'Keyboard mode — use ↑ / ↓ to move the bird.';
+        return;
+    }
     startBtn.disabled = true;
     try {
         await startAudio(deviceSel.value);
@@ -434,25 +538,28 @@ startBtn.addEventListener('click', async () => {
 againBtn.addEventListener('click', () => startGame());
 quitBtn.addEventListener('click', () => {
     calibrateEmg = false; gameActive = false; calibrationActive = false;
-    coin.active = penalty.active = false;
+    coin.active = penalty.active = trailer.active = trailer.pending = false;
     nameEntryEl.hidden = true;
     againBtn.disabled = true;
     score = 0;
-    statusEl.textContent = 'Stopped. Press "Start the game" to calibrate again.';
+    statusEl.textContent = 'Stopped. Press "Start the game" to play again.';
 });
 
 function startGame() {
     calibrateEmg = true;
-    coin.active = penalty.active = false;
+    diff = DIFFICULTY[difficultySel.value] || DIFFICULTY.normal;   // lock in difficulty
+    coin.active = penalty.active = trailer.active = trailer.pending = false;
     nameEntryEl.hidden = true;
+    if (keyboardMode) birdY = H / 2;   // start centred (mic mode sets it from EMG)
     score = 0;
     gameStart = now();
     gameActive = true;
+    againBtn.disabled = false;
 }
 
 function endGame() {
     gameActive = false;
-    coin.active = penalty.active = false;
+    coin.active = penalty.active = trailer.active = trailer.pending = false;
     onGameOver();   // record/offer to submit the score, refresh the leaderboard
 }
 
@@ -466,10 +573,24 @@ function spawnCoin() {
     coin.x = W;
 }
 function spawnPenalty() {
-    penalty.y = Math.random() * H;
-    penalty.start = now();
+    penalty.jump = Math.random() < diff.catJumpChance;   // pounce vs fly across
     penalty.active = true;
     penalty.x = W;
+    if (penalty.jump) {
+        penalty.phase = 'approach';
+        penalty.y = CAT_BOTTOM_Y;
+        penalty.jumpX = W / 2 + BIRD_SIZE;     // crouch one bird right of centre
+        // A pounce often has a worm or flying cat following a second behind,
+        // in a separate lane (see trailer activation) so they don't bunch up.
+        if (!trailer.active && Math.random() < TRAILER_CHANCE) {
+            trailer.pending = true;
+            trailer.spawnAt = now() + TRAILER_DELAY;
+            trailer.type = Math.random() < 0.66 ? 'worm' : 'cat';   // 66% worm / 34% cat
+        }
+    } else {
+        penalty.y = Math.random() * H;
+        penalty.start = now();
+    }
 }
 
 function update() {
@@ -505,11 +626,21 @@ function update() {
     }
 
     // --- Active game loop ---
-    if (calibrateEmg && gameActive && mvcValue && baselineValue !== null && (mvcValue - baselineValue) > 0) {
-        let cursor = (smoothedEnv() - baselineValue) / (mvcValue - baselineValue);
-        cursor = Math.min(1, Math.max(0, cursor));
-        birdY = (1 - cursor) * H;
-
+    if (calibrateEmg && gameActive) {
+        // Move the bird: keyboard (dev) or the EMG envelope (needs calibration).
+        let controllable = false;
+        if (keyboardMode) {
+            if (keyUp) birdY -= KEY_SPEED;
+            if (keyDown) birdY += KEY_SPEED;
+            birdY = Math.min(H, Math.max(0, birdY));
+            controllable = true;
+        } else if (mvcValue && baselineValue !== null && (mvcValue - baselineValue) > 0) {
+            let cursor = (smoothedEnv() - baselineValue) / (mvcValue - baselineValue);
+            cursor = Math.min(1, Math.max(0, cursor));
+            birdY = (1 - cursor) * H;
+            controllable = true;
+        }
+        if (controllable) {
         const travel = COIN_DISAPPEAR * WINDOW_SECONDS;   // seconds visible
         if (coin.active) {
             const p = (t - coin.start) / WINDOW_SECONDS;
@@ -521,7 +652,35 @@ function update() {
                 }
             }
         }
-        if (penalty.active) {
+        if (penalty.active && penalty.jump) {
+            // Hard-mode cat: trot in along the floor, crouch & wiggle for ~1s at
+            // the jump point, then leap in an arc (~2 birds wide, up to 3/4 of the
+            // screen) toward where the bird was, and land.
+            const c = penalty;
+            if (c.phase === 'approach') {
+                c.x -= CAT_SPEED; c.y = CAT_BOTTOM_Y;
+                if (c.x <= c.jumpX) { c.x = c.jumpX; c.phase = 'wiggle'; c.phaseStart = t; }
+            } else if (c.phase === 'wiggle') {
+                c.y = CAT_BOTTOM_Y;
+                if (t - c.phaseStart >= CAT_CROUCH) {
+                    c.phase = 'jump'; c.phaseStart = t; c.jumpFromX = c.x;
+                    c.peakY = Math.max(CAT_MAX_UP, birdY);   // capped at 3/4 up
+                }
+            } else if (c.phase === 'jump') {
+                const jt = (t - c.phaseStart) / CAT_JUMP_DUR;
+                if (jt >= 1) { c.phase = 'land'; c.phaseStart = t; c.y = CAT_BOTTOM_Y; }
+                else {
+                    c.x = c.jumpFromX - jt * CAT_JUMP_SPAN;
+                    c.y = CAT_BOTTOM_Y + (c.peakY - CAT_BOTTOM_Y) * Math.sin(Math.PI * jt);
+                    if (Math.abs(c.x - W / 2) < X_HIT && Math.abs(c.y - birdY) < Y_HIT) {
+                        c.active = false; score -= 1;
+                    }
+                }
+            } else {   // land — trot off and vanish
+                c.x -= CAT_SPEED; c.y = CAT_BOTTOM_Y;
+                if (c.x < -ITEM_SIZE) c.active = false;
+            }
+        } else if (penalty.active) {
             const p = (t - penalty.start) / WINDOW_SECONDS;
             if (p >= COIN_DISAPPEAR) { penalty.active = false; }
             else {
@@ -531,9 +690,28 @@ function update() {
                 }
             }
         }
-        if (!coin.active && !penalty.active) {
-            if (Math.random() < COIN_CHANCE) spawnCoin(); else spawnPenalty();
+        // Trailing worm/cat that follows a pounce a second behind, in a separate
+        // upper lane (clear of the cat's ground/crouch area) so they don't bunch.
+        if (trailer.pending && t >= trailer.spawnAt) {
+            trailer.pending = false; trailer.active = true;
+            trailer.y = 60 + Math.random() * (H * 0.5);   // upper lane, [60, 410]
+            trailer.start = t; trailer.x = W;
         }
+        if (trailer.active) {
+            const p = (t - trailer.start) / WINDOW_SECONDS;
+            if (p >= COIN_DISAPPEAR) { trailer.active = false; }
+            else {
+                trailer.x = W - p * W;
+                if (Math.abs(trailer.x - W / 2) < X_HIT && Math.abs(trailer.y - birdY) < Y_HIT) {
+                    trailer.active = false;
+                    score += (trailer.type === 'worm' ? 1 : -1);
+                }
+            }
+        }
+        if (!coin.active && !penalty.active) {
+            if (Math.random() < diff.coinChance) spawnCoin(); else spawnPenalty();
+        }
+        }   // end if (controllable)
     }
 
     draw(t);
@@ -617,6 +795,55 @@ function drawBoardScreen(title, subtitle) {
     drawLeaderboard(165);
 }
 
+// A cat cruising in on a motorised paraglider — used for the "flying" cats
+// (easy/normal) that enter above the grass. `t` drives the spinning propeller.
+function drawParaglider(x, y, t) {
+    ctx2d.save();
+    const cy = y - 62, cw = 132;       // canopy height above the cat + span
+    // Canopy (crescent wing)
+    ctx2d.fillStyle = '#ff5a3c';
+    ctx2d.beginPath();
+    ctx2d.moveTo(x - cw / 2, cy);
+    ctx2d.quadraticCurveTo(x, cy - 28, x + cw / 2, cy);
+    ctx2d.quadraticCurveTo(x, cy - 6, x - cw / 2, cy);
+    ctx2d.closePath();
+    ctx2d.fill();
+    // Canopy stripes
+    ctx2d.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx2d.lineWidth = 2;
+    for (let i = -1; i <= 1; i++) {
+        ctx2d.beginPath();
+        ctx2d.moveTo(x + i * 34, cy - 3);
+        ctx2d.lineTo(x + i * 34, cy - 17);
+        ctx2d.stroke();
+    }
+    // Suspension lines to the harness
+    ctx2d.strokeStyle = 'rgba(40,40,40,0.7)';
+    ctx2d.lineWidth = 1.5;
+    ctx2d.beginPath();
+    ctx2d.moveTo(x - cw / 2 + 10, cy); ctx2d.lineTo(x - 14, y - 6);
+    ctx2d.moveTo(x + cw / 2 - 10, cy); ctx2d.lineTo(x + 14, y - 6);
+    ctx2d.moveTo(x - 4, cy + 1);       ctx2d.lineTo(x - 6, y - 8);
+    ctx2d.moveTo(x + 4, cy + 1);       ctx2d.lineTo(x + 6, y - 8);
+    ctx2d.stroke();
+    // Motor cage + spinning propeller behind the cat (it flies leftward)
+    const propX = x + 30, propY = y + 8;
+    ctx2d.strokeStyle = '#444';
+    ctx2d.lineWidth = 3;
+    ctx2d.beginPath(); ctx2d.arc(propX, propY, 16, 0, Math.PI * 2); ctx2d.stroke();
+    ctx2d.save();
+    ctx2d.translate(propX, propY);
+    ctx2d.rotate(t * 25);
+    ctx2d.strokeStyle = 'rgba(50,50,50,0.5)';
+    ctx2d.lineWidth = 4;
+    ctx2d.beginPath();
+    ctx2d.moveTo(-15, 0); ctx2d.lineTo(15, 0);
+    ctx2d.moveTo(0, -15); ctx2d.lineTo(0, 15);
+    ctx2d.stroke();
+    ctx2d.restore();
+    ctx2d.restore();
+}
+
 function draw(t) {
     // Background
     if (imgs.background) ctx2d.drawImage(imgs.background, 0, 0, W, H);
@@ -644,7 +871,20 @@ function draw(t) {
     // Playing
     drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);
     if (coin.active) drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
-    if (penalty.active) drawImageCentered(imgs.penalty, penalty.x, penalty.y, ITEM_SIZE);
+    if (trailer.active) {
+        if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y, t);
+        drawImageCentered(trailer.type === 'worm' ? imgs.coin : imgs.penalty, trailer.x, trailer.y, ITEM_SIZE);
+    }
+    if (penalty.active) {
+        let px = penalty.x;
+        if (penalty.jump) {
+            // Wiggle while crouched, lining up the pounce.
+            if (penalty.phase === 'wiggle') px += Math.sin(t * 45) * 8;
+        } else {
+            drawParaglider(px, penalty.y, t);   // flying cats cruise in on a paramotor
+        }
+        drawImageCentered(imgs.penalty, px, penalty.y, ITEM_SIZE);
+    }
 
     // Score (top-left) + countdown (top-right)
     if (gameActive) {
@@ -680,15 +920,12 @@ function draw(t) {
         loadImg('penalty', 'resources/cat.png'),
     ]);
     requestAnimationFrame(update);
-    fetchScores();   // populate the leaderboard on load
+    fetchScores();       // populate the leaderboard on load
+    setKeyboardMode();   // default: keyboard control, no permissions needed
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        statusEl.textContent = 'This browser has no Web Audio input support.';
-        enableBtn.disabled = true;
-        return;
+        // No Web Audio input — keyboard only; disable the mic switch.
+        micToggle.disabled = true;
     }
-    // Request the mic from a user gesture (required on iOS, reliable on desktop)
-    // rather than automatically on load.
-    enableBtn.addEventListener('click', initDevices);
 })();
 </script>
 </body>
