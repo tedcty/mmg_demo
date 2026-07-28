@@ -62,11 +62,49 @@ function onGuideError(e: Event) {
 // The guide is only shown while one of the bone-measurement fields is focused.
 // A short blur delay avoids flicker when tabbing between the three fields.
 const showMeasureGuide = ref(false);
+// The guide card slots directly below the focused field via CSS order.
+const guideOrder = computed(() => ({ clav: 2, hum: 4, epi: 6 })[activeMeasure.value]);
+
+// iOS/Android overlay the on-screen keyboard without shrinking innerHeight, so
+// visualViewport.height is the only reliable signal for the space that's
+// actually visible. Track it to (a) know when the keyboard is up and (b) cap the
+// guide image so the field + guide fit above the keyboard.
+const vvHeight = ref(typeof window !== "undefined" ? window.innerHeight : 0);
+const keyboardUp = computed(() => window.innerHeight - vvHeight.value > 120);
+const guideImgStyle = computed(() =>
+  keyboardUp.value ? { maxHeight: `${Math.max(150, Math.round(vvHeight.value - 250))}px` } : {}
+);
+onMounted(() => {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const update = () => { vvHeight.value = vv.height; };
+  vv.addEventListener("resize", update);
+  vv.addEventListener("scroll", update);
+  update();
+});
+
 let measureBlurTimer: ReturnType<typeof setTimeout> | undefined;
-function onMeasureFocus(m: "clav" | "hum" | "epi") {
+function onMeasureFocus(m: "clav" | "hum" | "epi", e?: FocusEvent) {
   if (measureBlurTimer) clearTimeout(measureBlurTimer);
   activeMeasure.value = m;
   showMeasureGuide.value = true;
+  // Scroll the field to the top of the panel *once the keyboard has opened*
+  // (visualViewport shrinks), so the field and the guide beneath it clear it.
+  const field = (e?.target as HTMLElement | undefined)?.closest(".bf");
+  if (!field) return;
+  const vv = window.visualViewport;
+  if (!vv) { setTimeout(() => field.scrollIntoView({ block: "start", behavior: "smooth" }), 350); return; }
+  const startH = vv.height;
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    vv.removeEventListener("resize", onKbResize);
+    field.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  const onKbResize = () => { if (vv.height < startH - 100) finish(); };
+  vv.addEventListener("resize", onKbResize);
+  setTimeout(finish, 700);   // fallback: no keyboard (desktop) or slow to open
 }
 function onMeasureBlur() {
   measureBlurTimer = setTimeout(() => { showMeasureGuide.value = false; }, 120);
@@ -1471,32 +1509,38 @@ function selectModel(viewOriginal: boolean) {
                     <label>Weight (kg)</label>
                     <input v-model="weight" class="input-fi" />
                   </div>
-                  <div>
-                    <label>R Clavicle Length (mm)</label>
-                    <input v-model="r_clav_len" class="input-fi" @focus="onMeasureFocus('clav')" @blur="onMeasureBlur()" />
-                  </div>
-                  <div>
-                    <label>R Humerus Length (mm)</label>
-                    <input v-model="r_hum_len" class="input-fi" @focus="onMeasureFocus('hum')" @blur="onMeasureBlur()" />
-                  </div>
-                  <div>
-                    <label>R Hum Epicondyle Width (mm)</label>
-                    <input v-model="r_hum_epi_width" class="input-fi" @focus="onMeasureFocus('epi')" @blur="onMeasureBlur()" />
-                  </div>
                 </div>
-              </div>
 
-              <div v-show="showMeasureGuide" class="card transparent-card animate-in" style="margin-top: 15px; border-color: #60A060;">
-                <h3 style="color: #60A060">📏 How to Measure</h3>
-                <p class="hint">The highlighted bone shows where to take this measurement.</p>
-                <div class="measure-diagram">
-                  <div class="body-figure">
-                    <img :src="guideImage" @error="onGuideError" :alt="measureInfo.name + ' highlighted on the skeleton'" />
+                <!-- Bone measurements: the guide card reorders (via :style order)
+                     to sit directly under whichever field is focused, and the
+                     field scrolls up so both clear the on-screen keyboard. -->
+                <div class="bone-fields">
+                  <div class="bf" style="order: 1">
+                    <label>R Clavicle Length (mm)</label>
+                    <input v-model="r_clav_len" class="input-fi" @focus="onMeasureFocus('clav', $event)" @blur="onMeasureBlur()" />
                   </div>
-                </div>
-                <div class="measure-active">
-                  <span class="measure-name">{{ measureInfo.name }}</span>
-                  <span class="measure-desc">{{ measureInfo.desc }}</span>
+                  <div class="bf" style="order: 3">
+                    <label>R Humerus Length (mm)</label>
+                    <input v-model="r_hum_len" class="input-fi" @focus="onMeasureFocus('hum', $event)" @blur="onMeasureBlur()" />
+                  </div>
+                  <div class="bf" style="order: 5">
+                    <label>R Hum Epicondyle Width (mm)</label>
+                    <input v-model="r_hum_epi_width" class="input-fi" @focus="onMeasureFocus('epi', $event)" @blur="onMeasureBlur()" />
+                  </div>
+
+                  <div v-show="showMeasureGuide" class="measure-guide-card animate-in" :style="{ order: guideOrder }">
+                    <h3 style="color: #60A060">📏 How to Measure</h3>
+                    <p class="hint">The highlighted bone shows where to take this measurement.</p>
+                    <div class="measure-diagram">
+                      <div class="body-figure">
+                        <img :src="guideImage" @error="onGuideError" :style="guideImgStyle" :alt="measureInfo.name + ' highlighted on the skeleton'" />
+                      </div>
+                    </div>
+                    <div class="measure-active">
+                      <span class="measure-name">{{ measureInfo.name }}</span>
+                      <span class="measure-desc">{{ measureInfo.desc }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1716,14 +1760,18 @@ h3 {
   justify-content: center;
   padding: 8px 0 14px;
 }
-/* Pre-cropped skeleton illustration (right shoulder + arm to the elbow). */
+/* Pre-cropped skeleton illustration (right shoulder + arm to the elbow).
+   max-width + an optional inline max-height let it shrink to fit above the
+   on-screen keyboard while preserving aspect ratio. */
 .body-figure {
   width: 200px;
+  text-align: center;
 }
 .body-figure img {
-  width: 100%;
-  display: block;
+  max-width: 100%;
+  display: inline-block;
   border-radius: 10px;
+  vertical-align: top;
 }
 .measure-active {
   display: flex;
@@ -1771,6 +1819,27 @@ label {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 12px;
+}
+/* Bone-measurement fields stacked full-width; the guide card reorders between
+   them (via inline `order`) to sit right under the focused field. */
+.bone-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.measure-guide-card {
+  padding: 14px 16px;
+  border: 1px solid rgba(96, 160, 96, 0.4);
+  border-radius: 12px;
+  background: rgba(96, 160, 96, 0.07);
+}
+.measure-guide-card h3 {
+  margin-bottom: 6px;
+}
+.light-mode .measure-guide-card {
+  background: rgba(96, 160, 96, 0.1);
+  border-color: rgba(96, 160, 96, 0.35);
 }
 .icon-btn {
   background: #2a2a4a;
