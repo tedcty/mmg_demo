@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import * as THREE from 'three';
 
 // Unique ID for this browser tab — isolates predictions and progress from other sessions.
@@ -15,14 +15,62 @@ const anthro_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/pr
 const ssm_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/SSM_shape_model_103");
 const out_path = ref("/home/trix/Dev/Repo/mmg_demo/mmg_demo/Demos/SSM Demo/predict_gui/Resources/predicted_model.ply");
 
-// Patient Data
-const sex = ref("0");
-const age = ref("63");
-const height = ref("154.6");
-const weight = ref("74.7");
-const r_clav_len = ref("170");
-const r_hum_len = ref("296");
-const r_hum_epi_width = ref("55");
+// Patient Data — defaults to a typical adult female (~163 cm) so the demo opens
+// with a realistic example rather than blank fields.
+const sex = ref("1");            // Female
+const age = ref("40");           // years
+const height = ref("163");       // cm
+const weight = ref("65");        // kg (~BMI 24.5)
+const r_clav_len = ref("148");   // mm — right clavicle length
+const r_hum_len = ref("305");    // mm — right humerus length
+const r_hum_epi_width = ref("57"); // mm — right humeral epicondyle width
+
+// Which bone measurement's diagram to highlight — driven by which field is
+// focused, so the "How to Measure" guide shows where to take that measurement.
+const activeMeasure = ref<"clav" | "hum" | "epi">("clav");
+const MEASURE_INFO = {
+  clav: {
+    name: "Clavicle length",
+    desc: "From the sternoclavicular joint (base of the throat) out to the acromioclavicular joint (bony tip of the shoulder), following the collarbone.",
+  },
+  hum: {
+    name: "Humerus length",
+    desc: "From the tip of the shoulder (acromion) down to the lateral epicondyle (bony bump on the outside of the elbow), arm relaxed at the side.",
+  },
+  epi: {
+    name: "Epicondyle width",
+    desc: "Straight-line distance across the elbow between the two bony bumps — the medial and lateral epicondyles — with the elbow bent 90°.",
+  },
+} as const;
+const measureInfo = computed(() => MEASURE_INFO[activeMeasure.value]);
+
+// Pre-labelled upper-body skeleton illustrations (in Documents/resources, served
+// by the demo server). One image per measurement, with the relevant bone
+// highlighted. The male-specific images fall back to the female illustration
+// until they exist (see onGuideError).
+const MEASURE_IMG = { clav: "clavicle", hum: "humerus", epi: "epicondyles" } as const;
+const guideImage = computed(() => {
+  const who = sex.value === "0" ? "male" : "female";
+  return `/doc-resources/${who}_upperbody_${MEASURE_IMG[activeMeasure.value]}_cropped.png`;
+});
+function onGuideError(e: Event) {
+  const img = e.target as HTMLImageElement;
+  const fallback = `/doc-resources/female_upperbody_${MEASURE_IMG[activeMeasure.value]}_cropped.png`;
+  if (!img.src.endsWith(fallback)) img.src = fallback;
+}
+
+// The guide is only shown while one of the bone-measurement fields is focused.
+// A short blur delay avoids flicker when tabbing between the three fields.
+const showMeasureGuide = ref(false);
+let measureBlurTimer: ReturnType<typeof setTimeout> | undefined;
+function onMeasureFocus(m: "clav" | "hum" | "epi") {
+  if (measureBlurTimer) clearTimeout(measureBlurTimer);
+  activeMeasure.value = m;
+  showMeasureGuide.value = true;
+}
+function onMeasureBlur() {
+  measureBlurTimer = setTimeout(() => { showMeasureGuide.value = false; }, 120);
+}
 
 const statusMessage = ref("");
 const statusColor = ref("#ffffff");
@@ -31,6 +79,9 @@ const isPredicting = ref(false);
 // messages. Shown to all users as the demo-facing feedback while the raw
 // "Pipeline Output" text stays dev-only.
 const predictionProgress = ref(0);
+// Timer that eases the bar forward during long silent gaps (e.g. the heavy
+// Python imports emit no output). Real stage messages still jump it via Math.max.
+let progressTimer: ReturnType<typeof setInterval> | undefined;
 
 // Ordered pipeline stages → target progress %. Matched by substring against
 // the STATUS messages streamed from the Python pipeline so the bar advances
@@ -38,6 +89,7 @@ const predictionProgress = ref(0);
 // stages that get skipped (e.g. cached PLSR training) don't stall the bar.
 const PIPELINE_STAGES: { match: string; pct: number }[] = [
   { match: "Initialising",       pct: 5 },
+  { match: "Loading libraries",  pct: 10 },
   { match: "Loading PCA model",  pct: 15 },
   { match: "PLSR training",      pct: 30 },
   { match: "Loading PCA shape",  pct: 45 },
@@ -1028,6 +1080,15 @@ async function runPrediction() {
   statusMessage.value = "Starting Python pipeline...";
   statusColor.value = "#ffffff";
 
+  // Ease toward 90% while waiting, decelerating as it goes, so the bar never
+  // looks frozen during the long import phase. Stage messages override upward.
+  if (progressTimer) clearInterval(progressTimer);
+  progressTimer = setInterval(() => {
+    if (predictionProgress.value < 90) {
+      predictionProgress.value += (90 - predictionProgress.value) * 0.02;
+    }
+  }, 500);
+
   try {
     const response = await fetch("/api/predict", {
       method: "POST",
@@ -1056,6 +1117,8 @@ async function runPrediction() {
   } catch (error) {
     statusMessage.value = "Failed: " + error;
     statusColor.value = "#f14668";
+  } finally {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = undefined; }
   }
 
   isPredicting.value = false;
@@ -1213,10 +1276,6 @@ function selectModel(viewOriginal: boolean) {
             <div class="pane-header">
               <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : 'Shoulder Predictor') }}</h2>
               <div class="header-actions">
-                <button v-if="hasPrediction" @click="toggleComparison" class="comparison-btn header-compare" :class="{ original: isViewingOriginal }">
-                   <span v-if="isViewingOriginal">🔄 View Predicted Mesh</span>
-                   <span v-else>📏 View Mean Model</span>
-                </button>
                 <button @click="isPanelOpen = false" class="icon-btn" title="Close panel" aria-label="Close panel">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
@@ -1230,6 +1289,30 @@ function selectModel(viewOriginal: boolean) {
                 <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
                   <input type="checkbox" :checked="!isLightMode" @change="toggleTheme" id="darkModeToggle" />
                   <label for="darkModeToggle">Dark Mode</label>
+                </div>
+              </div>
+              <div class="card transparent-card">
+                <h3 style="color: #60A060">🔍 Anatomical Guides</h3>
+                <p class="hint">Overlay anatomical references on the 3D model.</p>
+                <div class="toggle-group" style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); color: white; display: flex; align-items: center; gap: 10px; font-weight: bold;">
+                  <input type="checkbox" v-model="showGuides" @change="loadBones()" id="guidesToggle" />
+                  <label for="guidesToggle">Show Visual Guides</label>
+                </div>
+                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isHighlightsEnabled" :disabled="!showGuides" @change="loadBones()" id="highlightToggle" />
+                  <label for="highlightToggle">Highlight Glide Area</label>
+                </div>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isNormalsEnabled" :disabled="!showGuides" @change="loadBones()" id="normalsToggle" />
+                  <label for="normalsToggle">Show Surface Normals</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isScapularPlaneEnabled" :disabled="!showGuides" @change="loadBones()" id="scapularPlaneToggle" />
+                  <label for="scapularPlaneToggle">Show Scapular Plane</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
+                  <input type="checkbox" v-model="isLabelsEnabled" :disabled="!showGuides" id="labelsToggle" />
+                  <label for="labelsToggle">Show Coordinate Labels</label>
                 </div>
               </div>
               <div class="card transparent-card">
@@ -1390,40 +1473,30 @@ function selectModel(viewOriginal: boolean) {
                   </div>
                   <div>
                     <label>R Clavicle Length (mm)</label>
-                    <input v-model="r_clav_len" class="input-fi" />
+                    <input v-model="r_clav_len" class="input-fi" @focus="onMeasureFocus('clav')" @blur="onMeasureBlur()" />
                   </div>
                   <div>
                     <label>R Humerus Length (mm)</label>
-                    <input v-model="r_hum_len" class="input-fi" />
+                    <input v-model="r_hum_len" class="input-fi" @focus="onMeasureFocus('hum')" @blur="onMeasureBlur()" />
                   </div>
                   <div>
                     <label>R Hum Epicondyle Width (mm)</label>
-                    <input v-model="r_hum_epi_width" class="input-fi" />
+                    <input v-model="r_hum_epi_width" class="input-fi" @focus="onMeasureFocus('epi')" @blur="onMeasureBlur()" />
                   </div>
                 </div>
               </div>
 
-              <div class="card transparent-card" style="margin-top: 15px; border-color: #60A060;">
-                <h3 style="color: #60A060">🔍 Anatomical Guides</h3>
-                <div class="toggle-group" style="margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08); color: white; display: flex; align-items: center; gap: 10px; font-weight: bold;">
-                  <input type="checkbox" v-model="showGuides" @change="loadBones()" id="guidesToggle" />
-                  <label for="guidesToggle">Show Visual Guides</label>
+              <div v-show="showMeasureGuide" class="card transparent-card animate-in" style="margin-top: 15px; border-color: #60A060;">
+                <h3 style="color: #60A060">📏 How to Measure</h3>
+                <p class="hint">The highlighted bone shows where to take this measurement.</p>
+                <div class="measure-diagram">
+                  <div class="body-figure">
+                    <img :src="guideImage" @error="onGuideError" :alt="measureInfo.name + ' highlighted on the skeleton'" />
+                  </div>
                 </div>
-                <div class="toggle-group" style="margin-bottom: 8px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
-                  <input type="checkbox" v-model="isHighlightsEnabled" :disabled="!showGuides" @change="loadBones()" id="highlightToggle" />
-                  <label for="highlightToggle">Highlight Glide Area</label>
-                </div>
-                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
-                  <input type="checkbox" v-model="isNormalsEnabled" :disabled="!showGuides" @change="loadBones()" id="normalsToggle" />
-                  <label for="normalsToggle">Show Surface Normals</label>
-                </div>
-                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
-                  <input type="checkbox" v-model="isScapularPlaneEnabled" :disabled="!showGuides" @change="loadBones()" id="scapularPlaneToggle" />
-                  <label for="scapularPlaneToggle">Show Scapular Plane</label>
-                </div>
-                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
-                  <input type="checkbox" v-model="isLabelsEnabled" :disabled="!showGuides" id="labelsToggle" />
-                  <label for="labelsToggle">Show Coordinate Labels</label>
+                <div class="measure-active">
+                  <span class="measure-name">{{ measureInfo.name }}</span>
+                  <span class="measure-desc">{{ measureInfo.desc }}</span>
                 </div>
               </div>
 
@@ -1586,12 +1659,9 @@ html, body, #app {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  flex-wrap: nowrap; /* keep theme / compare / close on a single row */
+  flex-wrap: nowrap;
   justify-content: flex-end;
-  margin-left: auto; /* pin to the right when it wraps below the title */
-}
-.header-compare {
-  white-space: nowrap;
+  margin-left: auto;
 }
 .main-view, .settings-view {
   padding: 15px 25px;
@@ -1641,6 +1711,39 @@ h3 {
   margin-top: -10px;
   margin-bottom: 15px;
 }
+.measure-diagram {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 14px;
+}
+/* Pre-cropped skeleton illustration (right shoulder + arm to the elbow). */
+.body-figure {
+  width: 200px;
+}
+.body-figure img {
+  width: 100%;
+  display: block;
+  border-radius: 10px;
+}
+.measure-active {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(96, 160, 96, 0.5);
+}
+.measure-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #7fbf7f;
+}
+.measure-desc {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #b0b0c0;
+}
+.light-mode .measure-name { color: #3f8f3f; }
+.light-mode .measure-desc { color: #475569; }
 label {
   display: block;
   font-size: 0.75rem;
@@ -1987,34 +2090,6 @@ input[type="range"] {
 .pane-header h2 {
   white-space: nowrap;
 }
-/* Compact variant of .comparison-btn for the card header */
-.header-compare {
-  width: auto;
-  padding: 7px 12px;
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-.comparison-btn {
-  width: 100%;
-  padding: 12px;
-  background: rgba(0, 202, 239, 0.1);
-  border: 1px solid rgba(0, 202, 239, 0.3);
-  color: #00caef;
-  font-weight: bold;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.comparison-btn:hover {
-  background: rgba(0, 202, 239, 0.2);
-}
-.comparison-btn.original {
-  background: rgba(72, 199, 116, 0.1);
-  border-color: rgba(72, 199, 116, 0.3);
-  color: #48c774;
-}
-.comparison-btn.original:hover {
-  background: rgba(72, 199, 116, 0.2);
-}
 
 /* =========================================================================
    LIGHT MODE
@@ -2121,7 +2196,7 @@ input[type="range"] {
 
 /* ── Touch targets (tablet, landscape) ─────────────────────────────────────
    Enlarge the fiddly native controls so they're finger-friendly. */
-button, .icon-btn, .secondary-btn, .run-btn, .comparison-btn {
+button, .icon-btn, .secondary-btn, .run-btn {
   min-height: 44px;
   touch-action: manipulation;
 }

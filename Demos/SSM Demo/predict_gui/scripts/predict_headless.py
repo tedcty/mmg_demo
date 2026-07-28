@@ -1,4 +1,7 @@
 import sys
+# Announce before the heavy scientific imports below — they take ~10-30s to load
+# and emit nothing, which otherwise leaves the progress bar frozen at the start.
+print("STATUS|Loading libraries...", flush=True)
 import json
 import numpy as np
 import os

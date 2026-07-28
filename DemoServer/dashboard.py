@@ -1016,11 +1016,30 @@ class Dashboard(QtWidgets.QWidget):
         self._last_rc = rc
         self._maybe_crash()   # the polling path also funnels here (guarded)
 
+    def _server_really_down(self):
+        """Re-confirm a suspected crash before alerting. A single status poll can
+        miss the server's PID (psutil hiccup under load), so double-check: if
+        anything still owns the port, or HTTPS/HTTP still answers, it's alive."""
+        ports = [doctor.HTTPS_PORT, doctor.HTTP_PORT]
+        if any(doctor.find_server_listeners(ports).values()):
+            return False
+        for url in (f"https://localhost:{doctor.HTTPS_PORT}/",
+                    f"http://localhost:{doctor.HTTP_PORT}/"):
+            code, _ = doctor._get(url, timeout=2)
+            if code is not None:      # answered at all → still serving
+                return False
+        return True
+
     def _maybe_crash(self):
         """Handle an unexpected server exit exactly once — from either the
         stdout pump (self-started) or status polling (adopted). Fires the
         alert/beep and, if keep-alive is on, schedules a backoff restart."""
         if self._exit_handled:
+            return
+        # A deliberate stop is in progress — the exit is expected, not a crash.
+        # Both detectors (stdout pump + status poll) funnel here, so this one
+        # guard closes the race where only one path's flag was set in time.
+        if self._stopping:
             return
         self._exit_handled = True
         rc = self._last_rc
@@ -1122,7 +1141,15 @@ class Dashboard(QtWidgets.QWidget):
         # are excluded by the transition guards below.
         if (self._was_running and not running and not self._starting
                 and not self._stopping and not self._restart_pending):
-            self._maybe_crash()
+            # Guard against a transient process-detection miss: under load (e.g.
+            # the SSM demo holds an SSE stream open and pulls the big bones.json)
+            # psutil can briefly fail to resolve the busy server's PID, which
+            # would otherwise be misread as a crash. Only fire if the server is
+            # really gone — i.e. it no longer answers and nothing owns the port.
+            if self._server_really_down():
+                self._maybe_crash()
+            else:
+                running = True   # false alarm — the server is still up
         self._was_running = running
 
         col = GREEN if running else GREY
@@ -1306,6 +1333,9 @@ class Dashboard(QtWidgets.QWidget):
 
     def stop_server(self):
         self._append_log("[dashboard] stopping server…")
+        # Mark the stop as deliberate *before* terminating, so an exit seen by
+        # either detector during teardown is never mistaken for a crash.
+        self._stopping = True
         # Ask the process to exit (non-blocking) — teardown is then tracked by
         # polling in _apply_status so the GUI never freezes.
         if self.proc and self.proc.poll() is None:
