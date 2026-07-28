@@ -85,6 +85,7 @@
     .of-actions { display: flex; gap: 10px; margin-top: 14px; }
     .of-actions button { flex: 1; padding: 0 12px; }
     .of-actions button.secondary { background: #e6e4ef; color: #1b1b1f; }
+    button.danger { background: #ba1a1a; color: #fff; margin-top: 12px; }
 
     /* Hamburger menu button + modal */
     .menu-btn { background: #e6e4ef; color: #1b1b1f; }
@@ -123,12 +124,14 @@
     .switch input:checked + .slider::before { transform: translateX(22px); }
     .switch input:disabled + .slider { opacity: .5; cursor: not-allowed; }
     #modeLabel { font-size: 14px; font-weight: 500; color: #1b1b1f; min-width: 104px; }
+    .diff-label { font-size: 14px; font-weight: 500; color: #1b1b1f; }
 </style>
 </head>
 <body>
 <div id="wrap">
     <div class="bar">
         <button id="menuBtn" class="menu-btn" title="Input &amp; how to play">☰ Menu</button>
+        <label for="difficulty" class="diff-label">Difficulty:</label>
         <select id="difficulty" title="Difficulty">
             <option value="easy">Easy 🐛</option>
             <option value="normal" selected>Normal</option>
@@ -177,6 +180,10 @@
                 <li>Move the bird up and down to catch the worms 🐛 and avoid the cats 🐱!</li>
             </ol>
             <p class="info-note">In microphone mode the game reads the live audio stream and band-passes it (20–300&nbsp;Hz) to turn your muscle activation into the bird's height.</p>
+            <hr class="menu-div">
+            <h3>Leaderboard</h3>
+            <p class="info-note" style="margin-top:0">Scores are shared with everyone playing this demo.</p>
+            <button id="clearScoresBtn" class="danger">Clear high scores</button>
         </div>
     </div>
 </div>
@@ -222,6 +229,11 @@ const CAT_CROUCH = 0.72;             // wiggle time at the jump point (s)
 const CAT_JUMP_DUR = 0.5;            // pounce arc duration (s)
 const CAT_JUMP_SPAN = 2 * BIRD_SIZE; // horizontal reach of the arc (~2 birds)
 const CAT_MAX_UP = H / 4;            // highest it can reach (3/4 up the screen)
+// Top of the grass band in the background art (~y 612 on the 700px canvas).
+// A worm/cat centred at or below this is "on the ground", so it crawls/walks
+// across bare instead of riding a paper plane or paraglider.
+const GRASS_TOP = 612;
+const onGrass = (y) => y >= GRASS_TOP;
 
 // ---- DOM ----
 const cv = document.getElementById('cv');
@@ -309,6 +321,22 @@ document.getElementById('menuBtn').addEventListener('click', () => { menuModal.h
 document.getElementById('menuClose').addEventListener('click', () => { menuModal.hidden = true; });
 menuModal.addEventListener('click', e => { if (e.target === menuModal) menuModal.hidden = true; });
 
+// Clear the shared leaderboard (affects everyone playing the demo).
+const clearScoresBtn = document.getElementById('clearScoresBtn');
+clearScoresBtn.addEventListener('click', async () => {
+    if (!confirm('Clear the high scores for everyone? This can\'t be undone.')) return;
+    clearScoresBtn.disabled = true;
+    try {
+        const r = await fetch(SCORES_API, { method: 'DELETE' });
+        if (!r.ok) throw new Error('server said no');
+        leaderboard = await r.json();   // now [] — the canvas render loop repaints it
+        statusEl.textContent = 'High scores cleared. 🧹';
+    } catch (err) {
+        statusEl.textContent = 'Couldn\'t clear the leaderboard — server isn\'t reachable.';
+    }
+    clearScoresBtn.disabled = false;
+});
+
 // ---- Images ----
 const imgs = {};
 function loadImg(name, src) {
@@ -337,6 +365,35 @@ let penalty = { active: false, x: 0, y: 0, start: 0 };
 // A worm or flying cat that trails a pouncing cat by ~1s (hard mode).
 let trailer = { active: false, pending: false, type: 'worm', x: 0, y: 0, start: 0, spawnAt: 0 };
 const TRAILER_CHANCE = 0.75, TRAILER_DELAY = 1.0;   // P(trailer) and its lag (s)
+
+// When the bird hits a cat, it blinks red for HIT_FLASH_DUR seconds.
+let hitFlash = -1;
+const HIT_FLASH_DUR = 0.5;
+
+// Celebration particles that rise from the bird when it catches a worm.
+let particles = [];
+const PARTICLE_COLORS = ['#ffd21e', '#ffe680', '#1f2bd4', '#5b8bff'];   // yellows + blues
+function spawnCatchBurst(x, y, t) {
+    for (let i = 0; i < 18; i++) {
+        const ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;   // fan upward
+        const spd = 140 + Math.random() * 160;                    // px/s
+        particles.push({
+            x, y,
+            vx: Math.cos(ang) * spd,
+            vy: Math.sin(ang) * spd,
+            born: t,
+            life: 0.6 + Math.random() * 0.4,                      // seconds
+            size: 3 + Math.random() * 4,
+            color: PARTICLE_COLORS[(Math.random() * PARTICLE_COLORS.length) | 0],
+        });
+    }
+}
+
+// Floating "+1" / "-1" score popups that drift up from the bird on each hit.
+let floatTexts = [];
+function spawnFloatText(text, color, x, y, t) {
+    floatTexts.push({ text, color, x, y, born: t, life: 0.9 });
+}
 
 // Input mode: keyboard (dev, no mic/calibration) vs microphone (EMG). Default
 // keyboard so the game is instantly playable; flip the switch to use the mic.
@@ -539,6 +596,7 @@ againBtn.addEventListener('click', () => startGame());
 quitBtn.addEventListener('click', () => {
     calibrateEmg = false; gameActive = false; calibrationActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    particles = []; floatTexts = [];
     nameEntryEl.hidden = true;
     againBtn.disabled = true;
     score = 0;
@@ -549,6 +607,7 @@ function startGame() {
     calibrateEmg = true;
     diff = DIFFICULTY[difficultySel.value] || DIFFICULTY.normal;   // lock in difficulty
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    particles = []; floatTexts = [];
     nameEntryEl.hidden = true;
     if (keyboardMode) birdY = H / 2;   // start centred (mic mode sets it from EMG)
     score = 0;
@@ -560,6 +619,7 @@ function startGame() {
 function endGame() {
     gameActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    particles = []; floatTexts = [];
     onGameOver();   // record/offer to submit the score, refresh the leaderboard
 }
 
@@ -649,6 +709,8 @@ function update() {
                 coin.x = W - p * W;
                 if (Math.abs(coin.x - W / 2) < X_HIT && Math.abs(coin.y - birdY) < Y_HIT) {
                     coin.active = false; score += 1;
+                    spawnCatchBurst(W / 2, birdY, t);
+                    spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
                 }
             }
         }
@@ -673,7 +735,8 @@ function update() {
                     c.x = c.jumpFromX - jt * CAT_JUMP_SPAN;
                     c.y = CAT_BOTTOM_Y + (c.peakY - CAT_BOTTOM_Y) * Math.sin(Math.PI * jt);
                     if (Math.abs(c.x - W / 2) < X_HIT && Math.abs(c.y - birdY) < Y_HIT) {
-                        c.active = false; score -= 1;
+                        c.active = false; score -= 1; hitFlash = t;
+                        spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
                     }
                 }
             } else {   // land — trot off and vanish
@@ -686,7 +749,8 @@ function update() {
             else {
                 penalty.x = W - p * W;
                 if (Math.abs(penalty.x - W / 2) < X_HIT && Math.abs(penalty.y - birdY) < Y_HIT) {
-                    penalty.active = false; score -= 1;
+                    penalty.active = false; score -= 1; hitFlash = t;
+                    spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
                 }
             }
         }
@@ -705,6 +769,13 @@ function update() {
                 if (Math.abs(trailer.x - W / 2) < X_HIT && Math.abs(trailer.y - birdY) < Y_HIT) {
                     trailer.active = false;
                     score += (trailer.type === 'worm' ? 1 : -1);
+                    if (trailer.type === 'worm') {
+                        spawnCatchBurst(W / 2, birdY, t);
+                        spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
+                    } else {
+                        hitFlash = t;
+                        spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
+                    }
                 }
             }
         }
@@ -721,6 +792,86 @@ function update() {
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+// Advance and paint the catch-celebration particles. Position is derived from
+// each particle's age (t - born) so it's independent of frame rate; gravity
+// tugs them back down and they fade out over their lifetime.
+const PARTICLE_GRAVITY = 260;   // px/s^2
+function drawParticles(t) {
+    if (!particles.length) return;
+    particles = particles.filter(p => t - p.born < p.life);
+    ctx2d.save();
+    for (const p of particles) {
+        const age = t - p.born;
+        const x = p.x + p.vx * age;
+        const y = p.y + p.vy * age + 0.5 * PARTICLE_GRAVITY * age * age;
+        ctx2d.globalAlpha = Math.max(0, 1 - age / p.life);
+        ctx2d.fillStyle = p.color;
+        ctx2d.beginPath();
+        ctx2d.arc(x, y, p.size, 0, Math.PI * 2);
+        ctx2d.fill();
+    }
+    ctx2d.restore();
+}
+
+// A red-tinted copy of the bird sprite, built once and cached. 'source-atop'
+// paints red only where the bird's pixels are, keeping its silhouette so the
+// bird itself appears to blink red (not a red box over it).
+let birdRed = null;
+function getRedBird() {
+    if (birdRed || !imgs.bird) return birdRed;
+    const c = document.createElement('canvas');
+    c.width = imgs.bird.width; c.height = imgs.bird.height;
+    const g = c.getContext('2d');
+    g.drawImage(imgs.bird, 0, 0);
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = '#ff2b2b';
+    g.fillRect(0, 0, c.width, c.height);
+    birdRed = c;
+    return birdRed;
+}
+
+// Cached pixel-art "+1"/"-1" sprites. Each is rendered small with a chunky
+// monospace font + dark outline, then blitted scaled-up with smoothing off in
+// drawFloatTexts() so the edges stay blocky (the pixel-art look).
+const scoreSprites = {};
+function getScoreSprite(text, color) {
+    if (scoreSprites[text]) return scoreSprites[text];
+    const sw = 22, sh = 14;
+    const c = document.createElement('canvas');
+    c.width = sw; c.height = sh;
+    const g = c.getContext('2d');
+    g.font = '900 12px "Courier New", monospace';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.lineJoin = 'round';
+    g.lineWidth = 3; g.strokeStyle = '#0c0c48';   // dark outline for contrast
+    g.strokeText(text, sw / 2, sh / 2 + 1);
+    g.fillStyle = color;
+    g.fillText(text, sw / 2, sh / 2 + 1);
+    scoreSprites[text] = c;
+    return c;
+}
+
+// Advance and paint the floating score popups (rise + fade), scaled up with
+// nearest-neighbour so they read as pixel art.
+function drawFloatTexts(t) {
+    if (!floatTexts.length) return;
+    floatTexts = floatTexts.filter(f => t - f.born < f.life);
+    const prevSmooth = ctx2d.imageSmoothingEnabled;
+    ctx2d.imageSmoothingEnabled = false;
+    ctx2d.save();
+    const SCALE = 3;
+    for (const f of floatTexts) {
+        const age = t - f.born;
+        const spr = getScoreSprite(f.text, f.color);
+        const w = spr.width * SCALE, h = spr.height * SCALE;
+        const y = f.y - 40 - age * 70;          // start above the bird, rise 70px/s
+        ctx2d.globalAlpha = Math.max(0, 1 - age / f.life);
+        ctx2d.drawImage(spr, Math.round(f.x - w / 2), Math.round(y - h / 2), w, h);
+    }
+    ctx2d.restore();
+    ctx2d.imageSmoothingEnabled = prevSmooth;
+}
+
 function drawImageCentered(im, x, y, size) {
     if (im) {
         const r = im.width / im.height || 1;
@@ -918,27 +1069,45 @@ function draw(t) {
 
     // Playing
     drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);
+    const flashAge = t - hitFlash;
+    if (flashAge < HIT_FLASH_DUR) {
+        const red = getRedBird();
+        if (red) {
+            // Pulse the red tint on/off and fade it out over the flash window.
+            const blink = 0.5 + 0.5 * Math.sin(flashAge * 42);
+            ctx2d.save();
+            ctx2d.globalAlpha = blink * (1 - flashAge / HIT_FLASH_DUR);
+            drawImageCentered(red, W / 2, birdY, BIRD_SIZE);
+            ctx2d.restore();
+        }
+    }
     if (coin.active) {
-        drawPaperPlaneBack(coin.x, coin.y, t);
+        const grounded = onGrass(coin.y);   // crawling worm — no paper plane
+        if (!grounded) drawPaperPlaneBack(coin.x, coin.y, t);
         drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
-        drawPaperPlaneFront(coin.x, coin.y, t);
+        if (!grounded) drawPaperPlaneFront(coin.x, coin.y, t);
     }
     if (trailer.active) {
-        if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y, t);
-        else drawPaperPlaneBack(trailer.x, trailer.y, t);
+        const grounded = onGrass(trailer.y);
+        if (!grounded) {
+            if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y, t);
+            else drawPaperPlaneBack(trailer.x, trailer.y, t);
+        }
         drawImageCentered(trailer.type === 'worm' ? imgs.coin : imgs.penalty, trailer.x, trailer.y, ITEM_SIZE);
-        if (trailer.active && trailer.type === 'worm') drawPaperPlaneFront(trailer.x, trailer.y, t);
+        if (!grounded && trailer.type === 'worm') drawPaperPlaneFront(trailer.x, trailer.y, t);
     }
     if (penalty.active) {
         let px = penalty.x;
         if (penalty.jump) {
             // Wiggle while crouched, lining up the pounce.
             if (penalty.phase === 'wiggle') px += Math.sin(t * 45) * 8;
-        } else {
+        } else if (!onGrass(penalty.y)) {
             drawParaglider(px, penalty.y, t);   // flying cats cruise in on a paramotor
         }
         drawImageCentered(imgs.penalty, px, penalty.y, ITEM_SIZE);
     }
+    drawParticles(t);
+    drawFloatTexts(t);
 
     // Score (top-left) + countdown (top-right)
     if (gameActive) {

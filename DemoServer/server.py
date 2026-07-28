@@ -300,6 +300,18 @@ def emg_scores_post():
     return jsonify(scores[:EMG_TOP_N])
 
 
+@app.route('/api/emg/scores', methods=['DELETE'])
+def emg_scores_clear():
+    """Wipe the shared leaderboard. Returns the (now empty) top list."""
+    with _emg_lock:
+        try:
+            with open(EMG_SCORES_FILE, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+        except OSError as e:
+            return jsonify({'error': f'could not clear: {e}'}), 500
+    return jsonify([])
+
+
 # ---------------------------------------------------------------------------
 # SSE progress stream  (one per session)
 # ---------------------------------------------------------------------------
