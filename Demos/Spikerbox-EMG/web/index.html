@@ -203,11 +203,12 @@ const WINDOW_SECONDS = 2;        // object travel time base — smaller = faster
 const COIN_DISAPPEAR = 0.6;      // object vanishes after this fraction of WINDOW_SECONDS
 
 // Difficulty presets. coinChance = P(worm) vs cat; catJumpChance = of the cats,
-// the fraction that pounce from the floor (the rest fly across on a paramotor).
+// the fraction that pounce from the floor (the rest fly across on a paramotor);
+// speed scales how fast worms/cats cross the screen (easy is 30% slower).
 const DIFFICULTY = {
-    easy:   { coinChance: 0.80, catJumpChance: 0 },     // lots of worms, few (flying) cats
-    normal: { coinChance: 0.60, catJumpChance: 0 },     // balanced, slightly more worms
-    hard:   { coinChance: 0.35, catJumpChance: 0.6 },   // more cats: a mix of pouncing + flying
+    easy:   { coinChance: 0.80, catJumpChance: 0, speed: 0.7 },   // lots of worms, few (flying) cats, slower
+    normal: { coinChance: 0.60, catJumpChance: 0, speed: 1.0 },   // balanced, slightly more worms
+    hard:   { coinChance: 0.35, catJumpChance: 0.6, speed: 1.0 }, // more cats: a mix of pouncing + flying
 };
 let diff = DIFFICULTY.normal;    // active preset, locked in at game start
 const RMS_WIN = 0.02;            // RMS envelope window (s)
@@ -229,10 +230,10 @@ const CAT_CROUCH = 0.72;             // wiggle time at the jump point (s)
 const CAT_JUMP_DUR = 0.5;            // pounce arc duration (s)
 const CAT_JUMP_SPAN = 2 * BIRD_SIZE; // horizontal reach of the arc (~2 birds)
 const CAT_MAX_UP = H / 4;            // highest it can reach (3/4 up the screen)
-// Top of the grass band in the background art (~y 612 on the 700px canvas).
+// Top of the grass band in the background art (~y 605 on the 700px canvas).
 // A worm/cat centred at or below this is "on the ground", so it crawls/walks
 // across bare instead of riding a paper plane or paraglider.
-const GRASS_TOP = 612;
+const GRASS_TOP = 605;
 const onGrass = (y) => y >= GRASS_TOP;
 
 // ---- DOM ----
@@ -360,6 +361,9 @@ let calStart = 0, gameStart = 0;
 let baselineBuf = [], mvcBuf = [], baselineValue = null, mvcValue = null;
 let score = 0;
 let birdY = H / 2;
+// Wing-flap animation state: the bird beats its wings while climbing and holds
+// them extended (a glide) while descending. Driven by its vertical velocity.
+let birdPrevY = H / 2, birdVY = 0, flapPhase = 0;
 let coin = { active: false, x: 0, y: 0, start: 0 };
 let penalty = { active: false, x: 0, y: 0, start: 0 };
 // A worm or flying cat that trails a pouncing cat by ~1s (hard mode).
@@ -610,6 +614,7 @@ function startGame() {
     particles = []; floatTexts = [];
     nameEntryEl.hidden = true;
     if (keyboardMode) birdY = H / 2;   // start centred (mic mode sets it from EMG)
+    birdPrevY = birdY; birdVY = 0; flapPhase = 0;   // no flap spike on frame 1
     score = 0;
     gameStart = now();
     gameActive = true;
@@ -703,7 +708,7 @@ function update() {
         if (controllable) {
         const travel = COIN_DISAPPEAR * WINDOW_SECONDS;   // seconds visible
         if (coin.active) {
-            const p = (t - coin.start) / WINDOW_SECONDS;
+            const p = (t - coin.start) / WINDOW_SECONDS * diff.speed;   // easy mode slows the crossing
             if (p >= COIN_DISAPPEAR) { coin.active = false; }
             else {
                 coin.x = W - p * W;
@@ -734,6 +739,10 @@ function update() {
                 else {
                     c.x = c.jumpFromX - jt * CAT_JUMP_SPAN;
                     c.y = CAT_BOTTOM_Y + (c.peakY - CAT_BOTTOM_Y) * Math.sin(Math.PI * jt);
+                    // Tilt the (left-facing) cat along the arc tangent: nose up on
+                    // the way up, level at the apex, nose down on the way down.
+                    const raw = Math.atan2(-(c.peakY - CAT_BOTTOM_Y) * Math.PI * Math.cos(Math.PI * jt), CAT_JUMP_SPAN);
+                    c.angle = Math.max(-1.3, Math.min(1.3, raw));
                     if (Math.abs(c.x - W / 2) < X_HIT && Math.abs(c.y - birdY) < Y_HIT) {
                         c.active = false; score -= 1; hitFlash = t;
                         spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
@@ -744,7 +753,7 @@ function update() {
                 if (c.x < -ITEM_SIZE) c.active = false;
             }
         } else if (penalty.active) {
-            const p = (t - penalty.start) / WINDOW_SECONDS;
+            const p = (t - penalty.start) / WINDOW_SECONDS * diff.speed;
             if (p >= COIN_DISAPPEAR) { penalty.active = false; }
             else {
                 penalty.x = W - p * W;
@@ -762,7 +771,7 @@ function update() {
             trailer.start = t; trailer.x = W;
         }
         if (trailer.active) {
-            const p = (t - trailer.start) / WINDOW_SECONDS;
+            const p = (t - trailer.start) / WINDOW_SECONDS * diff.speed;
             if (p >= COIN_DISAPPEAR) { trailer.active = false; }
             else {
                 trailer.x = W - p * W;
@@ -813,21 +822,79 @@ function drawParticles(t) {
     ctx2d.restore();
 }
 
-// A red-tinted copy of the bird sprite, built once and cached. 'source-atop'
-// paints red only where the bird's pixels are, keeping its silhouette so the
-// bird itself appears to blink red (not a red box over it).
-let birdRed = null;
-function getRedBird() {
-    if (birdRed || !imgs.bird) return birdRed;
+// ---- Bird flap frames ----
+// bird_flap_strip.png is a horizontal strip of 4 wing poses (up → out → down →
+// recover), all aligned on the body. Slice it into per-frame canvases at load.
+// The body anchor (below) is where the bird's belly sits within each frame, so
+// we can pin it to (W/2, birdY) regardless of how far the wings spread.
+const BIRD_FRAMES = 4;
+const FLAP_AX = 0.592, FLAP_AY = 0.538;   // body anchor, fraction of the frame
+const FLAP_SIZE = 90;                     // draw size (matches the old bird's body)
+let birdFrames = [], birdRedFrames = [];
+function sliceBirdFrames() {
+    const im = imgs.birdFlap;
+    if (!im) return;
+    const fw = im.width / BIRD_FRAMES;
+    for (let i = 0; i < BIRD_FRAMES; i++) {
+        const c = document.createElement('canvas');
+        c.width = fw; c.height = im.height;
+        c.getContext('2d').drawImage(im, i * fw, 0, fw, im.height, 0, 0, fw, im.height);
+        birdFrames.push(c);
+    }
+}
+// Red-tinted copy of a frame, cached. 'source-atop' paints red only over the
+// bird's pixels so it blinks red in its own silhouette (used for the hit flash).
+function getRedFrame(i) {
+    if (birdRedFrames[i]) return birdRedFrames[i];
+    const src = birdFrames[i];
+    if (!src) return null;
     const c = document.createElement('canvas');
-    c.width = imgs.bird.width; c.height = imgs.bird.height;
+    c.width = src.width; c.height = src.height;
     const g = c.getContext('2d');
-    g.drawImage(imgs.bird, 0, 0);
+    g.drawImage(src, 0, 0);
     g.globalCompositeOperation = 'source-atop';
     g.fillStyle = '#ff2b2b';
     g.fillRect(0, 0, c.width, c.height);
-    birdRed = c;
-    return birdRed;
+    birdRedFrames[i] = c;
+    return c;
+}
+
+// ---- Cat run frames ----
+// cat_run_strip.png is a 4-frame gallop (facing left, the way cats travel).
+// A cat down in the grass runs; airborne (a pounce) or sky-borne cats use the
+// static sprite (the paraglider wraps the sky ones).
+const CATRUN_FRAMES = 4;
+const CATRUN_SIZE = 120;
+let catRunFrames = [];
+function sliceCatFrames() {
+    const im = imgs.catRun;
+    if (!im) return;
+    const fw = im.width / CATRUN_FRAMES;
+    for (let i = 0; i < CATRUN_FRAMES; i++) {
+        const c = document.createElement('canvas');
+        c.width = fw; c.height = im.height;
+        c.getContext('2d').drawImage(im, i * fw, 0, fw, im.height, 0, 0, fw, im.height);
+        catRunFrames.push(c);
+    }
+}
+function drawCat(x, y, t) {
+    if (onGrass(y) && catRunFrames.length) {
+        const f = Math.floor(t * 10) % CATRUN_FRAMES;   // ~10fps gallop
+        drawImageCentered(catRunFrames[f], x, y, CATRUN_SIZE);
+    } else {
+        drawImageCentered(imgs.penalty, x, y, ITEM_SIZE);
+    }
+}
+// The stretched-out gallop frame (frame 0), rotated to the pounce arc — used
+// while the cat is mid-leap so it reads as a real jump.
+function drawCatStretched(x, y, angle) {
+    const im = catRunFrames.length ? catRunFrames[0] : imgs.penalty;
+    const size = catRunFrames.length ? CATRUN_SIZE : ITEM_SIZE;
+    ctx2d.save();
+    ctx2d.translate(x, y);
+    ctx2d.rotate(angle || 0);
+    drawImageCentered(im, 0, 0, size);
+    ctx2d.restore();
 }
 
 // Cached pixel-art "+1"/"-1" sprites. Each is rendered small with a chunky
@@ -870,6 +937,34 @@ function drawFloatTexts(t) {
     }
     ctx2d.restore();
     ctx2d.imageSmoothingEnabled = prevSmooth;
+}
+
+// Compute the bird's flap pose from its vertical velocity. Called once per
+// frame (it advances the animation), then reused for the red-flash overlay so
+// both layers line up. Climbing → fast wing-beats; descending → wings held out.
+// Frame order in the strip: 0 up, 1 out, 2 down (full stroke), 3 recover.
+function birdPose() {
+    const vy = birdY - birdPrevY;
+    birdPrevY = birdY;
+    birdVY += (vy - birdVY) * 0.3;                   // smooth the velocity
+    const climbing = birdVY < -0.4;
+    const descending = birdVY > 0.6;
+    if (climbing) flapPhase += 0.24;                 // advance the flap while climbing
+    else flapPhase = 0;                              // reset so a new climb starts wings-up
+    // Climbing → flap cycle; descending → wings down; holding → wings up (gliding).
+    const frame = climbing ? (Math.floor(flapPhase) % BIRD_FRAMES) : (descending ? 2 : 0);
+    return {
+        frame,
+        tilt: Math.max(-0.35, Math.min(0.35, birdVY * 0.03)),   // nose up/down
+    };
+}
+function drawBirdPosed(im, pose, size) {
+    // Pin the body anchor to (W/2, birdY) and tilt the nose with the motion.
+    ctx2d.save();
+    ctx2d.translate(W / 2, birdY);
+    ctx2d.rotate(pose.tilt);
+    ctx2d.drawImage(im, -FLAP_AX * size, -FLAP_AY * size, size, size);
+    ctx2d.restore();
 }
 
 function drawImageCentered(im, x, y, size) {
@@ -1068,18 +1163,24 @@ function draw(t) {
     }
 
     // Playing
-    drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);
-    const flashAge = t - hitFlash;
-    if (flashAge < HIT_FLASH_DUR) {
-        const red = getRedBird();
-        if (red) {
-            // Pulse the red tint on/off and fade it out over the flash window.
-            const blink = 0.5 + 0.5 * Math.sin(flashAge * 42);
-            ctx2d.save();
-            ctx2d.globalAlpha = blink * (1 - flashAge / HIT_FLASH_DUR);
-            drawImageCentered(red, W / 2, birdY, BIRD_SIZE);
-            ctx2d.restore();
+    const pose = birdPose();
+    const frame = birdFrames[pose.frame];
+    if (frame) {
+        drawBirdPosed(frame, pose, FLAP_SIZE);
+        const flashAge = t - hitFlash;
+        if (flashAge < HIT_FLASH_DUR) {
+            const red = getRedFrame(pose.frame);
+            if (red) {
+                // Pulse the red tint on/off and fade it out over the flash window.
+                const blink = 0.5 + 0.5 * Math.sin(flashAge * 42);
+                ctx2d.save();
+                ctx2d.globalAlpha = blink * (1 - flashAge / HIT_FLASH_DUR);
+                drawBirdPosed(red, pose, FLAP_SIZE);
+                ctx2d.restore();
+            }
         }
+    } else {
+        drawImageCentered(imgs.bird, W / 2, birdY, BIRD_SIZE);   // fallback if strip missing
     }
     if (coin.active) {
         const grounded = onGrass(coin.y);   // crawling worm — no paper plane
@@ -1104,7 +1205,13 @@ function draw(t) {
         } else if (!onGrass(penalty.y)) {
             drawParaglider(px, penalty.y, t);   // flying cats cruise in on a paramotor
         }
-        drawImageCentered(imgs.penalty, px, penalty.y, ITEM_SIZE);
+        if (penalty.jump && penalty.phase === 'wiggle') {
+            drawImageCentered(imgs.penalty, px, penalty.y, ITEM_SIZE);   // seated cat, ready to pounce
+        } else if (penalty.jump && penalty.phase === 'jump') {
+            drawCatStretched(px, penalty.y, penalty.angle);   // stretched, angled to the arc
+        } else {
+            drawCat(px, penalty.y, t);   // runs when on the grass, static when airborne
+        }
     }
     drawParticles(t);
     drawFloatTexts(t);
@@ -1137,11 +1244,15 @@ function draw(t) {
 // ---------------------------------------------------------------------------
 (async function boot() {
     await Promise.all([
-        loadImg('background', 'resources/background.png'),
+        loadImg('background', 'resources/background_pixel.png'),
         loadImg('bird', 'resources/bird.png'),
+        loadImg('birdFlap', 'resources/bird_flap_strip.png'),
         loadImg('coin', 'resources/worm.png'),
         loadImg('penalty', 'resources/cat.png'),
+        loadImg('catRun', 'resources/cat_run_strip.png'),
     ]);
+    sliceBirdFrames();   // split the flap strip into individual frames
+    sliceCatFrames();    // split the cat-run strip into individual frames
     requestAnimationFrame(update);
     fetchScores();       // populate the leaderboard on load
     setKeyboardMode();   // default: keyboard control, no permissions needed
