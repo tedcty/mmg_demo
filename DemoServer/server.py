@@ -274,10 +274,15 @@ def emg_scores_get():
     return jsonify(scores[:EMG_TOP_N])
 
 
+EMG_DIFFICULTIES = ('easy', 'normal', 'hard')
+
+
 @app.route('/api/emg/scores', methods=['POST'])
 def emg_scores_post():
     """Record a score. Returns the updated top list. Name is sanitised to a
-    short label; score is range-checked so a bad client can't poison the board."""
+    short label; score is range-checked so a bad client can't poison the board.
+    `diff` records which difficulty it was set on — omitted if the client didn't
+    send a known one, which is also how scores from before this existed look."""
     data = request.get_json(force=True, silent=True) or {}
     name = re.sub(r'[^A-Za-z0-9 _\-]', '', str(data.get('name', ''))).strip()[:12] or 'Anon'
     try:
@@ -286,10 +291,14 @@ def emg_scores_post():
         return jsonify({'error': 'invalid score'}), 400
     if not (0 <= score <= 100000):
         return jsonify({'error': 'score out of range'}), 400
+    diff = str(data.get('diff', '')).strip().lower()
 
     with _emg_lock:
         scores = _load_emg_scores()
-        scores.append({'name': name, 'score': score, 'ts': int(time.time())})
+        entry = {'name': name, 'score': score, 'ts': int(time.time())}
+        if diff in EMG_DIFFICULTIES:
+            entry['diff'] = diff
+        scores.append(entry)
         scores.sort(key=lambda s: s.get('score', 0), reverse=True)
         scores = scores[:100]   # keep the file bounded
         try:
@@ -297,7 +306,11 @@ def emg_scores_post():
                 json.dump(scores, f)
         except OSError as e:
             return jsonify({'error': f'could not save: {e}'}), 500
-    return jsonify(scores[:EMG_TOP_N])
+        # Flag the row we just created so the client can highlight it without
+        # having to guess by name+score (names get sanitised above, and two
+        # players can share a name and score). Response-only — not persisted.
+        top = [dict(s, **({'you': True} if s is entry else {})) for s in scores[:EMG_TOP_N]]
+    return jsonify(top)
 
 
 @app.route('/api/emg/scores', methods=['DELETE'])

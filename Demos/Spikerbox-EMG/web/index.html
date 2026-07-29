@@ -146,7 +146,7 @@
         <div id="nameEntry" class="overlay-form" hidden>
             <div class="of-card">
                 <div class="of-title">New high score! 🎉</div>
-                <div class="of-score">Your score: <strong id="nameScore">0</strong></div>
+                <div class="of-score">Your score: <strong id="nameScore">0</strong><span id="nameDiff"></span></div>
                 <input id="nameInput" maxlength="12" placeholder="Your initials"
                        autocomplete="off" autocapitalize="characters" spellcheck="false">
                 <div class="of-actions">
@@ -211,8 +211,24 @@ const DIFFICULTY = {
     hard:   { coinChance: 0.35, catJumpChance: 0.6, speed: 1.0 }, // more cats: a mix of pouncing + flying
 };
 let diff = DIFFICULTY.normal;    // active preset, locked in at game start
+let diffName = 'normal';         // ...and its key, recorded with the score
+// How each difficulty is labelled on the leaderboard. Scores set before the
+// board recorded this have no diff and show a dash.
+const DIFF_LABEL = { easy: 'EASY', normal: 'NORMAL', hard: 'HARD' };
+const DIFF_TITLE = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
+const DIFF_COLOR = { easy: '#7bdc6a', normal: '#8fb6ff', hard: '#ff8c6b' };
 const RMS_WIN = 0.02;            // RMS envelope window (s)
 const CURSOR_SMOOTHING_SECONDS = 0.5;
+// Mic mode: the EMG level sets a *target* height and the bird flies to it under
+// its own speed limit, so it reads as a fast climb (or dive) instead of a
+// teleport. A hard contraction can overshoot MVC several times over, which sends
+// the clamped cursor across its whole range in a fraction of the smoothing
+// window — that's what made the bird appear to jump. Capped speed covers the
+// long haul, then it eases into the target: a full-screen move settles in
+// ~0.27s, shorter ones proportionally sooner. Slow tracking is unaffected — the
+// cap only bites on moves that were too fast to see.
+const MIC_TRAVEL_SPEED = 4200;   // px/s ceiling (~0.17s across the full 700px)
+const MIC_TRAVEL_TAU = 0.04;     // ease-out time constant near the target (s)
 const LOWCUT = 20.0, HIGHCUT = 300.0;   // EMG band-pass (Hz)
 const BASELINE_DURATION = 3.0;   // calibration: relaxed phase (s)
 const MVC_DURATION = 3.0;        // calibration: max contraction phase (s)
@@ -226,11 +242,16 @@ const WORM_X_HIT = 65, WORM_Y_HIT = 40;   // worms are a touch easier to catch t
 const BIRD_SIZE = 90, ITEM_SIZE = 70;
 // Hard-mode pouncing cat
 const CAT_BOTTOM_Y = H - 55;         // resting height of a pouncing cat
-const CAT_SPEED = 8.5;               // ground speed (px/frame)
+const CAT_SPEED = 510;               // ground speed (px/s)
 const CAT_CROUCH = 0.72;             // wiggle time at the jump point (s)
 const CAT_JUMP_DUR = 0.5;            // pounce arc duration (s)
 const CAT_JUMP_SPAN = 2 * BIRD_SIZE; // horizontal reach of the arc (~2 birds)
 const CAT_MAX_UP = H / 3;            // highest it can reach (2/3 up the screen)
+// A pounce only pays out if the cat actually aimed at the bird — i.e. the bird
+// was inside the cat's vertical reach when it committed to the leap. Without
+// this every completed pounce scored a point, even one aimed at empty sky, so
+// hard mode handed out free points for doing nothing.
+const catInReach = (y) => y >= CAT_MAX_UP && y <= CAT_BOTTOM_Y;
 // Top of the grass band in the background art (~y 605 on the 700px canvas).
 // A worm/cat centred at or below this is "on the ground", so it crawls/walks
 // across bare instead of riding a paper plane or paraglider.
@@ -251,6 +272,7 @@ const statusEl = document.getElementById('status');
 const nameEntryEl = document.getElementById('nameEntry');
 const nameInputEl = document.getElementById('nameInput');
 const nameScoreEl = document.getElementById('nameScore');
+const nameDiffEl = document.getElementById('nameDiff');
 const submitScoreBtn = document.getElementById('submitScoreBtn');
 const skipScoreBtn = document.getElementById('skipScoreBtn');
 
@@ -259,6 +281,15 @@ const SCORES_API = '/api/emg/scores';
 const LB_TOP_N = 10;
 let leaderboard = [];
 let lastSubmittedTs = 0;   // highlights the row this player just added
+// The finished game's score, frozen when the name entry opens. The live `score`
+// keeps changing (a new game, or a Quit that zeroes it), so the overlay and the
+// POST must both read this snapshot instead.
+let pendingScore = 0;
+let pendingDiff = null;    // ...and the difficulty it was set on
+// Bumped on every start/quit. onGameOver() awaits the server, so by the time it
+// resolves the player may already have moved on — the id it captured tells it to
+// drop the overlay instead of popping it up over a live game.
+let gameSession = 0;
 
 async function fetchScores() {
     try {
@@ -272,29 +303,39 @@ function qualifies(sc) {
     if (leaderboard.length < LB_TOP_N) return true;
     return sc > leaderboard[leaderboard.length - 1].score;
 }
-async function onGameOver() {
+async function onGameOver(finalScore, finalDiff, session) {
     await fetchScores();
-    if (qualifies(score)) {
-        nameScoreEl.textContent = score;
+    if (session !== gameSession) return;   // player already restarted or quit
+    if (qualifies(finalScore)) {
+        pendingScore = finalScore;
+        pendingDiff = finalDiff;
+        nameScoreEl.textContent = finalScore;
+        nameDiffEl.textContent = DIFF_TITLE[finalDiff] ? ` on ${DIFF_TITLE[finalDiff]}` : '';
         nameInputEl.value = '';
         nameEntryEl.hidden = false;
         setTimeout(() => nameInputEl.focus(), 60);
     }
 }
 async function submitScore() {
-    const name = (nameInputEl.value || '').trim() || 'Anon';
+    // The input renders uppercase (CSS text-transform), which is display-only —
+    // send it uppercased too so the board matches what the player typed.
+    const name = (nameInputEl.value || '').trim().toUpperCase() || 'ANON';
+    const sc = pendingScore;   // the finished game's score, not the live one
+    const dn = pendingDiff;
     submitScoreBtn.disabled = true;
-    const entry = { name, score, ts: Math.floor(Date.now() / 1000) };
+    const entry = { name, score: sc, diff: dn, ts: Math.floor(Date.now() / 1000) };
     let saved = false, detail = '';
     try {
         const r = await fetch(SCORES_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, score }),
+            body: JSON.stringify({ name, score: sc, diff: dn }),
         });
         if (r.ok) {
             leaderboard = await r.json();
-            const mine = leaderboard.find(s => s.name === name && s.score === score);
+            // The POST response flags the row it just created ('you'), so the
+            // highlight survives name sanitising and name+score ties.
+            const mine = leaderboard.find(s => s.you);
             lastSubmittedTs = mine ? mine.ts : entry.ts;
             saved = true;
             statusEl.textContent = 'Score added to the leaderboard! 🏆';
@@ -319,7 +360,12 @@ nameInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitScor
 
 // ---- Menu modal (input mode + how to play) ----
 const menuModal = document.getElementById('menuModal');
-document.getElementById('menuBtn').addEventListener('click', () => { menuModal.hidden = false; });
+// Opening the menu pauses the game (see update()); drop any held arrow key so
+// the bird doesn't lurch when play resumes.
+document.getElementById('menuBtn').addEventListener('click', () => {
+    menuModal.hidden = false;
+    releaseKeys();
+});
 document.getElementById('menuClose').addEventListener('click', () => { menuModal.hidden = true; });
 menuModal.addEventListener('click', e => { if (e.target === menuModal) menuModal.hidden = true; });
 
@@ -352,6 +398,7 @@ function loadImg(name, src) {
 
 // ---- Audio state ----
 let audioCtx = null, mediaStream = null, workletNode = null;
+let currentDeviceId = null;   // which input the live graph is open on
 let fs = 48000;
 let envRing = null;      // ring buffer of recent instantaneous RMS envelope values
 let envCap = 0, envHead = 0, envCount = 0;
@@ -365,6 +412,9 @@ let birdY = H / 2;
 // Wing-flap animation state: the bird beats its wings while climbing and holds
 // them extended (a glide) while descending. Driven by its vertical velocity.
 let birdPrevY = H / 2, birdVY = 0, flapPhase = 0;
+// Mic mode flies the bird toward birdTargetY (see MIC_TRAVEL_SPEED); birdSnap
+// places it there outright on the first frame of a game.
+let birdTargetY = H / 2, birdSnap = false;
 let coin = { active: false, x: 0, y: 0, start: 0 };
 let penalty = { active: false, x: 0, y: 0, start: 0 };
 // A worm or flying cat that trails a pouncing cat by ~1s (hard mode).
@@ -404,9 +454,20 @@ function spawnFloatText(text, color, x, y, t) {
 // keyboard so the game is instantly playable; flip the switch to use the mic.
 let keyboardMode = true;
 let keyUp = false, keyDown = false;
-const KEY_SPEED = 11;            // bird px per frame under keyboard control
+const KEY_SPEED = 660;           // bird px per second under keyboard control
 
-function now() { return performance.now() / 1000; }
+// ---- Game clock ----
+// Everything timed (the 30s countdown, object travel, calibration, particles)
+// runs off this clock instead of the wall clock. It only advances while frames
+// are actually being drawn, and never by more than MAX_DT in one step, so a
+// hidden tab, an open menu or a blocking confirm() freezes the game rather than
+// fast-forwarding it — which used to end a game instantly and teleport worms
+// and cats straight past the bird's hit band.
+let gameClock = 0;               // seconds of played time
+let frameDt = 1 / 60;            // last frame's duration (s), shared with draw()
+let lastFrameMs = 0;
+const MAX_DT = 0.05;             // clamp a stall to one 20fps step
+function now() { return gameClock; }
 
 // ---------------------------------------------------------------------------
 // Audio: enumerate devices, then build the processing graph.
@@ -467,18 +528,31 @@ function setKeyboardMode() {
     modeLabel.textContent = '⌨️ Keyboard';
     deviceSel.disabled = true;
     startBtn.disabled = false;
+    stopAudio();   // hand the mic back — otherwise the browser keeps recording
     statusEl.textContent = 'Keyboard mode — press "Start the game", then use ↑ / ↓ to move the bird.';
 }
+// Picking a different input has to reopen the stream, and the old calibration
+// belongs to the old device — so stop and make the player calibrate again.
+deviceSel.addEventListener('change', () => {
+    stopAudio();
+    baselineValue = mvcValue = null;
+    resetToIdle('Input changed — press "Start the game" to calibrate on it.');
+});
 micToggle.addEventListener('change', () => {
+    // Switching input mid-game leaves the bird on a control source that isn't
+    // calibrated (or isn't streaming yet), so stop first either way.
     if (micToggle.checked) {
         // Microphone mode — this toggle flip is the user gesture that lets us
         // request mic access.
         keyboardMode = false;
         modeLabel.textContent = '🎤 Microphone';
+        baselineValue = mvcValue = null;   // any calibration belonged to keyboard/another input
+        resetToIdle('Switching to the microphone…');
         startBtn.disabled = true;
         initDevices();
     } else {
-        setKeyboardMode();
+        resetToIdle('Switching to the keyboard…');
+        setKeyboardMode();   // sets its own status, releases the mic, re-enables Start
     }
 });
 // Keyboard control of the bird (only used in keyboard mode).
@@ -491,9 +565,31 @@ window.addEventListener('keyup', e => {
     if (e.key === 'ArrowUp') keyUp = false;
     else if (e.key === 'ArrowDown') keyDown = false;
 });
+// keyup only fires while we have focus, so a key held during an alt-tab (or a
+// tab switch) would stay "down" and pin the bird to an edge on return.
+const releaseKeys = () => { keyUp = keyDown = false; };
+window.addEventListener('blur', releaseKeys);
+document.addEventListener('visibilitychange', releaseKeys);
+
+// Release the mic and tear the graph down. Until this runs the browser keeps the
+// recording indicator lit and holds the device open, so it has to happen when
+// leaving microphone mode or before opening a different input.
+function stopAudio() {
+    if (mediaStream) { mediaStream.getTracks().forEach(tr => tr.stop()); mediaStream = null; }
+    if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); workletNode = null; }
+    const dying = audioCtx;
+    audioCtx = null;
+    currentDeviceId = null;
+    envRing = null; envCap = 0; envHead = 0; envCount = 0;
+    if (dying) dying.close().catch(() => {});   // async, but the state above is already clear
+}
 
 async function startAudio(deviceId) {
-    if (audioCtx) return;   // already running
+    const want = deviceId || null;
+    // Reuse a running graph only if it's already on the requested input;
+    // otherwise rebuild it, so changing the device actually takes effect.
+    if (audioCtx && currentDeviceId === want) return;
+    stopAudio();
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
     fs = audioCtx.sampleRate;
@@ -536,6 +632,7 @@ async function startAudio(deviceId) {
     const sink = audioCtx.createGain(); sink.gain.value = 0;   // keep graph pulling, stay silent
     source.connect(hp1); hp1.connect(hp2); hp2.connect(lp1); lp1.connect(lp2);
     lp2.connect(workletNode); workletNode.connect(sink); sink.connect(audioCtx.destination);
+    currentDeviceId = want;
 }
 
 // Latest instantaneous envelope (most recent reading).
@@ -572,7 +669,6 @@ startBtn.addEventListener('click', async () => {
     // Keyboard mode: skip mic + calibration and drop straight into the game.
     if (keyboardMode) {
         startGame();
-        quitBtn.disabled = false;
         statusEl.textContent = 'Keyboard mode — use ↑ / ↓ to move the bird.';
         return;
     }
@@ -598,42 +694,68 @@ startBtn.addEventListener('click', async () => {
 });
 
 againBtn.addEventListener('click', () => startGame());
-quitBtn.addEventListener('click', () => {
+quitBtn.addEventListener('click', () => resetToIdle('Stopped. Press "Start the game" to play again.'));
+
+// Stop everything and go back to the attract screen. Shared by "Quit game" and
+// by a mid-session input change, so both land in the same clean state.
+function resetToIdle(message) {
+    gameSession++;   // drop any name entry still waiting on the server
     calibrateEmg = false; gameActive = false; calibrationActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
     particles = []; floatTexts = [];
+    hitFlash = -1;             // don't carry a red blink into the next game
+    releaseKeys();
     nameEntryEl.hidden = true;
     againBtn.disabled = true;
+    quitBtn.disabled = true;   // nothing left to quit
+    startBtn.disabled = false;
     score = 0;
-    statusEl.textContent = 'Stopped. Press "Start the game" to play again.';
-});
+    statusEl.textContent = message;
+}
 
 function startGame() {
+    gameSession++;   // any pending name entry from the last game is now stale
     calibrateEmg = true;
-    diff = DIFFICULTY[difficultySel.value] || DIFFICULTY.normal;   // lock in difficulty
+    // Lock in the difficulty (and remember which one, for the leaderboard).
+    diffName = DIFFICULTY[difficultySel.value] ? difficultySel.value : 'normal';
+    diff = DIFFICULTY[diffName];
     coin.active = penalty.active = trailer.active = trailer.pending = false;
     particles = []; floatTexts = [];
+    hitFlash = -1;             // fresh game, no leftover hit flash
     nameEntryEl.hidden = true;
     if (keyboardMode) birdY = H / 2;   // start centred (mic mode sets it from EMG)
+    birdSnap = !keyboardMode;          // mic mode: place the bird, don't fly it in
+    birdTargetY = birdY;
     birdPrevY = birdY; birdVY = 0; flapPhase = 0;   // no flap spike on frame 1
     score = 0;
     gameStart = now();
     gameActive = true;
     againBtn.disabled = false;
+    quitBtn.disabled = false;
+    startBtn.disabled = true;   // no restarting on top of a live game
 }
 
 function endGame() {
     gameActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
     particles = []; floatTexts = [];
-    onGameOver();   // record/offer to submit the score, refresh the leaderboard
+    startBtn.disabled = false;   // free to start over (mic mode recalibrates)
+    // Snapshot the score, difficulty and session: onGameOver awaits the server,
+    // and by then the player may have hit "Play again" (possibly on another
+    // difficulty) or "Quit" (which zeroes `score`).
+    onGameOver(score, diffName, gameSession);
 }
 
 // ---------------------------------------------------------------------------
 // Main loop: update state + render (requestAnimationFrame).
 // ---------------------------------------------------------------------------
+// Keep spawns a half-sprite clear of the top and bottom edges — at the extremes
+// a worm/cat was drawn half outside the canvas.
+const SPAWN_MARGIN = ITEM_SIZE / 2;
+const spawnY = () => SPAWN_MARGIN + Math.random() * (H - 2 * SPAWN_MARGIN);
+
 function spawnCoin() {
-    coin.y = Math.random() * H;
+    coin.y = spawnY();
     coin.start = now();
     coin.active = true;
     coin.x = W;
@@ -644,23 +766,35 @@ function spawnPenalty() {
     penalty.x = W;
     if (penalty.jump) {
         penalty.phase = 'approach';
+        penalty.aimed = false;                 // set when the leap commits (see 'wiggle')
         penalty.y = CAT_BOTTOM_Y;
         penalty.jumpX = W / 2 + BIRD_SIZE;     // crouch one bird right of centre
         // A pounce often has a worm or flying cat following a second behind,
         // in a separate lane (see trailer activation) so they don't bunch up.
-        if (!trailer.active && Math.random() < TRAILER_CHANCE) {
+        if (!trailer.active && !trailer.pending && Math.random() < TRAILER_CHANCE) {
             trailer.pending = true;
             trailer.spawnAt = now() + TRAILER_DELAY;
             trailer.type = Math.random() < 0.66 ? 'worm' : 'cat';   // 66% worm / 34% cat
         }
     } else {
-        penalty.y = Math.random() * H;
+        penalty.y = spawnY();
         penalty.start = now();
     }
 }
 
 function update() {
-    const t = now();
+    // Advance the game clock by this frame's real duration, clamped. Pausing
+    // (menu open) simply stops the clock: every timed thing below is derived
+    // from `t`, and the per-frame motions below scale by `dt`, so a zero step
+    // freezes the whole scene.
+    const nowMs = performance.now();
+    let dt = lastFrameMs ? (nowMs - lastFrameMs) / 1000 : 1 / 60;
+    lastFrameMs = nowMs;
+    dt = Math.max(0, Math.min(MAX_DT, dt));
+    if (!menuModal.hidden) dt = 0;   // the menu covers the screen — pause
+    frameDt = dt;
+    gameClock += dt;
+    const t = gameClock;
 
     // --- Calibration state machine ---
     if (calibrationActive) {
@@ -677,6 +811,7 @@ function update() {
                 // Contraction wasn't distinguishable from rest — don't launch a
                 // dead game; ask the user to recalibrate.
                 againBtn.disabled = true;
+                quitBtn.disabled = true;   // calibration is over, nothing to quit
                 statusEl.textContent = 'Calibration too weak — press "Start the game" and contract harder on "Contract your muscle!".';
             } else {
                 againBtn.disabled = false;
@@ -696,14 +831,26 @@ function update() {
         // Move the bird: keyboard (dev) or the EMG envelope (needs calibration).
         let controllable = false;
         if (keyboardMode) {
-            if (keyUp) birdY -= KEY_SPEED;
-            if (keyDown) birdY += KEY_SPEED;
+            if (keyUp) birdY -= KEY_SPEED * dt;
+            if (keyDown) birdY += KEY_SPEED * dt;
             birdY = Math.min(H, Math.max(0, birdY));
             controllable = true;
         } else if (mvcValue && baselineValue !== null && (mvcValue - baselineValue) > 0) {
             let cursor = (smoothedEnv() - baselineValue) / (mvcValue - baselineValue);
             cursor = Math.min(1, Math.max(0, cursor));
-            birdY = (1 - cursor) * H;
+            birdTargetY = (1 - cursor) * H;
+            if (birdSnap) {
+                birdY = birdTargetY;   // first frame of a game — no opening swoop
+                birdSnap = false;
+            } else {
+                // Fly toward the target: speed-capped far out, easing in close.
+                // Both terms scale with dt, so the travel time is the same on a
+                // 60Hz and a 144Hz display.
+                const d = birdTargetY - birdY;
+                const ease = d * (1 - Math.exp(-dt / MIC_TRAVEL_TAU));
+                const cap = MIC_TRAVEL_SPEED * dt;
+                birdY += Math.max(-cap, Math.min(cap, ease));
+            }
             controllable = true;
         }
         if (controllable) {
@@ -726,22 +873,28 @@ function update() {
             // screen) toward where the bird was, and land.
             const c = penalty;
             if (c.phase === 'approach') {
-                c.x -= CAT_SPEED; c.y = CAT_BOTTOM_Y;
+                c.x -= CAT_SPEED * dt; c.y = CAT_BOTTOM_Y;
                 if (c.x <= c.jumpX) { c.x = c.jumpX; c.phase = 'wiggle'; c.phaseStart = t; }
             } else if (c.phase === 'wiggle') {
                 c.y = CAT_BOTTOM_Y;
                 if (t - c.phaseStart >= CAT_CROUCH) {
                     c.phase = 'jump'; c.phaseStart = t; c.jumpFromX = c.x;
-                    c.peakY = Math.max(CAT_MAX_UP, birdY);   // capped at 2/3 up
+                    // Aim at the bird, but never below the ground it leaps from
+                    // (a low-flying bird used to make the cat dive into the grass).
+                    c.peakY = Math.max(CAT_MAX_UP, Math.min(birdY, CAT_BOTTOM_Y));
+                    c.aimed = catInReach(birdY);   // was this leap a real threat?
                 }
             } else if (c.phase === 'jump') {
                 const jt = (t - c.phaseStart) / CAT_JUMP_DUR;
                 if (jt >= 1) {
-                    // Survived the pounce without being hit — reward the dodge.
                     c.phase = 'land'; c.phaseStart = t; c.y = CAT_BOTTOM_Y;
-                    score += 1;
-                    spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
-                    spawnCatchBurst(W / 2, birdY, t);
+                    // Escaped a leap that was aimed at you — that's the dodge worth
+                    // rewarding. A leap at a bird out of reach pays nothing.
+                    if (c.aimed) {
+                        score += 1;
+                        spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
+                        spawnCatchBurst(W / 2, birdY, t);
+                    }
                 }
                 else {
                     c.x = c.jumpFromX - jt * CAT_JUMP_SPAN;
@@ -756,7 +909,7 @@ function update() {
                     }
                 }
             } else {   // land — trot off and vanish
-                c.x -= CAT_SPEED; c.y = CAT_BOTTOM_Y;
+                c.x -= CAT_SPEED * dt; c.y = CAT_BOTTOM_Y;
                 if (c.x < -ITEM_SIZE) c.active = false;
             }
         } else if (penalty.active) {
@@ -1102,19 +1255,35 @@ function drawMovingFlowers(t) {
 // frame (it advances the animation), then reused for the red-flash overlay so
 // both layers line up. Climbing → fast wing-beats; descending → wings held out.
 // Frame order in the strip: 0 up, 1 out, 2 down (full stroke), 3 recover.
+// Rates are per second (not per frame) so the flap looks the same on a 60Hz and
+// a 120Hz display; velocity is px/s and smoothed with a time constant.
+const FLAP_RATE = 14.4;          // strip frames per second while climbing
+const BIRD_VY_TAU = 0.047;       // velocity smoothing time constant (s)
+const CLIMB_VY = -24, DESCEND_VY = 36;   // px/s thresholds
+// A hard climb beats the wings harder: above FLAP_BOOST_FROM px/s the flap rate
+// ramps up to FLAP_BOOST_MAX×, so a mic-mode burst contraction (which crosses
+// most of the screen in a quarter second) shows ~2-3 wing beats on the way up
+// instead of a single lazy one. Keyboard speed (660 px/s) stays at the base rate.
+const FLAP_BOOST_FROM = 800, FLAP_BOOST_SPAN = 1200, FLAP_BOOST_MAX = 2;
 function birdPose() {
-    const vy = birdY - birdPrevY;
-    birdPrevY = birdY;
-    birdVY += (vy - birdVY) * 0.3;                   // smooth the velocity
-    const climbing = birdVY < -0.4;
-    const descending = birdVY > 0.6;
-    if (climbing) flapPhase += 0.24;                 // advance the flap while climbing
+    const dt = frameDt;
+    if (dt > 0) {
+        const vy = (birdY - birdPrevY) / dt;             // px/s
+        birdPrevY = birdY;
+        birdVY += (vy - birdVY) * (1 - Math.exp(-dt / BIRD_VY_TAU));   // smooth
+    }
+    const climbing = birdVY < CLIMB_VY;
+    const descending = birdVY > DESCEND_VY;
+    if (climbing) {
+        const boost = 1 + Math.min(FLAP_BOOST_MAX, Math.max(0, -birdVY - FLAP_BOOST_FROM) / FLAP_BOOST_SPAN);
+        flapPhase += FLAP_RATE * boost * dt;         // advance the flap while climbing
+    }
     else flapPhase = 0;                              // reset so a new climb starts wings-up
     // Climbing → flap cycle; descending → wings down; holding → wings up (gliding).
     const frame = climbing ? (Math.floor(flapPhase) % BIRD_FRAMES) : (descending ? 2 : 0);
     return {
         frame,
-        tilt: Math.max(-0.35, Math.min(0.35, birdVY * 0.03)),   // nose up/down
+        tilt: Math.max(-0.35, Math.min(0.35, birdVY * 0.0005)),   // nose up/down
     };
 }
 function drawBirdPosed(im, pose, size) {
@@ -1169,15 +1338,29 @@ function drawLeaderboard(yTop) {
         ctx2d.restore();
         return;
     }
-    ctx2d.font = 'bold 26px "Courier New", monospace';
-    const rowH = 40, xL = W / 2 - 210, xR = W / 2 + 210;
+    // Three columns: rank+name (left), difficulty (centred), score (right).
+    // The name column is monospace, so 12 chars at 26px can't reach xM.
+    const rowH = 40, xL = W / 2 - 210, xM = W / 2 + 120, xR = W / 2 + 230;
+    ctx2d.font = 'bold 15px Segoe UI, sans-serif';
+    ctx2d.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx2d.textAlign = 'left';   ctx2d.fillText('PLAYER', xL, yTop + 26);
+    ctx2d.textAlign = 'center'; ctx2d.fillText('MODE', xM, yTop + 26);
+    ctx2d.textAlign = 'right';  ctx2d.fillText('SCORE', xR, yTop + 26);
     rows.forEach((s, i) => {
-        const y = yTop + 48 + i * rowH;
-        ctx2d.fillStyle = (s.ts && s.ts === lastSubmittedTs) ? '#00e5ff' : '#ffffff';
+        const y = yTop + 62 + i * rowH;
+        const mine = s.ts && s.ts === lastSubmittedTs;
+        ctx2d.font = 'bold 26px "Courier New", monospace';
+        ctx2d.fillStyle = mine ? '#00e5ff' : '#ffffff';
         ctx2d.textAlign = 'left';
         ctx2d.fillText(`${String(i + 1).padStart(2, ' ')}.  ${s.name}`, xL, y);
         ctx2d.textAlign = 'right';
         ctx2d.fillText(String(s.score), xR, y);
+        // Difficulty keeps its own colour unless this is the player's own row,
+        // which stays cyan end to end so it still reads as one highlighted line.
+        ctx2d.font = 'bold 18px Segoe UI, sans-serif';
+        ctx2d.fillStyle = mine ? '#00e5ff' : (DIFF_COLOR[s.diff] || 'rgba(255,255,255,0.4)');
+        ctx2d.textAlign = 'center';
+        ctx2d.fillText(DIFF_LABEL[s.diff] || '—', xM, y);
     });
     ctx2d.restore();
 }
@@ -1294,6 +1477,15 @@ function drawPaperPlaneFront(x, y, t) {
     ctx2d.restore();
 }
 
+// Attract-screen character positions (the right-hand pair flanks the high-score
+// table). These are sprite *centres*, but each character carries a vehicle well
+// outside its sprite: the worm's paper plane hangs ~53px below its centre and the
+// cat's paraglider canopy rises ~90px above its own, so centres 130px apart used
+// to leave the plane's belly overlapping the canopy. Keep ≥150px between them.
+const ATTRACT_BIRD_Y = 400;
+const ATTRACT_WORM_Y = 290;
+const ATTRACT_CAT_Y = 540;
+
 function draw(t) {
     // Background
     if (imgs.background) ctx2d.drawImage(imgs.background, 0, 0, W, H);
@@ -1312,12 +1504,12 @@ function draw(t) {
         // Attract mode: rules up top, high-score table below (arcade style),
         // with the characters flanking the board so they stay clear of it.
         drawBoardScreen('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
-        drawImageCentered(imgs.bird, 150, 400, BIRD_SIZE);
-        drawPaperPlaneBack(W - 150, 340, t);
-        drawImageCentered(imgs.coin, W - 150, 340, ITEM_SIZE);
-        drawPaperPlaneFront(W - 150, 340, t);
-        drawParaglider(W - 150, 470, t);
-        drawImageCentered(imgs.penalty, W - 150, 470, ITEM_SIZE);
+        drawImageCentered(imgs.bird, 150, ATTRACT_BIRD_Y, BIRD_SIZE);
+        drawPaperPlaneBack(W - 150, ATTRACT_WORM_Y, t);
+        drawImageCentered(imgs.coin, W - 150, ATTRACT_WORM_Y, ITEM_SIZE);
+        drawPaperPlaneFront(W - 150, ATTRACT_WORM_Y, t);
+        drawParaglider(W - 150, ATTRACT_CAT_Y, t);
+        drawImageCentered(imgs.penalty, W - 150, ATTRACT_CAT_Y, ITEM_SIZE);
         return;
     }
 
