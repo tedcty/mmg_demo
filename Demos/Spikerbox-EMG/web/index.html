@@ -222,6 +222,7 @@ const TOTAL_CAL = BASELINE_DURATION + MVC_DURATION;
 // so these pixel thresholds match the desktop version directly.
 const W = 1000, H = 700;
 const X_HIT = 50, Y_HIT = 30;
+const WORM_X_HIT = 65, WORM_Y_HIT = 40;   // worms are a touch easier to catch than cats are to hit
 const BIRD_SIZE = 90, ITEM_SIZE = 70;
 // Hard-mode pouncing cat
 const CAT_BOTTOM_Y = H - 55;         // resting height of a pouncing cat
@@ -229,7 +230,7 @@ const CAT_SPEED = 8.5;               // ground speed (px/frame)
 const CAT_CROUCH = 0.72;             // wiggle time at the jump point (s)
 const CAT_JUMP_DUR = 0.5;            // pounce arc duration (s)
 const CAT_JUMP_SPAN = 2 * BIRD_SIZE; // horizontal reach of the arc (~2 birds)
-const CAT_MAX_UP = H / 4;            // highest it can reach (3/4 up the screen)
+const CAT_MAX_UP = H / 3;            // highest it can reach (2/3 up the screen)
 // Top of the grass band in the background art (~y 605 on the 700px canvas).
 // A worm/cat centred at or below this is "on the ground", so it crawls/walks
 // across bare instead of riding a paper plane or paraglider.
@@ -712,7 +713,7 @@ function update() {
             if (p >= COIN_DISAPPEAR) { coin.active = false; }
             else {
                 coin.x = W - p * W;
-                if (Math.abs(coin.x - W / 2) < X_HIT && Math.abs(coin.y - birdY) < Y_HIT) {
+                if (Math.abs(coin.x - W / 2) < WORM_X_HIT && Math.abs(coin.y - birdY) < WORM_Y_HIT) {
                     coin.active = false; score += 1;
                     spawnCatchBurst(W / 2, birdY, t);
                     spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
@@ -721,7 +722,7 @@ function update() {
         }
         if (penalty.active && penalty.jump) {
             // Hard-mode cat: trot in along the floor, crouch & wiggle for ~1s at
-            // the jump point, then leap in an arc (~2 birds wide, up to 3/4 of the
+            // the jump point, then leap in an arc (~2 birds wide, up to 2/3 of the
             // screen) toward where the bird was, and land.
             const c = penalty;
             if (c.phase === 'approach') {
@@ -731,11 +732,17 @@ function update() {
                 c.y = CAT_BOTTOM_Y;
                 if (t - c.phaseStart >= CAT_CROUCH) {
                     c.phase = 'jump'; c.phaseStart = t; c.jumpFromX = c.x;
-                    c.peakY = Math.max(CAT_MAX_UP, birdY);   // capped at 3/4 up
+                    c.peakY = Math.max(CAT_MAX_UP, birdY);   // capped at 2/3 up
                 }
             } else if (c.phase === 'jump') {
                 const jt = (t - c.phaseStart) / CAT_JUMP_DUR;
-                if (jt >= 1) { c.phase = 'land'; c.phaseStart = t; c.y = CAT_BOTTOM_Y; }
+                if (jt >= 1) {
+                    // Survived the pounce without being hit — reward the dodge.
+                    c.phase = 'land'; c.phaseStart = t; c.y = CAT_BOTTOM_Y;
+                    score += 1;
+                    spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
+                    spawnCatchBurst(W / 2, birdY, t);
+                }
                 else {
                     c.x = c.jumpFromX - jt * CAT_JUMP_SPAN;
                     c.y = CAT_BOTTOM_Y + (c.peakY - CAT_BOTTOM_Y) * Math.sin(Math.PI * jt);
@@ -775,7 +782,9 @@ function update() {
             if (p >= COIN_DISAPPEAR) { trailer.active = false; }
             else {
                 trailer.x = W - p * W;
-                if (Math.abs(trailer.x - W / 2) < X_HIT && Math.abs(trailer.y - birdY) < Y_HIT) {
+                const xh = trailer.type === 'worm' ? WORM_X_HIT : X_HIT;
+                const yh = trailer.type === 'worm' ? WORM_Y_HIT : Y_HIT;
+                if (Math.abs(trailer.x - W / 2) < xh && Math.abs(trailer.y - birdY) < yh) {
                     trailer.active = false;
                     score += (trailer.type === 'worm' ? 1 : -1);
                     if (trailer.type === 'worm') {
@@ -937,6 +946,156 @@ function drawFloatTexts(t) {
     }
     ctx2d.restore();
     ctx2d.imageSmoothingEnabled = prevSmooth;
+}
+
+// ---- Parallax clouds ----
+// Translucent clouds that sweep left to sell the bird's forward flight (the bird
+// itself stays put). Drawn just above the background but behind the bird/worms/
+// cats, from a low-res sprite scaled up with smoothing off so they stay blocky
+// like the pixel-art background.
+// Low-res, 2-tone cloud (white body + light-blue underside). Kept small so it
+// scales up into big chunky pixels — the pixel-art look.
+let cloudSprite = null;
+function getCloudSprite() {
+    if (cloudSprite) return cloudSprite;
+    const w = 22, h = 13;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff';
+    for (const [px, py, r] of [[6, 7, 4], [10, 4, 5], [15, 5, 4], [18, 7, 3], [11, 8, 5], [4, 8, 3]]) {
+        g.beginPath(); g.arc(px, py, r, 0, Math.PI * 2); g.fill();
+    }
+    g.fillRect(3, 7, 16, 5);          // flat base
+    g.globalCompositeOperation = 'source-atop';   // shade only the cloud's own pixels
+    g.fillStyle = '#cfe3f2';
+    g.fillRect(0, h - 3, w, 3);       // light-blue underside
+    cloudSprite = c;
+    return c;
+}
+// Deterministic pseudo-random in [0,1) — stable per (cloud, wrap-cycle) so a
+// cloud's opacity is fixed for a whole pass rather than flickering per frame.
+function cloudHash(n) {
+    const x = Math.sin(n * 127.1 + 31.7) * 43758.5453;
+    return x - Math.floor(x);
+}
+// y = band centre (kept in the top half), s = scale of the 22px sprite,
+// speed = px/s, off = phase. Opacity is randomised per pass (see below).
+const FG_CLOUDS = [
+    { y: 45,  s: 9.0,  speed: 140, off: 0 },
+    { y: 95,  s: 13.0, speed: 215, off: 620 },
+    { y: 150, s: 11.0, speed: 180, off: 1350 },
+    { y: 210, s: 14.0, speed: 250, off: 2050 },
+    { y: 270, s: 10.0, speed: 160, off: 2750 },
+];
+function drawForegroundClouds(t) {
+    const spr = getCloudSprite();
+    const prev = ctx2d.imageSmoothingEnabled;
+    ctx2d.imageSmoothingEnabled = false;
+    for (let i = 0; i < FG_CLOUDS.length; i++) {
+        const c = FG_CLOUDS[i];
+        const w = spr.width * c.s, h = spr.height * c.s;
+        const span = W + w + 100;
+        const phase = c.speed * t + c.off;
+        const cycle = Math.floor(phase / span);
+        const x = (W + w / 2 + 50) - (phase % span);            // sweep left, wrap
+        // ~35% chance fully solid this pass, else a random alpha in [0.5, 0.9].
+        const opaque = cloudHash(i * 17.3 + cycle * 3.7) < 0.35;
+        const alpha = opaque ? 1 : 0.5 + cloudHash(i * 9.1 + cycle * 5.3 + 2.0) * 0.4;
+        ctx2d.save();
+        ctx2d.globalAlpha = alpha;
+        ctx2d.drawImage(spr, Math.round(x - w / 2), Math.round(c.y - h / 2), w, h);
+        ctx2d.restore();
+    }
+    ctx2d.imageSmoothingEnabled = prev;
+}
+
+// A small pixel-art grass tuft (a few blades), scaled up chunky like the clouds.
+let grassSprite = null;
+function getGrassSprite() {
+    if (grassSprite) return grassSprite;
+    const w = 22, h = 18;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    const blade = (x, ht, lean, wd, col) => {
+        g.fillStyle = col;
+        g.beginPath();
+        g.moveTo(x - wd / 2, h); g.lineTo(x + wd / 2, h); g.lineTo(x + lean, h - ht);
+        g.closePath(); g.fill();
+    };
+    const dark = '#2f7d27', mid = '#43a132', lite = '#63c745';
+    blade(4, 12, -3, 4, dark); blade(9, 16, 1, 4, dark); blade(15, 14, 3, 4, dark); blade(20, 10, 2, 3, dark);
+    blade(6, 10, -2, 3, mid);  blade(11, 15, 2, 4, lite); blade(16, 12, 3, 4, mid); blade(2, 8, -2, 3, mid);
+    grassSprite = c;
+    return c;
+}
+// Two parallax rows of grass tufts scrolling left along the bottom — the near
+// ground rushing by. Tuft positions live in world coords (n*gap - scroll) so
+// each tuft keeps its randomised height as it travels. Drawn behind the sprites.
+const GRASS_LAYERS = [
+    { baseY: 686, s: 2.4, speed: 230, gap: 60, alpha: 0.75, off: 0,  seed: 3.1 },   // back, slower
+    { baseY: 701, s: 3.3, speed: 330, gap: 48, alpha: 1.0,  off: 20, seed: 11.7 },  // front, faster
+];
+function drawMovingGrass(t) {
+    const spr = getGrassSprite();
+    const prev = ctx2d.imageSmoothingEnabled;
+    ctx2d.imageSmoothingEnabled = false;
+    for (const L of GRASS_LAYERS) {
+        const scroll = L.speed * t + L.off;
+        const margin = spr.width * L.s * 1.4;
+        const nStart = Math.floor((scroll - margin) / L.gap);
+        const nEnd = Math.ceil((scroll + W + margin) / L.gap);
+        ctx2d.save();
+        ctx2d.globalAlpha = L.alpha;
+        for (let n = nStart; n <= nEnd; n++) {
+            const sc = L.s * (0.75 + cloudHash(n * 1.7 + L.seed) * 0.6);   // per-tuft height
+            const w = spr.width * sc, h = spr.height * sc;
+            const x = n * L.gap - scroll;
+            ctx2d.drawImage(spr, Math.round(x - w / 2), Math.round(L.baseY - h), w, h);
+        }
+        ctx2d.restore();
+    }
+    ctx2d.imageSmoothingEnabled = prev;
+}
+
+// Little pixel-art flowers (like the ones dotted in the background), cached per
+// colour. A plus-shaped bloom with a yellow centre on a short green stem.
+const flowerSprites = {};
+function getFlowerSprite(petal) {
+    if (flowerSprites[petal]) return flowerSprites[petal];
+    const w = 11, h = 16;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#2f7d27'; g.fillRect(5, 6, 1, 10);          // stem
+    g.fillStyle = '#43a132'; g.fillRect(3, 10, 2, 1); g.fillRect(6, 12, 2, 1);   // leaves
+    g.fillStyle = petal; g.fillRect(4, 1, 3, 5); g.fillRect(3, 2, 5, 3);         // bloom (plus)
+    g.fillStyle = '#f0a848'; g.fillRect(5, 3, 1, 1);          // yellow centre
+    flowerSprites[petal] = c;
+    return c;
+}
+const FLOWER_COLORS = ['#c83a3a', '#4a9be0', '#d86fb0'];   // red, blue, pink
+// A sparse row of flowers travelling with the front grass. ~40% of slots carry
+// one, so they pass by occasionally rather than lining the whole ground.
+function drawMovingFlowers(t) {
+    const prev = ctx2d.imageSmoothingEnabled;
+    ctx2d.imageSmoothingEnabled = false;
+    const speed = 330, gap = 165, baseY = 701, base = 3.0, seed = 5.9;
+    const scroll = speed * t + 25;
+    const margin = 11 * base * 1.4;
+    const nStart = Math.floor((scroll - margin) / gap);
+    const nEnd = Math.ceil((scroll + W + margin) / gap);
+    for (let n = nStart; n <= nEnd; n++) {
+        if (cloudHash(n * 2.3 + seed) < 0.6) continue;   // ~40% of slots have a flower
+        const col = FLOWER_COLORS[Math.floor(cloudHash(n * 5.1 + 1.3) * FLOWER_COLORS.length)];
+        const spr = getFlowerSprite(col);
+        const sc = base * (0.85 + cloudHash(n * 3.7) * 0.4);
+        const w = spr.width * sc, h = spr.height * sc;
+        const x = n * gap - scroll;
+        ctx2d.drawImage(spr, Math.round(x - w / 2), Math.round(baseY - h), w, h);
+    }
+    ctx2d.imageSmoothingEnabled = prev;
 }
 
 // Compute the bird's flap pose from its vertical velocity. Called once per
@@ -1163,6 +1322,9 @@ function draw(t) {
     }
 
     // Playing
+    drawForegroundClouds(t);   // parallax clouds behind the bird/worms/cats (motion cue)
+    drawMovingGrass(t);        // scrolling grass along the bottom (near-ground motion cue)
+    drawMovingFlowers(t);      // occasional flowers drifting by with the ground
     const pose = birdPose();
     const frame = birdFrames[pose.frame];
     if (frame) {
