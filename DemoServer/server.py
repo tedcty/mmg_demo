@@ -16,7 +16,8 @@ Routes:
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
   GET  /emg/<path>               → EMG game assets (web/ + shared resources/)
-  GET  /segment/                 → Strange Object Segmenter (in-browser stack)
+  GET  /segment/                 → Strange Object Segmenter (CT stack)
+  GET  /segment/slices/<s>/...   → built CT slices + manifest (build_slices.py)
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
@@ -59,7 +60,11 @@ BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo', 'predict_gui'))
 EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
 EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
-SEG_WEB_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter', 'web'))
+SEG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter'))
+SEG_WEB_DIR = os.path.join(SEG_DIR, 'web')
+# Study data for the segmenter: CT slices built by build_slices.py plus the
+# ground-truth bone meshes. Reachable as /segment/slices/… and /segment/mesh/….
+SEG_DATA_DIR = os.path.join(SEG_DIR, 'bones')
 ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
 POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
 DOC_RES_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'resources'))  # shared outreach figures
@@ -245,11 +250,18 @@ def emg_app(path):
 @app.route('/segment/', defaults={'path': 'index.html'})
 @app.route('/segment/<path:path>')
 def segment_app(path):
-    """Strange Object Segmenter — brush-paint segmentation over a synthetic
-    image stack generated in the browser (no assets needed)."""
-    target = os.path.join(SEG_WEB_DIR, path)
-    if os.path.exists(target):
+    """Strange Object Segmenter — brush-paint segmentation over a CT stack.
+
+    Serves web/, then falls back to bones/ so `slices/<series>/…` resolves to
+    the PNGs built by build_slices.py (and `mesh/…` to the ground-truth PLYs).
+    If the study hasn't been built the viewer falls back to a synthetic volume,
+    so the demo still runs on a checkout with no image data.
+    send_from_directory blocks traversal.
+    """
+    if os.path.exists(os.path.join(SEG_WEB_DIR, path)):
         return send_from_directory(SEG_WEB_DIR, path)
+    if os.path.exists(os.path.join(SEG_DATA_DIR, path)):
+        return send_from_directory(SEG_DATA_DIR, path)
     return send_from_directory(SEG_WEB_DIR, 'index.html')
 
 

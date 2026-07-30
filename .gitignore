@@ -35,3 +35,6 @@ Demos/Spikerbox/.venv
 Demos/SSM Demo/predict_gui/debug
 .theia
 .claude
+Demos/StrangeObjectSegmenter/bones/image/
+Demos/StrangeObjectSegmenter/bones/mesh/
+Demos/StrangeObjectSegmenter/bones/slices/
