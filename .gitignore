@@ -38,3 +38,13 @@ Demos/SSM Demo/predict_gui/debug
 Demos/StrangeObjectSegmenter/bones/image/
 Demos/StrangeObjectSegmenter/bones/mesh/
 Demos/StrangeObjectSegmenter/bones/slices/
+
+# Stray copies of edited files that editor tooling drops relative to whatever
+# directory a shell happened to be in, e.g.
+#   DemoServer/resources/vendor/Demos/StrangeObjectSegmenter/web/index.html
+#   Demos/StrangeObjectSegmenter/bones/DemoServer/server.py
+# They are always a nested "Demos/" or "DemoServer/", never the real ones at the
+# repo root — the leading **/*/ requires at least one directory in front, so the
+# top-level Demos/ and DemoServer/ are untouched.
+**/*/Demos/
+**/*/DemoServer/
