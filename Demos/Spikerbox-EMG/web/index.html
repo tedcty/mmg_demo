@@ -155,6 +155,16 @@
                 </div>
             </div>
         </div>
+        <div id="readyCheck" class="overlay-form" hidden>
+            <div class="of-card">
+                <div class="of-title" id="readyTitle">Is the SpikerBox ready?</div>
+                <div class="of-score" id="readyBody">Check it's powered on, plugged into this device, and the electrodes are attached to the player.</div>
+                <div class="of-actions">
+                    <button id="readyCancelBtn" class="secondary">Cancel</button>
+                    <button id="readyYesBtn">Yes</button>
+                </div>
+            </div>
+        </div>
     </div>
     <div id="status">Press "Start the game" to play with ↑ / ↓, or open ☰ Menu to use the SpikerBox microphone.</div>
 
@@ -176,7 +186,7 @@
             <ol class="info-steps">
                 <li>Choose your control: <strong>keyboard</strong> (↑ / ↓ arrows) or flip the switch to the <strong>SpikerBox microphone</strong> and allow audio access.</li>
                 <li>For the microphone: plug the SpikerBox into your device's audio input and <strong>select it</strong> from the dropdown above.</li>
-                <li>Press <strong>Start the game</strong>. In microphone mode you calibrate first — <strong>relax</strong>, then <strong>contract</strong> when prompted; keyboard mode starts right away.</li>
+                <li>Press <strong>Start the game</strong>. In microphone mode you'll confirm the SpikerBox and player are ready, then calibrate — <strong>relax</strong>, then <strong>contract</strong> when prompted. Either mode then counts down before play begins.</li>
                 <li>Move the bird up and down to catch the worms 🐛 and avoid the cats 🐱!</li>
             </ol>
             <p class="info-note">In microphone mode the game reads the live audio stream and band-passes it (20–300&nbsp;Hz) to turn your muscle activation into the bird's height.</p>
@@ -275,6 +285,11 @@ const nameScoreEl = document.getElementById('nameScore');
 const nameDiffEl = document.getElementById('nameDiff');
 const submitScoreBtn = document.getElementById('submitScoreBtn');
 const skipScoreBtn = document.getElementById('skipScoreBtn');
+const readyCheckEl = document.getElementById('readyCheck');
+const readyTitleEl = document.getElementById('readyTitle');
+const readyBodyEl = document.getElementById('readyBody');
+const readyYesBtn = document.getElementById('readyYesBtn');
+const readyCancelBtn = document.getElementById('readyCancelBtn');
 // Force Normal on every load — browsers restore a <select>'s last value on
 // refresh/back-navigation regardless of the HTML `selected` default, which on
 // a shared demo kiosk means whatever the previous player picked would stick.
@@ -363,6 +378,35 @@ async function submitScore() {
 submitScoreBtn.addEventListener('click', submitScore);
 skipScoreBtn.addEventListener('click', () => { nameEntryEl.hidden = true; });
 nameInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitScore(); });
+
+// ---- Pre-game ready check (microphone mode only) ----
+// There's no reliable way to confirm from the browser that the SpikerBox
+// itself — as opposed to any other microphone — is powered on and wired to
+// the player: getUserMedia exposes a device label, not hardware state. So
+// instead of guessing, ask.
+const READY_STEPS = [
+    { title: 'Is the SpikerBox ready?', body: 'Check it’s powered on, plugged into this device, and the electrodes are attached to the player.' },
+    { title: 'Is the player ready?', body: 'Calibration comes next: relax the muscle first, then contract as hard as comfortable when prompted.' },
+];
+let readyStepIdx = 0;
+function showReadyStep(i) {
+    readyStepIdx = i;
+    readyTitleEl.textContent = READY_STEPS[i].title;
+    readyBodyEl.textContent = READY_STEPS[i].body;
+    readyCheckEl.hidden = false;
+}
+readyYesBtn.addEventListener('click', () => {
+    if (readyStepIdx < READY_STEPS.length - 1) {
+        showReadyStep(readyStepIdx + 1);
+    } else {
+        readyCheckEl.hidden = true;
+        beginMicCalibration();
+    }
+});
+readyCancelBtn.addEventListener('click', () => {
+    readyCheckEl.hidden = true;
+    resetToIdle('Cancelled — press "Start the game" when ready.');
+});
 
 // ---- Menu modal (input mode + how to play) ----
 const menuModal = document.getElementById('menuModal');
@@ -671,14 +715,20 @@ function waitForAudio(timeout = 4000) {
     });
 }
 
-startBtn.addEventListener('click', async () => {
-    // Keyboard mode: skip mic + calibration and drop straight into the game.
+startBtn.addEventListener('click', () => {
+    // Keyboard mode: skip mic + calibration, straight to the countdown.
     if (keyboardMode) {
-        startGame();
-        statusEl.textContent = 'Keyboard mode — use ↑ / ↓ to move the bird.';
+        beginCountdown();
         return;
     }
+    // Microphone mode: confirm the box and player are ready before touching
+    // the mic at all — beginMicCalibration() opens the stream once both are
+    // confirmed.
     startBtn.disabled = true;
+    showReadyStep(0);
+});
+
+async function beginMicCalibration() {
     try {
         await startAudio(deviceSel.value);
         statusEl.textContent = 'Starting microphone…';
@@ -697,7 +747,7 @@ startBtn.addEventListener('click', async () => {
     calibrationActive = true;
     quitBtn.disabled = false;
     statusEl.textContent = 'Calibrating…';
-});
+}
 
 againBtn.addEventListener('click', () => startGame());
 quitBtn.addEventListener('click', () => resetToIdle('Stopped. Press "Start the game" to play again.'));
@@ -706,17 +756,29 @@ quitBtn.addEventListener('click', () => resetToIdle('Stopped. Press "Start the g
 // by a mid-session input change, so both land in the same clean state.
 function resetToIdle(message) {
     gameSession++;   // drop any name entry still waiting on the server
-    calibrateEmg = false; gameActive = false; calibrationActive = false;
+    calibrateEmg = false; gameActive = false; calibrationActive = false; countdownActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
     particles = []; floatTexts = [];
     hitFlash = -1;             // don't carry a red blink into the next game
     releaseKeys();
     nameEntryEl.hidden = true;
+    readyCheckEl.hidden = true;
     againBtn.disabled = true;
     quitBtn.disabled = true;   // nothing left to quit
     startBtn.disabled = false;
     score = 0;
     statusEl.textContent = message;
+}
+
+// ---- Countdown: "Starting in…" before every game, mic or keyboard ----
+const COUNTDOWN_SECONDS = 5;
+let countdownActive = false, countdownStart = 0;
+function beginCountdown() {
+    countdownStart = now();
+    countdownActive = true;
+    startBtn.disabled = true;   // no re-triggering the countdown mid-tick
+    quitBtn.disabled = false;   // still bail-able while it ticks down
+    statusEl.textContent = 'Starting…';
 }
 
 function startGame() {
@@ -820,11 +882,17 @@ function update() {
                 quitBtn.disabled = true;   // calibration is over, nothing to quit
                 statusEl.textContent = 'Calibration too weak — press "Start the game" and contract harder on "Contract your muscle!".';
             } else {
-                againBtn.disabled = false;
                 statusEl.textContent = `Calibrated — baseline ${baselineValue.toExponential(2)}, MVC ${mvcValue.toExponential(2)}.`;
-                startGame();
+                beginCountdown();
             }
         }
+    }
+
+    // --- Countdown: "Starting in…" then launch ---
+    if (countdownActive && (t - countdownStart) >= COUNTDOWN_SECONDS) {
+        countdownActive = false;
+        againBtn.disabled = false;
+        startGame();
     }
 
     // --- End the game after GAME_DURATION ---
@@ -1575,6 +1643,12 @@ function draw(t) {
         const elapsed = t - calStart;
         if (elapsed < BASELINE_DURATION) overlay('Relax your muscle!', `${(BASELINE_DURATION - elapsed).toFixed(0)}s`);
         else overlay('Contract your muscle!', `${(TOTAL_CAL - elapsed).toFixed(0)}s`);
+        return;
+    }
+
+    if (countdownActive) {
+        const remain = Math.max(0, COUNTDOWN_SECONDS - (t - countdownStart));
+        overlay('Starting in…', `${Math.ceil(remain)}`);
         return;
     }
 
