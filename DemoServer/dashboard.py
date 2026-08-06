@@ -298,6 +298,28 @@ class StatusWorker(QtCore.QThread):
     done = QtCore.Signal(dict)
 
     def run(self):
+        # Whatever happens below, `done` must fire — Dashboard.refresh() won't
+        # start another poll while one is outstanding (self._polling), so an
+        # uncaught exception here would otherwise freeze all future status
+        # updates (and every button driven by them) for the rest of the run.
+        try:
+            s = self._collect()
+        except Exception as e:
+            # Same shape as _collect()'s normal result — _apply_status indexes
+            # several of these keys directly (not .get()), so a short dict here
+            # would just trade this crash for one on the Qt thread instead.
+            s = {
+                "running": False, "pids": [], "port_https": False, "port_http": False,
+                "dist": False, "model": False, "bones": False, "cert": False,
+                "ip": "127.0.0.1", "https_code": None, "http_code": None,
+                "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
+                "srv_cpu": None, "srv_gpu": None, "clients": None, "gpu": None,
+                "gpu_used": None, "gpu_total": None, "mdns_ok": None, "demos": [],
+                "error": str(e),
+            }
+        self.done.emit(s)
+
+    def _collect(self):
         ports = [doctor.HTTPS_PORT, doctor.HTTP_PORT]
         # Only adopt our own server.py — not whatever else may hold the port.
         listeners = doctor.find_server_listeners(ports)
@@ -396,7 +418,7 @@ class StatusWorker(QtCore.QThread):
                     s["mdns_ok"] = True
             except Exception:
                 s["mdns_ok"] = False
-        self.done.emit(s)
+        return s
 
 
 class DoctorWorker(QtCore.QThread):
@@ -468,6 +490,7 @@ class Dashboard(QtWidgets.QWidget):
         self._polling = False
         self._starting = False
         self._stopping = False
+        self._stop_gave_up = False            # UI stopped waiting, but exit still expected
         self._restart_pending = False
         self._start_t0 = 0.0
         self._stop_t0 = 0.0
@@ -1121,6 +1144,8 @@ class Dashboard(QtWidgets.QWidget):
 
     def _apply_status(self, s):
         self._polling = False
+        if s.get("error"):
+            self._append_log(f"[dashboard] status check failed, retrying: {s['error']}")
         running = s["running"]
 
         # --- monitor any server, even one this instance didn't start ---------
@@ -1270,20 +1295,28 @@ class Dashboard(QtWidgets.QWidget):
             elapsed = time.time() - self._stop_t0
             if not running:
                 self._finish_stopping(True)
-            elif elapsed > 8:
-                self._finish_stopping(False)
             else:
                 # Force-kill a process that ignored terminate() before giving up.
                 if elapsed > 4 and self.proc is not None and self.proc.poll() is None:
                     self.proc.kill()
                     self.proc = None
-                self.chip.setText("◌ STOPPING")
-                self.chip.setStyleSheet(
-                    f"background:#fff2df;color:{AMBER};font-size:12px;"
-                    f"font-weight:700;border-radius:13px;padding:5px 14px")
-                self._set_status_text("STOPPING", AMBER)
-                self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
-                self.power_btn.setText("Stopping…"); self.power_btn.setEnabled(False)
+                # After 8s, stop blocking the UI on it — but keep self._stopping
+                # set. A server can legitimately take a while to actually exit
+                # (e.g. a client still holds a connection open), and if we clear
+                # self._stopping here, that late exit lands after we've stopped
+                # "expecting" it and gets misreported as a crash (_maybe_crash's
+                # guard checks self._stopping). Only _finish_stopping(True) above
+                # — a confirmed-down poll — ever clears it.
+                if elapsed > 8 and not self._stop_gave_up:
+                    self._give_up_stopping()
+                if not self._stop_gave_up:
+                    self.chip.setText("◌ STOPPING")
+                    self.chip.setStyleSheet(
+                        f"background:#fff2df;color:{AMBER};font-size:12px;"
+                        f"font-weight:700;border-radius:13px;padding:5px 14px")
+                    self._set_status_text("STOPPING", AMBER)
+                    self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
+                    self.power_btn.setText("Stopping…"); self.power_btn.setEnabled(False)
 
         # keep-alive: a run that stays healthy long enough clears the backoff.
         if (running and s.get("https_code") == 200 and self._crash_count
@@ -1352,13 +1385,24 @@ class Dashboard(QtWidgets.QWidget):
         indicator, used by both Stop and Reset ports."""
         self._starting = False
         self._stopping = True
+        self._stop_gave_up = False
         self._stop_t0 = time.time()
         self._stop_ok_msg = ok_msg
         self._stop_fail_msg = fail_msg
         self._begin_busy(message)
 
+    def _give_up_stopping(self):
+        """The stop has taken longer than the UI should keep blocking for —
+        stop showing "Stopping…"/disabling the button, but leave self._stopping
+        set so a late exit (still coming, just slow) is recognised as ours
+        rather than reported as a crash. See the call site in _apply_status."""
+        self._stop_gave_up = True
+        self._append_log(self._stop_fail_msg)
+        self._end_busy()
+
     def _finish_stopping(self, ok):
         self._stopping = False
+        self._stop_gave_up = False
         self._append_log(self._stop_ok_msg if ok else self._stop_fail_msg)
         if self._restart_pending:
             self._restart_pending = False

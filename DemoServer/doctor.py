@@ -156,13 +156,21 @@ def port_free(port):
 
 # ---- process / port discovery (psutil first, OS fallback) ----------------
 def _listeners_psutil(ports):
-    """{port: [(pid, name, cmdline)]} via psutil, or None if psutil absent."""
+    """{port: [(pid, name, cmdline)]} via psutil, or None if psutil absent or
+    the connection scan itself fails (falls back to the OS-tool path below)."""
     try:
         import psutil
     except ImportError:
         return None
     found = {p: [] for p in ports}
-    for c in psutil.net_connections(kind="inet"):
+    try:
+        conns = psutil.net_connections(kind="inet")
+    except Exception:
+        # Can raise transiently (e.g. AccessDenied) — most often right as a
+        # process is exiting. Fall back rather than let this crash the whole
+        # status poll (StatusWorker.run) and freeze the dashboard's UI updates.
+        return None
+    for c in conns:
         if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port in ports and c.pid:
             try:
                 pr = psutil.Process(c.pid)
