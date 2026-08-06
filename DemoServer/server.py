@@ -16,7 +16,8 @@ Routes:
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
   GET  /emg/<path>               → EMG game assets (web/ + shared resources/)
-  GET  /segment/                 → Strange Object Segmenter (in-browser stack)
+  GET  /segment/                 → Strange Object Segmenter (CT stack)
+  GET  /segment/slices/<s>/...   → built CT slices + manifest (build_slices.py)
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
@@ -59,7 +60,11 @@ BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 SSM_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'SSM Demo', 'predict_gui'))
 EMG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'Spikerbox-EMG'))
 EMG_WEB_DIR = os.path.join(EMG_DIR, 'web')
-SEG_WEB_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter', 'web'))
+SEG_DIR     = os.path.normpath(os.path.join(BASE_DIR, '..', 'Demos', 'StrangeObjectSegmenter'))
+SEG_WEB_DIR = os.path.join(SEG_DIR, 'web')
+# Study data for the segmenter: CT slices built by build_slices.py plus the
+# ground-truth bone meshes. Reachable as /segment/slices/… and /segment/mesh/….
+SEG_DATA_DIR = os.path.join(SEG_DIR, 'bones')
 ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo, etc.)
 POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
 DOC_RES_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'resources'))  # shared outreach figures
@@ -245,11 +250,18 @@ def emg_app(path):
 @app.route('/segment/', defaults={'path': 'index.html'})
 @app.route('/segment/<path:path>')
 def segment_app(path):
-    """Strange Object Segmenter — brush-paint segmentation over a synthetic
-    image stack generated in the browser (no assets needed)."""
-    target = os.path.join(SEG_WEB_DIR, path)
-    if os.path.exists(target):
+    """Strange Object Segmenter — brush-paint segmentation over a CT stack.
+
+    Serves web/, then falls back to bones/ so `slices/<series>/…` resolves to
+    the PNGs built by build_slices.py (and `mesh/…` to the ground-truth PLYs).
+    If the study hasn't been built the viewer falls back to a synthetic volume,
+    so the demo still runs on a checkout with no image data.
+    send_from_directory blocks traversal.
+    """
+    if os.path.exists(os.path.join(SEG_WEB_DIR, path)):
         return send_from_directory(SEG_WEB_DIR, path)
+    if os.path.exists(os.path.join(SEG_DATA_DIR, path)):
+        return send_from_directory(SEG_DATA_DIR, path)
     return send_from_directory(SEG_WEB_DIR, 'index.html')
 
 
@@ -267,49 +279,86 @@ def _load_emg_scores():
         return []
 
 
+EMG_DIFFICULTIES = ('easy', 'normal', 'hard')
+EMG_KEEP_PER_DIFF = 100   # persisted cap, per difficulty (see _trim_for_storage)
+
+
+def _group_top(scores, n):
+    """Top n scores for each difficulty, highest first, as {diff: [scores]}.
+    Scores saved before difficulty was tracked have no `diff` and are left out
+    — there's no board for them to belong to."""
+    return {
+        d: sorted((s for s in scores if s.get('diff') == d),
+                  key=lambda s: s.get('score', 0), reverse=True)[:n]
+        for d in EMG_DIFFICULTIES
+    }
+
+
+def _trim_for_storage(scores):
+    """Cap the persisted file at EMG_KEEP_PER_DIFF scores *per difficulty*
+    (instead of one global cap) so a less-played difficulty's scores can't get
+    squeezed out of storage by another difficulty's higher ones."""
+    kept = []
+    for d in EMG_DIFFICULTIES:
+        rows = sorted((s for s in scores if s.get('diff') == d),
+                       key=lambda s: s.get('score', 0), reverse=True)
+        kept.extend(rows[:EMG_KEEP_PER_DIFF])
+    return kept
+
+
 @app.route('/api/emg/scores', methods=['GET'])
 def emg_scores_get():
-    """Top scores, highest first."""
-    scores = sorted(_load_emg_scores(), key=lambda s: s.get('score', 0), reverse=True)
-    return jsonify(scores[:EMG_TOP_N])
+    """Top scores per difficulty, highest first: {easy: [...], normal: [...], hard: [...]}."""
+    return jsonify(_group_top(_load_emg_scores(), EMG_TOP_N))
 
 
 @app.route('/api/emg/scores', methods=['POST'])
 def emg_scores_post():
-    """Record a score. Returns the updated top list. Name is sanitised to a
-    short label; score is range-checked so a bad client can't poison the board."""
+    """Record a score. Returns the updated per-difficulty top lists. Name is
+    sanitised to a short label; score is range-checked so a bad client can't
+    poison the board. `diff` records which difficulty it was set on — a score
+    with no valid difficulty is still saved, but won't appear on any board."""
     data = request.get_json(force=True, silent=True) or {}
-    name = re.sub(r'[^A-Za-z0-9 _\-]', '', str(data.get('name', ''))).strip()[:12] or 'Anon'
+    name = re.sub(r'[^A-Za-z0-9 _\-]', '', str(data.get('name', ''))).strip()[:8] or 'Anon'
     try:
         score = int(data.get('score'))
     except (TypeError, ValueError):
         return jsonify({'error': 'invalid score'}), 400
     if not (0 <= score <= 100000):
         return jsonify({'error': 'score out of range'}), 400
+    diff = str(data.get('diff', '')).strip().lower()
 
     with _emg_lock:
         scores = _load_emg_scores()
-        scores.append({'name': name, 'score': score, 'ts': int(time.time())})
-        scores.sort(key=lambda s: s.get('score', 0), reverse=True)
-        scores = scores[:100]   # keep the file bounded
+        entry = {'name': name, 'score': score, 'ts': int(time.time())}
+        if diff in EMG_DIFFICULTIES:
+            entry['diff'] = diff
+        scores.append(entry)
+        scores = _trim_for_storage(scores)
         try:
             with open(EMG_SCORES_FILE, 'w', encoding='utf-8') as f:
                 json.dump(scores, f)
         except OSError as e:
             return jsonify({'error': f'could not save: {e}'}), 500
-    return jsonify(scores[:EMG_TOP_N])
+        # Flag the row we just created so the client can highlight it without
+        # having to guess by name+score (names get sanitised above, and two
+        # players can share a name and score). Response-only — not persisted.
+        top = _group_top(scores, EMG_TOP_N)
+        if diff in EMG_DIFFICULTIES:
+            top[diff] = [dict(s, you=True) if s is entry else s for s in top[diff]]
+    return jsonify(top)
 
 
 @app.route('/api/emg/scores', methods=['DELETE'])
 def emg_scores_clear():
-    """Wipe the shared leaderboard. Returns the (now empty) top list."""
+    """Wipe the shared leaderboard. Returns the (now empty) per-difficulty lists."""
     with _emg_lock:
         try:
             with open(EMG_SCORES_FILE, 'w', encoding='utf-8') as f:
                 json.dump([], f)
         except OSError as e:
             return jsonify({'error': f'could not clear: {e}'}), 500
-    return jsonify([])
+    return jsonify(_group_top([], EMG_TOP_N))
 
 
 # ---------------------------------------------------------------------------

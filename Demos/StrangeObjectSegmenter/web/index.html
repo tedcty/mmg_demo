@@ -72,6 +72,9 @@
     label.range { display: flex; align-items: center; gap: 10px; font-size: 13px;
         color: var(--md-sys-color-on-surface-variant); }
     label.range input[type=range] { flex: 1; }
+    /* Tabular so the number doesn't shuffle the slider as it changes. */
+    .range-val { font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap;
+        color: var(--md-sys-color-on-surface); min-width: 88px; text-align: right; }
     input[type=range] { accent-color: var(--md-sys-color-primary); }
 
     /* Chip toggle (used by the 3D reveal) */
@@ -134,6 +137,10 @@
                 <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l10-10a1 1 0 0 1 1.4 0l5.6 5.6a1 1 0 0 1 0 1.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg></span>
                 Eraser
             </button>
+            <button id="fillBtn" class="rail-item" title="Tap inside a closed outline to fill it">
+                <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-3.5 2-3.5s2 1.9 2 3.5z"/></svg></span>
+                Fill
+            </button>
         </nav>
 
         <!-- Image viewport -->
@@ -142,10 +149,11 @@
                 <div id="stage">
                     <canvas id="view" width="256" height="256"></canvas>
                     <div class="vp-overlay">
-                        <span class="vp-tag">CT · Axial</span>
+                        <span class="vp-tag" id="modalityTag">CT · Axial</span>
                         <span class="vp-tag" id="sliceLabel">Slice 1 / 1</span>
+                        <span class="vp-tag" id="loadTag" hidden>Loading…</span>
                     </div>
-                    <div id="gen">Generating scan…</div>
+                    <div id="gen">Loading study…</div>
                 </div>
             </div>
             <div class="slice-row">
@@ -161,14 +169,20 @@
                 <h3>Study</h3>
                 <div class="meta">
                     <span class="mk">Patient</span><span class="mv">ANON-0042</span>
-                    <span class="mk">Modality</span><span class="mv">CT</span>
-                    <span class="mk">Series</span><span class="mv">Axial · soft tissue</span>
-                    <span class="mk">Slices</span><span class="mv">24</span>
+                    <span class="mk">Modality</span><span class="mv" id="mModality">—</span>
+                    <span class="mk">Series</span><span class="mv" id="mSeries">—</span>
+                    <span class="mk">Slices</span><span class="mv" id="mSlices">—</span>
+                    <span class="mk">Voxel</span><span class="mv" id="mVoxel">—</span>
+                    <span class="mk">Window</span><span class="mv" id="mWindow">—</span>
+                    <span class="mk">Trace</span><span class="mv" id="mTarget">—</span>
                 </div>
             </div>
             <div class="card">
                 <h3>Tool settings</h3>
-                <label class="range">Brush size <input id="size" type="range" min="6" max="60" value="24"></label>
+                <label class="range">Brush size
+                    <input id="size" type="range" min="6" max="60" value="24">
+                    <span class="range-val" id="sizeVal">24 px</span>
+                </label>
             </div>
             <div class="card">
                 <h3>Segmentation</h3>
@@ -179,12 +193,15 @@
             <div class="card">
                 <h3>Actions</h3>
                 <div class="actions">
+                    <button id="interpBtn" class="md-btn md-btn--filled" style="flex-basis:100%"
+                            title="Morph between the slices you traced to fill the gaps">
+                        Fill between slices</button>
                     <button id="undoBtn" class="md-btn md-btn--tonal">Undo</button>
                     <button id="clearBtn" class="md-btn md-btn--tonal">Clear slice</button>
                     <button id="clearAllBtn" class="md-btn md-btn--outlined">Clear all</button>
                 </div>
             </div>
-            <div class="card" style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); line-height: 1.55;">
+            <div class="card" id="hintCard" style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); line-height: 1.55;">
                 Find the <strong style="color: var(--md-uoa-lava)">bright, sharp-edged</strong> foreign object,
                 scrub the slices and paint over it. Then <em>Check</em> your accuracy or <em>Reveal 3D</em>.
             </div>
@@ -209,12 +226,36 @@
 
 <script>
 // ===========================================================================
-// Strange Object Segmenter — a brush-paint segmentation demo over a synthetic
-// image stack generated in the browser (no assets, fully offline).
+// Strange Object Segmenter — brush-paint segmentation over a CT stack.
+//
+// Primary source is a real study: build_slices.py converts the DICOMs in
+// bones/image/ into windowed 8-bit PNGs plus a manifest, served at
+// /segment/slices/<series>/. Every slice is built; the viewer shows every
+// SLICE_STRIDE-th one so the slider stays usable (?stride=1 for the full stack).
+//
+// If no study has been built the demo falls back to generating a synthetic
+// volume in the browser, so a checkout with no image data still works — that
+// fallback is also the only mode with ground truth today, so scoring and the
+// "true object" 3D view are limited to it (see hasTruth).
 // ===========================================================================
 
-const SIZE = 256;          // slice resolution
-const NZ = 24;             // number of slices
+const SERIES = 'right_shoulder';
+const SLICES_BASE = `slices/${SERIES}/`;
+const SLICE_STRIDE = 3;    // show every Nth built slice (?stride=N overrides)
+const TARGET = 'humerus';  // structure to trace (?target=scapula overrides)
+// Loading is lazy: the viewport needs one slice to become usable, so that is all
+// the boot waits for. Everything else streams in behind the interaction —
+// neighbours of wherever the slider is first, then outwards, then the masks
+// (which only the Check button needs).
+const PREFETCH_RADIUS = 4; // slices either side of the cursor to pull eagerly
+const BG_PARALLEL = 3;     // background requests in flight — leaves room for
+                           // an on-demand slice to overtake them
+
+let SIZE = 256;            // slice resolution (from the manifest when present)
+let NZ = 24;               // number of slices on show
+let study = null;          // manifest of the loaded CT study, null if synthetic
+let target = null;         // the structure being traced, from study.structures
+let hasTruth = false;      // is there a ground-truth mask to score against?
 
 const view = document.getElementById('view');
 const vctx = view.getContext('2d');
@@ -253,10 +294,249 @@ function insideObject(nx, ny, nz) {
     return Math.min(d3(nx, ny, nz, OBJ.a), d3(nx, ny, nz, OBJ.b)) < OBJ.r;
 }
 
-const sliceImg = [];       // ImageData per slice
-const objMask  = [];       // Uint8Array ground-truth per slice
+const sliceImg = [];       // per slice: an Image (CT study) or ImageData (synthetic)
+const objMask  = [];       // Uint8Array ground-truth per slice (synthetic only)
 const userMask = [];       // Uint8Array painted per slice
+const sliceZ   = [];       // patient-space z (mm) per slice, CT study only
 
+// ---- Real CT study -------------------------------------------------------
+function loadImage(url) {
+    return new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => rej(new Error('failed to load ' + url));
+        im.src = url;
+    });
+}
+
+// Pick every strideth slice of the built stack. The whole study is on disk, so
+// this is purely how much we put in front of the visitor.
+function selectSlices(manifest, stride) {
+    const out = [];
+    for (let i = 0; i < manifest.slices.length; i += stride) out.push(manifest.slices[i]);
+    return out;
+}
+
+// Mask PNGs are read back pixel-by-pixel, so decode them without colour
+// management — a value nudged by one would flip a voxel. createImageBitmap can
+// ask for that explicitly; the plain Image path is a fallback, and the 0/255
+// masks survive it because they're read with a threshold rather than exactly.
+async function loadMaskImage(url) {
+    if (typeof createImageBitmap === 'function') {
+        try {
+            const blob = await fetch(url).then(r => r.blob());
+            return await createImageBitmap(blob, { colorSpaceConversion: 'none' });
+        } catch (e) { /* fall back to <img> */ }
+    }
+    return loadImage(url);
+}
+
+// ---- Lazy slice + mask loading ------------------------------------------
+// Each entry is undefined (untouched), a Promise (in flight) or the decoded
+// result. Requests are keyed on that, so asking twice never fetches twice.
+let chosenSlices = [];
+const slicePending = [];
+const maskPending = [];
+let maskCtx = null;
+// A slot that failed is marked, not cleared: the background fill picks whatever
+// is still missing, so clearing it would make a 404 spin forever. Scrubbing onto
+// a failed slice retries it once (pass retry), since that one is worth another go.
+const FAILED = 'failed';
+
+function ensureSlice(i, retry) {
+    if (sliceImg[i]) return Promise.resolve(sliceImg[i]);
+    const state = slicePending[i];
+    if (state && !(state === FAILED && retry)) {
+        return state === FAILED ? Promise.resolve(null) : state;
+    }
+    slicePending[i] = loadImage(SLICES_BASE + chosenSlices[i].file)
+        .then(im => {
+            sliceImg[i] = im;
+            if (i === z) render();       // the one on screen just arrived
+            updateLoadTag();
+            return im;
+        })
+        .catch(err => {
+            console.warn('slice failed to load:', err.message);
+            slicePending[i] = FAILED;
+            updateLoadTag();
+            return null;
+        });
+    return slicePending[i];
+}
+
+function ensureMask(i) {
+    if (objMask[i]) return Promise.resolve(objMask[i]);
+    if (!target || !target.mask_prefix) return Promise.resolve(null);
+    if (maskPending[i]) {
+        return maskPending[i] === FAILED ? Promise.resolve(null) : maskPending[i];
+    }
+    {
+        maskPending[i] = loadMaskImage(SLICES_BASE + target.mask_prefix + chosenSlices[i].file)
+            .then(im => {
+                if (!maskCtx) {
+                    const tmp = document.createElement('canvas');
+                    tmp.width = tmp.height = SIZE;
+                    maskCtx = tmp.getContext('2d', { willReadFrequently: true });
+                }
+                maskCtx.clearRect(0, 0, SIZE, SIZE);
+                maskCtx.drawImage(im, 0, 0, SIZE, SIZE);
+                const d = maskCtx.getImageData(0, 0, SIZE, SIZE).data;
+                const m = new Uint8Array(SIZE * SIZE);
+                for (let p = 0; p < m.length; p++) m[p] = d[p * 4] > 127 ? 1 : 0;
+                objMask[i] = m;
+                if (im.close) im.close();
+                updateLoadTag();
+                return m;
+            })
+            .catch(err => {
+                console.warn('mask failed to load:', err.message);
+                maskPending[i] = FAILED;
+                updateLoadTag();
+                return null;
+            });
+    }
+    return maskPending[i];
+}
+
+// Pull the slices around the cursor so scrubbing a step at a time stays smooth.
+function prefetchAround(centre) {
+    for (let d = 1; d <= PREFETCH_RADIUS; d++) {
+        for (const i of [centre - d, centre + d]) {
+            if (i >= 0 && i < NZ && !sliceImg[i] && !slicePending[i]) ensureSlice(i);
+        }
+    }
+}
+
+// Nearest thing to the current slice that nobody has asked for yet. Picking by
+// distance each time means the queue reorders itself as the visitor scrubs.
+function nearestMissing(have, pending) {
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < NZ; i++) {
+        if (have[i] || pending[i]) continue;
+        const d = Math.abs(i - z);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+function loadedCount(arr) {
+    let n = 0;
+    for (let i = 0; i < NZ; i++) if (arr[i]) n++;
+    return n;
+}
+// Loaded or given up on — what decides whether there is still work queued.
+function settledCount(have, pending) {
+    let n = 0;
+    for (let i = 0; i < NZ; i++) if (have[i] || pending[i] === FAILED) n++;
+    return n;
+}
+const loadTag = document.getElementById('loadTag');
+function updateLoadTag() {
+    const sliceDone = settledCount(sliceImg, slicePending);
+    if (sliceDone < NZ) {
+        loadTag.hidden = false;
+        loadTag.textContent = `Loading slices ${loadedCount(sliceImg)} / ${NZ}`;
+        return;
+    }
+    if (target && target.mask_prefix && settledCount(objMask, maskPending) < NZ) {
+        loadTag.hidden = false;
+        loadTag.textContent = `Loading reference ${loadedCount(objMask)} / ${NZ}`;
+        return;
+    }
+    const lost = NZ - loadedCount(sliceImg);
+    if (lost > 0) {
+        loadTag.hidden = false;
+        loadTag.textContent = `${lost} slice${lost === 1 ? '' : 's'} unavailable`;
+        return;
+    }
+    loadTag.hidden = true;
+}
+
+// Stream in whatever is left, a few at a time, nearest-first. Runs detached from
+// boot so the UI is live throughout.
+async function backgroundFill() {
+    for (const [have, pending, ensure] of [[sliceImg, slicePending, ensureSlice],
+                                           [objMask, maskPending, ensureMask]]) {
+        if (ensure === ensureMask && !(target && target.mask_prefix)) continue;
+        for (;;) {
+            const batch = [];
+            while (batch.length < BG_PARALLEL) {
+                const i = nearestMissing(have, pending);
+                if (i < 0) break;
+                batch.push(ensure(i));   // marks the slot pending synchronously
+            }
+            if (!batch.length) break;
+            await Promise.all(batch);
+        }
+    }
+    updateLoadTag();
+}
+
+// Check needs the whole reference volume, so it waits on this.
+function allMasksLoaded() {
+    if (!(target && target.mask_prefix)) return Promise.resolve();
+    const wanted = [];
+    for (let i = 0; i < NZ; i++) if (!objMask[i]) wanted.push(ensureMask(i));
+    return Promise.all(wanted);
+}
+
+async function loadStudy() {
+    const manifest = await fetch(SLICES_BASE + 'manifest.json', { cache: 'no-cache' })
+        .then(r => (r.ok ? r.json() : null));
+    if (!manifest || !manifest.slices || !manifest.slices.length) return null;
+
+    const params = new URLSearchParams(location.search);
+    const stride = Math.max(1, parseInt(params.get('stride'), 10) || SLICE_STRIDE);
+    chosenSlices = selectSlices(manifest, stride);
+    SIZE = manifest.size;
+    NZ = chosenSlices.length;
+    view.width = view.height = SIZE;
+    for (let i = 0; i < NZ; i++) {
+        sliceZ.push(chosenSlices[i].z);
+        userMask.push(new Uint8Array(SIZE * SIZE));   // no I/O, so do it upfront
+    }
+    study = { ...manifest, stride, shown: NZ };
+
+    // Ground truth is the bone meshes, voxelised by build_masks.py. Whether it
+    // exists is known from the manifest — the masks themselves stream in later,
+    // since only Check reads them.
+    const wanted = params.get('target') || TARGET;
+    const structures = manifest.structures || [];
+    target = structures.find(s => s.name === wanted) || structures[0] || null;
+    hasTruth = !!(target && target.mask_prefix);
+
+    // The one thing worth blocking on: the slice the viewer opens at. If even
+    // that won't load the study is unusable, so fall through to the phantom.
+    z = Math.floor(NZ / 2);
+    if (!await ensureSlice(z, true)) throw new Error('could not load the first slice');
+    return study;
+}
+
+function showStudyMeta() {
+    const set = (id, v) => document.getElementById(id).textContent = v;
+    if (study) {
+        const [sx] = study.display_spacing || study.pixel_spacing || [1, 1];
+        const dz = (study.slice_spacing * study.stride);
+        set('mModality', study.modality || 'CT');
+        set('mSeries', study.description || study.series);
+        set('mSlices', study.stride > 1 ? `${NZ} of ${study.count}` : String(NZ));
+        set('mVoxel', `${sx.toFixed(2)} × ${sx.toFixed(2)} × ${dz.toFixed(2)} mm`);
+        set('mWindow', `C${study.window.center} / W${study.window.width}`);
+        set('mTarget', target ? (hasTruth ? target.name : `${target.name} (no mask)`) : '—');
+        document.getElementById('modalityTag').textContent =
+            `${study.modality || 'CT'} · Axial · bone window`;
+    } else {
+        set('mModality', 'CT (synthetic)');
+        set('mSeries', 'Generated phantom');
+        set('mSlices', String(NZ));
+        set('mVoxel', '—');
+        set('mWindow', '—');
+        set('mTarget', 'foreign object');
+    }
+}
+
+// ---- Synthetic fallback volume ------------------------------------------
 function buildVolume() {
     for (let z = 0; z < NZ; z++) {
         const nz = (z / (NZ - 1)) * 2 - 1;
@@ -302,13 +582,39 @@ let z = 0;                  // current slice
 let tool = 'brush';         // 'brush' | 'erase'
 let brush = 24;
 let painting = false;
-const undoStack = [];       // {z, snap}
+// Brush footprint ring. Follows the pointer; after a size change it parks in the
+// middle of the viewport for a moment so the new size is visible even when the
+// pointer is off the canvas (or on a touch screen, where there is no hover).
+let cursorPt = null;
+let sizePreviewUntil = 0;
+const SIZE_PREVIEW_MS = 1200;
+// Each undo entry is a list of {z, snap}, so a multi-slice action (interpolation)
+// reverts in one press instead of filling the stack with one step per slice.
+const undoStack = [];
+function pushUndo(items) {
+    undoStack.push(items);
+    if (undoStack.length > 30) undoStack.shift();
+}
 
 // ---- Rendering -----------------------------------------------------------
-const overlay = vctx.createImageData(SIZE, SIZE);
+let overlay = null;
 function render() {
-    vctx.putImageData(sliceImg[z], 0, 0);
-    // Build the mask overlay (Māhina cyan) and blend at 50%.
+    const src = sliceImg[z];
+    if (src instanceof ImageData) vctx.putImageData(src, 0, 0);         // synthetic
+    else if (src) vctx.drawImage(src, 0, 0, SIZE, SIZE);                // CT slice PNG
+    else {
+        // Scrubbed ahead of the loader — say so rather than flashing black.
+        vctx.fillStyle = '#0a0d16';
+        vctx.fillRect(0, 0, SIZE, SIZE);
+        vctx.save();
+        vctx.fillStyle = 'rgba(207,238,255,0.75)';
+        vctx.font = `500 ${Math.round(SIZE / 22)}px Inter, system-ui, sans-serif`;
+        vctx.textAlign = 'center';
+        vctx.fillText('loading slice…', SIZE / 2, SIZE / 2);
+        vctx.restore();
+    }
+    // Build the mask overlay (Lava) and blend at 50%.
+    if (!overlay || overlay.width !== SIZE) overlay = vctx.createImageData(SIZE, SIZE);
     const m = userMask[z], od = overlay.data;
     for (let i = 0; i < m.length; i++) {
         const p = i * 4;
@@ -322,12 +628,116 @@ function render() {
     vctx.globalAlpha = 0.5;
     vctx.drawImage(tmp, 0, 0);
     vctx.restore();
+    drawBrushRing();
     updateStats();
+}
+
+// The brush footprint, drawn as a circle exactly the diameter that stamp() will
+// paint — so what you see is what you get. Brush is Lava with a faint fill;
+// the eraser is a dashed outline with none, so the two tools read differently.
+function drawBrushRing() {
+    let x, y, preview = false;
+    if (cursorPt) {
+        [x, y] = cursorPt;
+    } else if (tool !== 'fill' && performance.now() < sizePreviewUntil) {
+        x = SIZE / 2; y = SIZE / 2; preview = true;
+    } else {
+        return;
+    }
+    // A flood fill has no radius, so it gets a seed marker rather than a ring.
+    if (tool === 'fill') { drawFillCursor(x, y); return; }
+    ctxRing(x, y, brush / 2, preview);
+}
+function drawFillCursor(x, y) {
+    const r = 5;
+    vctx.save();
+    vctx.lineWidth = 1.25;
+    vctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    vctx.beginPath(); vctx.arc(x, y, r + 1, 0, Math.PI * 2); vctx.stroke();
+    vctx.strokeStyle = 'rgba(255,92,57,0.95)';
+    vctx.fillStyle = 'rgba(255,92,57,0.85)';
+    vctx.beginPath(); vctx.arc(x, y, r, 0, Math.PI * 2); vctx.stroke();
+    vctx.beginPath(); vctx.arc(x, y, 1.4, 0, Math.PI * 2); vctx.fill();
+    vctx.beginPath();
+    vctx.moveTo(x - r * 2, y); vctx.lineTo(x - r - 1, y);
+    vctx.moveTo(x + r + 1, y); vctx.lineTo(x + r * 2, y);
+    vctx.moveTo(x, y - r * 2); vctx.lineTo(x, y - r - 1);
+    vctx.moveTo(x, y + r + 1); vctx.lineTo(x, y + r * 2);
+    vctx.stroke();
+    vctx.restore();
+}
+function ctxRing(x, y, r, preview) {
+    vctx.save();
+    vctx.lineWidth = 1.25;
+    if (tool === 'brush') {
+        vctx.fillStyle = 'rgba(255,92,57,0.12)';
+        vctx.beginPath(); vctx.arc(x, y, r, 0, Math.PI * 2); vctx.fill();
+        vctx.strokeStyle = 'rgba(255,92,57,0.95)';
+    } else {
+        vctx.setLineDash([3, 3]);
+        vctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    }
+    vctx.beginPath(); vctx.arc(x, y, r, 0, Math.PI * 2); vctx.stroke();
+    // A dark companion circle keeps the ring visible over bright bone.
+    vctx.setLineDash([]);
+    vctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    vctx.lineWidth = 0.75;
+    vctx.beginPath(); vctx.arc(x, y, r + 1, 0, Math.PI * 2); vctx.stroke();
+    if (preview) {                       // crosshair, so a parked ring reads as a preview
+        vctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        vctx.beginPath();
+        vctx.moveTo(x - r / 3, y); vctx.lineTo(x + r / 3, y);
+        vctx.moveTo(x, y - r / 3); vctx.lineTo(x, y + r / 3);
+        vctx.stroke();
+    }
+    vctx.restore();
+}
+
+// ---- Bucket fill ---------------------------------------------------------
+// Outline the bone with the brush, then tap inside: far quicker than scrubbing
+// a brush over a whole cross-section. Flood fills the connected unpainted area
+// containing the seed, bounded by paint.
+//
+// The one thing that has to be right is a gap in the outline. A naive flood
+// would pour through it and cover the entire slice, which is both wrong and
+// annoying to undo — so the flood aborts the moment it reaches the canvas edge
+// and says the outline is open instead.
+function floodRegion(seedX, seedY) {
+    const m = userMask[z];
+    const sx = Math.round(seedX), sy = Math.round(seedY);
+    if (sx < 0 || sy < 0 || sx >= SIZE || sy >= SIZE) return { region: null, outside: true };
+    const seed = sy * SIZE + sx;
+    if (m[seed]) return { region: null, alreadyPainted: true };
+    const seen = new Uint8Array(SIZE * SIZE);
+    const stack = [seed];
+    const region = [];
+    seen[seed] = 1;
+    while (stack.length) {
+        const i = stack.pop();
+        const x = i % SIZE, y = (i - x) / SIZE;
+        if (x === 0 || y === 0 || x === SIZE - 1 || y === SIZE - 1) {
+            return { region: null, leaked: true };   // outline isn't closed
+        }
+        region.push(i);
+        for (const j of [i - 1, i + 1, i - SIZE, i + SIZE]) {
+            if (!seen[j] && !m[j]) { seen[j] = 1; stack.push(j); }
+        }
+    }
+    return { region };
+}
+
+function bucketFill(seedX, seedY) {
+    const r = floodRegion(seedX, seedY);
+    if (!r.region) return r;
+    pushUndo([{ z, snap: userMask[z].slice() }]);
+    const m = userMask[z];
+    for (const i of r.region) m[i] = 1;
+    return { filled: r.region.length };
 }
 
 // ---- Painting ------------------------------------------------------------
 function stamp(cx, cy) {
-    const m = userMask[z], val = tool === 'brush' ? 1 : 0;
+    const m = userMask[z], val = tool === 'erase' ? 0 : 1;
     const r = brush / 2, r2 = r * r;
     const x0 = Math.max(0, (cx - r) | 0), x1 = Math.min(SIZE - 1, (cx + r) | 0);
     const y0 = Math.max(0, (cy - r) | 0), y1 = Math.min(SIZE - 1, (cy + r) | 0);
@@ -350,15 +760,163 @@ function paintAt(e) {
     render();
 }
 view.addEventListener('pointerdown', e => {
+    cursorPt = evtToCanvas(e);
+    if (tool === 'fill') {
+        const r = bucketFill(cursorPt[0], cursorPt[1]);
+        if (r.leaked) {
+            showResult('<strong>The outline isn\'t closed.</strong><br>The fill reached the '
+                + 'edge of the image, so it stopped rather than covering the whole slice. '
+                + 'Close the gap with the brush and tap again.');
+        } else if (r.alreadyPainted) {
+            showResult('<strong>Already painted there.</strong><br>Tap inside an unpainted '
+                + 'area that your outline encloses.');
+        }
+        render();
+        return;
+    }
     painting = true; lastPt = null;
-    undoStack.push({ z, snap: userMask[z].slice() });
-    if (undoStack.length > 30) undoStack.shift();
+    pushUndo([{ z, snap: userMask[z].slice() }]);
     view.setPointerCapture(e.pointerId);
     paintAt(e);
 });
-view.addEventListener('pointermove', e => { if (painting) paintAt(e); });
+// Track the pointer even when not painting, so the brush ring can follow it.
+view.addEventListener('pointermove', e => {
+    cursorPt = evtToCanvas(e);
+    if (painting) paintAt(e); else render();
+});
+view.addEventListener('pointerleave', () => { cursorPt = null; render(); });
 view.addEventListener('pointerup', () => { painting = false; lastPt = null; });
 view.addEventListener('pointercancel', () => { painting = false; lastPt = null; });
+
+// ---- Interpolation between traced slices ---------------------------------
+// Painting every slice is not on for a visitor, so the gaps between the slices
+// they did trace get filled in for them. Blending the two binary masks directly
+// would fail whenever the shapes barely overlap (the average of two disjoint
+// blobs is nothing), so each mask becomes a signed distance field — negative
+// inside, positive outside — and the fields are blended instead. Thresholding
+// that at zero morphs one outline into the other, which is what you want when a
+// bone shifts and changes size from slice to slice.
+
+// Exact squared Euclidean distance transform (Felzenszwalb & Huttenlocher):
+// the lower envelope of parabolas, one pass per axis.
+function dt1d(f, d, v, zc, n) {
+    let k = 0;
+    v[0] = 0; zc[0] = -Infinity; zc[1] = Infinity;
+    for (let q = 1; q < n; q++) {
+        let s;
+        for (;;) {
+            const p = v[k];
+            s = ((f[q] + q * q) - (f[p] + p * p)) / (2 * q - 2 * p);
+            if (s <= zc[k]) k--; else break;   // z[0] is -Infinity, so k can't underflow
+        }
+        k++;
+        v[k] = q; zc[k] = s; zc[k + 1] = Infinity;
+    }
+    k = 0;
+    for (let q = 0; q < n; q++) {
+        while (zc[k + 1] < q) k++;
+        const p = v[k];
+        d[q] = (q - p) * (q - p) + f[p];
+    }
+}
+
+const DT_INF = 1e20;
+let dtScratch = null;
+function edt2(mask, target) {
+    const n = SIZE;
+    if (!dtScratch || dtScratch.n !== n) {
+        dtScratch = { n, f: new Float64Array(n), d: new Float64Array(n),
+                      v: new Int32Array(n), zc: new Float64Array(n + 1),
+                      out: new Float64Array(n * n) };
+    }
+    const { f, d, v, zc, out } = dtScratch;
+    for (let i = 0; i < n * n; i++) out[i] = (!!mask[i] === target) ? 0 : DT_INF;
+    for (let y = 0; y < n; y++) {
+        const row = y * n;
+        for (let x = 0; x < n; x++) f[x] = out[row + x];
+        dt1d(f, d, v, zc, n);
+        for (let x = 0; x < n; x++) out[row + x] = d[x];
+    }
+    for (let x = 0; x < n; x++) {
+        for (let y = 0; y < n; y++) f[y] = out[y * n + x];
+        dt1d(f, d, v, zc, n);
+        for (let y = 0; y < n; y++) out[y * n + x] = d[y];
+    }
+    return out;   // shared scratch — copy before the next call
+}
+
+// Signed distance in pixels: negative inside the mask, positive outside.
+function signedDistance(mask) {
+    const inside = edt2(mask, false);        // for a painted px: distance to open space
+    const sdf = new Float32Array(SIZE * SIZE);
+    for (let i = 0; i < sdf.length; i++) sdf[i] = mask[i] ? -Math.sqrt(inside[i]) : 0;
+    const outside = edt2(mask, true);        // for an empty px: distance to the paint
+    for (let i = 0; i < sdf.length; i++) if (!mask[i]) sdf[i] = Math.sqrt(outside[i]);
+    return sdf;
+}
+
+function maskCentroid(m) {
+    let n = 0, sx = 0, sy = 0;
+    for (let y = 0; y < SIZE; y++) {
+        const row = y * SIZE;
+        for (let x = 0; x < SIZE; x++) if (m[row + x]) { n++; sx += x; sy += y; }
+    }
+    return n ? { x: sx / n, y: sy / n, n } : null;
+}
+
+// Blend two distance fields into a binary slice, sliding each toward the other
+// first. Without that registration step the blend fails outright whenever the
+// two outlines don't overlap: no point is deep enough inside either shape to
+// survive the average, and the in-between slices come out empty. Aligning the
+// centroids turns "average of two distant shapes" into "average of two
+// concentric shapes, placed in between" — which is the intent.
+function blendFields(out, sa, sb, shift, t) {
+    const ax = t * shift.x, ay = t * shift.y;              // A slides toward B
+    const bx = (t - 1) * shift.x, by = (t - 1) * shift.y;  // B slides back toward A
+    const last = SIZE - 1;
+    const cl = (v) => (v < 0 ? 0 : v > last ? last : v);
+    for (let y = 0; y < SIZE; y++) {
+        const orow = y * SIZE;
+        const arow = cl(Math.round(y - ay)) * SIZE;
+        const brow = cl(Math.round(y - by)) * SIZE;
+        for (let x = 0; x < SIZE; x++) {
+            const va = sa[arow + cl(Math.round(x - ax))];
+            const vb = sb[brow + cl(Math.round(x - bx))];
+            out[orow + x] = ((1 - t) * va + t * vb) <= 0 ? 1 : 0;
+        }
+    }
+}
+
+// Fill every gap between traced slices. Never extrapolates past the first or
+// last traced slice — that would be inventing anatomy nobody looked at — and
+// never overwrites a slice the visitor painted themselves.
+function interpolatePainted() {
+    const painted = [];
+    for (let i = 0; i < NZ; i++) {
+        const m = userMask[i];
+        if (!m) continue;
+        for (let p = 0; p < m.length; p++) if (m[p]) { painted.push(i); break; }
+    }
+    if (painted.length < 2) return { traced: painted.length, filled: 0, gaps: 0 };
+    const items = [];
+    let filled = 0, gaps = 0;
+    for (let k = 0; k < painted.length - 1; k++) {
+        const a = painted[k], b = painted[k + 1];
+        if (b - a < 2) continue;
+        gaps++;
+        const sa = signedDistance(userMask[a]).slice();
+        const sb = signedDistance(userMask[b]);
+        const ca = maskCentroid(userMask[a]), cb = maskCentroid(userMask[b]);
+        const shift = { x: cb.x - ca.x, y: cb.y - ca.y };
+        for (let s = a + 1; s < b; s++) {
+            items.push({ z: s, snap: userMask[s].slice() });
+            blendFields(userMask[s], sa, sb, shift, (s - a) / (b - a));
+            filled++;
+        }
+    }
+    if (items.length) pushUndo(items);
+    return { traced: painted.length, filled, gaps };
+}
 
 // ---- Stats ---------------------------------------------------------------
 function countMask(m) { let n = 0; for (let i = 0; i < m.length; i++) if (m[i]) n++; return n; }
@@ -374,7 +932,13 @@ const sliceLabel = document.getElementById('sliceLabel');
 function setSlice(nz) {
     z = Math.max(0, Math.min(NZ - 1, nz));
     sliceSlider.value = z;
-    sliceLabel.textContent = `Slice ${z + 1} / ${NZ}`;
+    const zmm = sliceZ[z];
+    sliceLabel.textContent = `Slice ${z + 1} / ${NZ}`
+        + (zmm === undefined ? '' : ` · z ${zmm.toFixed(1)} mm`);
+    if (study) {
+        ensureSlice(z, true);   // jumped somewhere not loaded yet; retry a failure
+        prefetchAround(z);
+    }
     render();
 }
 sliceSlider.addEventListener('input', () => setSlice(+sliceSlider.value));
@@ -383,21 +947,68 @@ document.getElementById('nextBtn').addEventListener('click', () => setSlice(z + 
 
 // ---- Tools ---------------------------------------------------------------
 const brushBtn = document.getElementById('brushBtn'), eraseBtn = document.getElementById('eraseBtn');
+const fillBtn = document.getElementById('fillBtn');
+const sizeInput = document.getElementById('size');
 function setTool(t) {
     tool = t;
     brushBtn.classList.toggle('on', t === 'brush');
     eraseBtn.classList.toggle('on', t === 'erase');
+    fillBtn.classList.toggle('on', t === 'fill');
+    sizeInput.disabled = (t === 'fill');   // size means nothing to a flood fill
+    render();                              // the cursor changes with the tool
 }
 brushBtn.addEventListener('click', () => setTool('brush'));
 eraseBtn.addEventListener('click', () => setTool('erase'));
-document.getElementById('size').addEventListener('input', e => brush = +e.target.value);
+fillBtn.addEventListener('click', () => setTool('fill'));
+// Brush size readout: pixels always, plus the real-world diameter when a study
+// is loaded (the display grid's spacing is known, so this is exact).
+const sizeValEl = document.getElementById('sizeVal');
+function updateSizeReadout() {
+    let text = `${brush} px`;
+    const sp = study && (study.display_spacing || study.pixel_spacing);
+    if (sp) text += ` · ${(brush * sp[0]).toFixed(0)} mm`;
+    sizeValEl.textContent = text;
+}
+document.getElementById('size').addEventListener('input', e => {
+    brush = +e.target.value;
+    updateSizeReadout();
+    // Park the ring mid-viewport briefly, so dragging the slider shows the size
+    // even with no pointer over the canvas (and on touch, where hover doesn't exist).
+    sizePreviewUntil = performance.now() + SIZE_PREVIEW_MS;
+    render();
+    clearTimeout(updateSizeReadout._t);
+    updateSizeReadout._t = setTimeout(render, SIZE_PREVIEW_MS + 20);
+});
 document.getElementById('undoBtn').addEventListener('click', () => {
     const u = undoStack.pop();
-    if (u) { setSlice(u.z); userMask[u.z].set(u.snap); render(); }
+    if (!u) return;
+    for (const it of u) userMask[it.z].set(it.snap);
+    setSlice(u[0].z);          // jump to where the change started
+    render();
 });
 document.getElementById('clearBtn').addEventListener('click', () => {
-    undoStack.push({ z, snap: userMask[z].slice() });
+    pushUndo([{ z, snap: userMask[z].slice() }]);
     userMask[z].fill(0); render();
+});
+const interpBtn = document.getElementById('interpBtn');
+interpBtn.addEventListener('click', () => {
+    const r = interpolatePainted();
+    if (r.traced < 2) {
+        resultEl.innerHTML = '<strong>Trace at least two slices first.</strong><br>'
+            + 'Paint the structure on a few slices as you scrub, then this fills in '
+            + 'the ones between them.';
+    } else if (!r.filled) {
+        resultEl.innerHTML = `<strong>No gaps to fill.</strong><br>`
+            + `Your ${r.traced} traced slices are already next to each other — `
+            + 'skip a few slices and trace again to see it interpolate.';
+    } else {
+        resultEl.innerHTML = `<strong>Filled ${r.filled} slice${r.filled === 1 ? '' : 's'}</strong> `
+            + `across ${r.gaps} gap${r.gaps === 1 ? '' : 's'} between your ${r.traced} traced `
+            + 'slices.<br>Scrub through to see them, then <em>Check</em> or <em>Reveal 3D</em>. '
+            + '<em>Undo</em> reverts the whole fill.';
+    }
+    resultEl.classList.add('show');
+    render();
 });
 document.getElementById('clearAllBtn').addEventListener('click', () => {
     for (const m of userMask) m.fill(0);
@@ -406,64 +1017,475 @@ document.getElementById('clearAllBtn').addEventListener('click', () => {
 
 // ---- Check (IoU + Dice against ground truth) -----------------------------
 const resultEl = document.getElementById('result');
+const checkBtn = document.getElementById('checkBtn');
 function hideResult() { resultEl.classList.remove('show'); }
-document.getElementById('checkBtn').addEventListener('click', () => {
-    let inter = 0, uni = 0, gtN = 0, usr = 0;
+function showResult(html) { resultEl.innerHTML = html; resultEl.classList.add('show'); }
+
+// Scoring and the "true object" 3D view both need a ground-truth mask. The
+// synthetic phantom has one by construction; the real study doesn't yet — its
+// truth lives in bones/mesh/*.ply and still has to be voxelised into the CT
+// grid. Until then, disable those paths rather than score against a phantom
+// that isn't in the image.
+function applyTruthGating() {
+    checkBtn.disabled = !hasTruth;
+    checkBtn.title = hasTruth ? '' : 'Needs a ground-truth mask for this study';
+    revealEl.querySelectorAll('.reveal-modes button').forEach(b => {
+        b.disabled = b.dataset.mode !== 'user' && !hasTruth;
+    });
+    if (!hasTruth) curMode = 'user';
+    if (study) {
+        const what = target ? `the <strong style="color: var(--md-uoa-lava)">${target.name}</strong>`
+                            : 'the target structure';
+        document.getElementById('hintCard').innerHTML =
+            `Real <strong>${study.modality || 'CT'}</strong> study — ${study.description || study.series}. `
+            + `Scrub the ${NZ} slices, find ${what} and paint over it — every few slices is `
+            + 'enough, then <em>Fill between slices</em> interpolates the rest. '
+            + (hasTruth
+                ? 'Then <em>Check</em> your accuracy, or <em>Reveal 3D</em> to compare your '
+                  + 'trace with the real bone.'
+                : 'Ground truth for this structure has not been built — run build_masks.py.');
+    }
+}
+
+checkBtn.addEventListener('click', async () => {
+    if (!hasTruth) {
+        resultEl.innerHTML = '<strong>No ground truth for this study yet.</strong><br>'
+            + 'Scoring compares your paint against a known mask — for this CT that mask '
+            + 'still has to be built from bones/mesh/*.ply.';
+        resultEl.classList.add('show');
+        return;
+    }
+    // Scoring spans the whole volume, so the reference has to be complete. It
+    // streams in the background, and clicking Check early just waits for it.
+    if (loadedCount(objMask) < NZ) {
+        checkBtn.disabled = true;
+        resultEl.innerHTML = 'Loading the reference volume…';
+        resultEl.classList.add('show');
+        await allMasksLoaded();
+        checkBtn.disabled = false;
+    }
+    // Two different questions, reported separately. Accuracy = how well the
+    // slices you *did* trace match the truth. Coverage = how much of the whole
+    // structure you got to. A visitor paints a handful of the 86 slices in a
+    // couple of minutes, so a single whole-volume Dice would read as ~5% however
+    // careful they were, which tells them nothing useful.
+    let inter = 0, gtN = 0, usr = 0;                    // whole volume
+    let pInter = 0, pUni = 0, pGt = 0, pUsr = 0;        // traced slices only
+    let painted = 0, truthSlices = 0;
     for (let s = 0; s < NZ; s++) {
         const u = userMask[s], g = objMask[s];
+        let su = 0, sg = 0, si = 0, sun = 0;
         for (let i = 0; i < u.length; i++) {
-            const a = u[i], b = g[i];
-            if (a) usr++; if (b) gtN++;
-            if (a && b) inter++;
-            if (a || b) uni++;
+            const a = u[i], b = g ? g[i] : 0;
+            if (a) su++;
+            if (b) sg++;
+            if (a && b) si++;
+            if (a || b) sun++;
         }
+        usr += su; gtN += sg; inter += si;
+        if (sg) truthSlices++;
+        if (su) { painted++; pUsr += su; pGt += sg; pInter += si; pUni += sun; }
     }
-    const iou = uni ? inter / uni : 0;
-    const dice = (usr + gtN) ? 2 * inter / (usr + gtN) : 0;
-    let grade = 'Keep going — paint more of the object.';
+    if (!usr) {
+        resultEl.innerHTML = '<strong>Nothing painted yet.</strong><br>'
+            + 'Scrub to a slice where the structure is visible and brush over it.';
+        resultEl.classList.add('show');
+        return;
+    }
+    const dice = (pUsr + pGt) ? 2 * pInter / (pUsr + pGt) : 0;
+    const iou = pUni ? pInter / pUni : 0;
+    const coverage = gtN ? inter / gtN : 0;
+    let grade = 'Keep going — look closely at the edges.';
     if (dice >= 0.85) grade = 'Excellent — a radiologist-grade trace! 🏆';
     else if (dice >= 0.65) grade = 'Nice work — a solid segmentation. 👍';
-    else if (dice >= 0.4) grade = 'Getting there — fill in the parts you missed.';
+    else if (dice >= 0.4) grade = 'Getting there — hug the bright bone edge more closely.';
+    const what = (study && target) ? target.name : 'object';
     resultEl.innerHTML =
-        `<strong>Overlap score (Dice): ${(dice * 100).toFixed(0)}%</strong> ` +
-        `&nbsp;·&nbsp; IoU ${(iou * 100).toFixed(0)}% ` +
-        `&nbsp;·&nbsp; true volume ${gtN.toLocaleString()} voxels, you painted ${usr.toLocaleString()}.<br>${grade}`;
+        `<strong>Accuracy on your ${painted} traced slice${painted === 1 ? '' : 's'}: `
+        + `Dice ${(dice * 100).toFixed(0)}%</strong> &nbsp;·&nbsp; IoU ${(iou * 100).toFixed(0)}%<br>`
+        + `Coverage: ${(coverage * 100).toFixed(0)}% of the ${what} `
+        + `(${painted} of ${truthSlices} slices it appears on).<br>${grade}`;
     resultEl.classList.add('show');
 });
 
 // ---- 3D reveal (three.js voxel reconstruction) ---------------------------
 // Downsample the 256² masks to a coarse grid and render set voxels as boxes.
-const GX = 56, GY = 56, GZ = NZ;
-function sampleTrue(gx, gy, gz) {
-    const nx = (gx + 0.5) / GX * 2 - 1, ny = (gy + 0.5) / GY * 2 - 1, nz = (gz + 0.5) / GZ * 2 - 1;
-    return insideObject(nx, ny, nz);
-}
-function sampleUser(gx, gy, gz) {
-    const m = userMask[gz];
+// GZ tracks the loaded stack depth — it can't be a constant, since NZ isn't
+// known until the study (or the phantom) has loaded.
+const GX = 56, GY = 56;
+// Occupancy of one coarse cell in a per-slice mask: what fraction of the pixels
+// it covers are set. Shared by the user's paint and the mesh ground truth.
+function sampleMask(masks, gx, gy, gz, frac) {
+    const m = masks[gz];
+    if (!m) return false;
     const x0 = (gx / GX * SIZE) | 0, x1 = ((gx + 1) / GX * SIZE) | 0;
     const y0 = (gy / GY * SIZE) | 0, y1 = ((gy + 1) / GY * SIZE) | 0;
     let on = 0, tot = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { tot++; if (m[y * SIZE + x]) on++; }
-    return tot > 0 && on / tot > 0.4;
+    return tot > 0 && on / tot > frac;
 }
+function sampleTrue(gx, gy, gz) {
+    // Real study: the voxelised mesh. Phantom: the analytic object.
+    if (study) return sampleMask(objMask, gx, gy, gz, 0.25);
+    const nx = (gx + 0.5) / GX * 2 - 1, ny = (gy + 0.5) / GY * 2 - 1, nz = (gz + 0.5) / NZ * 2 - 1;
+    return insideObject(nx, ny, nz);
+}
+// Depth of one voxel in units of an in-plane cell, so the reconstruction keeps
+// the study's real proportions instead of assuming a cube.
+function cellDepth() {
+    if (!study) return GX / NZ;
+    const mmPerCellX = SIZE * (study.display_spacing || study.pixel_spacing)[0] / GX;
+    return (study.slice_spacing * study.stride) / mmPerCellX;
+}
+function sampleUser(gx, gy, gz) { return sampleMask(userMask, gx, gy, gz, 0.4); }
 
 const revealEl = document.getElementById('reveal3d');
 const revealEmpty = document.getElementById('revealEmpty');
 let R = null, curMode = 'true';
 
+// ---- Real bone surfaces --------------------------------------------------
+// The ground-truth meshes render as themselves rather than as voxel boxes, so
+// the reveal shows actual bone. three.js ships a PLYLoader in examples/, which
+// isn't vendored here; these files are all binary little-endian triangle
+// meshes with float x/y/z, so a small reader avoids pulling in (and version-
+// pinning) another module.
+const PLY_SIZES = { float: 4, float32: 4, double: 8, float64: 8, int: 4, int32: 4,
+                    uint: 4, uint32: 4, short: 2, ushort: 2, int16: 2, uint16: 2,
+                    char: 1, uchar: 1, int8: 1, uint8: 1 };
+async function loadPly(url, onProgress) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    if (onProgress) onProgress();
+    const buf = await res.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const head = new TextDecoder('ascii').decode(bytes.subarray(0, Math.min(bytes.length, 8192)));
+    const at = head.indexOf('end_header\n');
+    if (at < 0) throw new Error(`${url}: no PLY end_header in the first 8 KB`);
+    const headerEnd = at + 'end_header\n'.length;
+    const header = head.slice(0, at);
+    if (!/binary_little_endian/.test(header)) {
+        throw new Error(`${url}: only binary_little_endian PLY is supported`);
+    }
+    let nv = 0, nf = 0, element = null, stride = 0, firstThree = [];
+    for (const line of header.split('\n')) {
+        const tok = line.trim().split(/\s+/);
+        if (tok[0] === 'element') {
+            element = tok[1];
+            if (element === 'vertex') nv = +tok[2];
+            else if (element === 'face') nf = +tok[2];
+        } else if (tok[0] === 'property' && element === 'vertex') {
+            const size = PLY_SIZES[tok[1]];
+            if (!size) throw new Error(`${url}: unsupported vertex property type ${tok[1]}`);
+            if (firstThree.length < 3) firstThree.push(tok[1]);
+            stride += size;
+        }
+    }
+    if (!nv || !nf) throw new Error(`${url}: missing vertex/face counts`);
+    if (!firstThree.every(t => PLY_SIZES[t] === 4 && /float/.test(t))) {
+        throw new Error(`${url}: expected float x/y/z first, got ${firstThree}`);
+    }
+
+    let positions;
+    if (stride === 12) {
+        // slice() copies into a fresh 0-aligned buffer, which Float32Array needs.
+        positions = new Float32Array(buf.slice(headerEnd, headerEnd + nv * 12));
+    } else {
+        positions = new Float32Array(nv * 3);
+        const dv = new DataView(buf);
+        for (let i = 0; i < nv; i++) {
+            const o = headerEnd + i * stride;
+            positions[i * 3] = dv.getFloat32(o, true);
+            positions[i * 3 + 1] = dv.getFloat32(o + 4, true);
+            positions[i * 3 + 2] = dv.getFloat32(o + 8, true);
+        }
+    }
+
+    const dv = new DataView(buf);
+    const indices = new Uint32Array(nf * 3);
+    let p = headerEnd + nv * stride, out = 0;
+    for (let f = 0; f < nf; f++) {
+        const cnt = dv.getUint8(p); p += 1;
+        const i0 = dv.getUint32(p, true);
+        let prev = dv.getUint32(p + 4, true);
+        for (let k = 2; k < cnt; k++) {          // fan-triangulate (all 3 here)
+            const cur = dv.getUint32(p + k * 4, true);
+            indices[out++] = i0; indices[out++] = prev; indices[out++] = cur;
+            prev = cur;
+        }
+        p += cnt * 4;
+    }
+    return { positions, indices: out === indices.length ? indices : indices.subarray(0, out) };
+}
+
+const plyCache = {};
+function fetchMesh(name, onProgress) {
+    return (plyCache[name] ||= loadPly(`mesh/${name}.ply`, onProgress)
+        .catch(err => { delete plyCache[name]; throw err; }));
+}
+
+// Patient LPS millimetres -> scene units, centred on the shown volume:
+//   +x = patient right, +y = superior (up), +z = posterior.
+// Two axis flips keep it right-handed, so the anatomy isn't mirrored. Both the
+// bone surface and the painted voxels go through this, which is what makes
+// "Compare" line up.
+function sceneFrame() {
+    const f = study.source.cols / SIZE;
+    const sx = study.display_spacing[0], sy = study.display_spacing[1];
+    const ox = study.origin[0] + (f - 1) / 2 * study.pixel_spacing[0];
+    const oy = study.origin[1] + (f - 1) / 2 * study.pixel_spacing[1];
+    return {
+        ox, oy, sx, sy,
+        cx: ox + (SIZE - 1) / 2 * sx,
+        cy: oy + (SIZE - 1) / 2 * sy,
+        cz: (sliceZ[0] + sliceZ[NZ - 1]) / 2,
+    };
+}
+
+function buildBoneMesh(THREE, ply, fr, color, opacity) {
+    const src = ply.positions, pos = new Float32Array(src.length);
+    for (let i = 0; i < src.length; i += 3) {
+        pos[i] = -(src[i] - fr.cx);          // patient right
+        pos[i + 1] = src[i + 2] - fr.cz;     // superior
+        pos[i + 2] = src[i + 1] - fr.cy;     // posterior
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(ply.indices, 1));
+    geo.computeVertexNormals();
+    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        color, roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide,
+        transparent: opacity < 1, opacity,
+    }));
+}
+
+// ---- The visitor's trace, as a surface -----------------------------------
+// Painted voxels become an isosurface so the trace can be compared with the
+// bone on equal terms. Surface Nets rather than marching cubes: one vertex per
+// straddling cell placed at the mean of its edge crossings, then a quad across
+// each crossed edge of the dual grid. No 256-entry triangle table to get wrong,
+// and the output is smoother on binary data than marching cubes is.
+const SURF_ISO = 0.45;         // just under half, so a lone painted voxel survives
+const SURF_PAD = 2;            // zero border, so the surface always closes
+const SURF_MAX_CELLS = 1.2e6;  // beyond this, sample the paint more coarsely
+
+const cubeEdges = new Int32Array(24);
+const edgeTable = new Int32Array(256);
+(function initSurfaceNets() {
+    // Edge list in the order that puts the three edges leaving corner 0 (along
+    // x, y, z) at bits 0, 1, 2 — which is what the face loop below relies on.
+    let k = 0;
+    for (let i = 0; i < 8; i++) {
+        for (let j = 1; j <= 4; j <<= 1) {
+            const p = i ^ j;
+            if (i <= p) { cubeEdges[k++] = i; cubeEdges[k++] = p; }
+        }
+    }
+    for (let i = 0; i < 256; i++) {
+        let em = 0;
+        for (let j = 0; j < 24; j += 2) {
+            const a = !!(i & (1 << cubeEdges[j])), b = !!(i & (1 << cubeEdges[j + 1]));
+            if (a !== b) em |= 1 << (j >> 1);
+        }
+        edgeTable[i] = em;
+    }
+})();
+
+// Tight bounds of everything painted, in (col, row, slice).
+function paintedBounds() {
+    let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1, z0 = -1, z1 = -1;
+    for (let k = 0; k < NZ; k++) {
+        const m = userMask[k];
+        if (!m) continue;
+        let any = false;
+        for (let y = 0; y < SIZE; y++) {
+            const row = y * SIZE;
+            for (let x = 0; x < SIZE; x++) {
+                if (!m[row + x]) continue;
+                any = true;
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+        if (any) { if (z0 < 0) z0 = k; z1 = k; }
+    }
+    return x1 < 0 ? null : { x0, x1, y0, y1, z0, z1 };
+}
+
+// Occupancy field over those bounds, padded with zeros. Coarsens in-plane if the
+// trace is large; slices are already sparse so z is never decimated.
+function buildOccupancy(b) {
+    const w = b.x1 - b.x0 + 1, h = b.y1 - b.y0 + 1, d = b.z1 - b.z0 + 1;
+    let step = 1;
+    while (Math.ceil(w / step) * Math.ceil(h / step) * d > SURF_MAX_CELLS) step++;
+    const nx = Math.ceil(w / step) + 2 * SURF_PAD;
+    const ny = Math.ceil(h / step) + 2 * SURF_PAD;
+    const nz = d + 2 * SURF_PAD;
+    const vals = new Float32Array(nx * ny * nz);
+    for (let k = 0; k < d; k++) {
+        const m = userMask[b.z0 + k];
+        if (!m) continue;
+        for (let j = 0; j * step < h; j++) {
+            for (let i = 0; i * step < w; i++) {
+                let on = 0, tot = 0;
+                for (let dy = 0; dy < step; dy++) {
+                    const yy = b.y0 + j * step + dy;
+                    if (yy > b.y1) break;
+                    for (let dx = 0; dx < step; dx++) {
+                        const xx = b.x0 + i * step + dx;
+                        if (xx > b.x1) break;
+                        tot++;
+                        if (m[yy * SIZE + xx]) on++;
+                    }
+                }
+                if (on) vals[((k + SURF_PAD) * ny + (j + SURF_PAD)) * nx + (i + SURF_PAD)] = on / tot;
+            }
+        }
+    }
+    return { vals, nx, ny, nz, step, b };
+}
+
+// Round off the stair-steps. Weighted so the centre keeps half its weight: a
+// trace only one slice thick would otherwise blur below the iso value and vanish.
+function smoothOccupancy(f) {
+    const { vals, nx, ny, nz } = f;
+    const out = new Float32Array(vals.length);
+    const sy = nx, sz = nx * ny;
+    for (let k = 1; k < nz - 1; k++) {
+        for (let j = 1; j < ny - 1; j++) {
+            let idx = (k * ny + j) * nx + 1;
+            for (let i = 1; i < nx - 1; i++, idx++) {
+                const n = vals[idx - 1] + vals[idx + 1] + vals[idx - sy] + vals[idx + sy]
+                        + vals[idx - sz] + vals[idx + sz];
+                out[idx] = 0.5 * vals[idx] + n / 12;
+            }
+        }
+    }
+    f.vals = out;
+    return f;
+}
+
+function surfaceNets(f, iso) {
+    const { vals, nx, ny, nz } = f;
+    const R = [1, nx, nx * ny];
+    const cellVert = new Int32Array(nx * ny * nz).fill(-1);
+    const positions = [], indices = [];
+    const val = new Float64Array(8);
+    for (let z = 0; z < nz - 1; z++) {
+        for (let y = 0; y < ny - 1; y++) {
+            for (let x = 0; x < nx - 1; x++) {
+                let mask = 0;
+                for (let c = 0; c < 8; c++) {
+                    const v = vals[((z + ((c >> 2) & 1)) * ny + (y + ((c >> 1) & 1))) * nx
+                                   + (x + (c & 1))];
+                    val[c] = v;
+                    if (v > iso) mask |= 1 << c;
+                }
+                if (mask === 0 || mask === 255) continue;
+                const em = edgeTable[mask];
+                // Vertex: mean of this cell's edge crossings, in cell-local coords.
+                let px = 0, py = 0, pz = 0, n = 0;
+                for (let e = 0; e < 12; e++) {
+                    if (!(em & (1 << e))) continue;
+                    const a = cubeEdges[e * 2], bb = cubeEdges[e * 2 + 1];
+                    const va = val[a], vb = val[bb];
+                    const t = (iso - va) / (vb - va);
+                    const ax = a & 1, ay = (a >> 1) & 1, az = (a >> 2) & 1;
+                    px += ax + t * ((bb & 1) - ax);
+                    py += ay + t * (((bb >> 1) & 1) - ay);
+                    pz += az + t * (((bb >> 2) & 1) - az);
+                    n++;
+                }
+                const m = (z * ny + y) * nx + x;
+                cellVert[m] = positions.length / 3;
+                positions.push(x + px / n, y + py / n, z + pz / n);
+
+                // One quad per crossed edge leaving corner 0, spanning the four
+                // cells that share it. Winding flips with corner 0's sign.
+                const p = [x, y, z];
+                for (let axis = 0; axis < 3; axis++) {
+                    if (!(em & (1 << axis))) continue;
+                    const iu = (axis + 1) % 3, iv = (axis + 2) % 3;
+                    if (p[iu] === 0 || p[iv] === 0) continue;
+                    const du = R[iu], dv = R[iv];
+                    const v0 = cellVert[m], v1 = cellVert[m - du];
+                    const v2 = cellVert[m - du - dv], v3 = cellVert[m - dv];
+                    if (v1 < 0 || v2 < 0 || v3 < 0) continue;
+                    if (mask & 1) indices.push(v0, v1, v2, v0, v2, v3);
+                    else indices.push(v0, v3, v2, v0, v2, v1);
+                }
+            }
+        }
+    }
+    return { positions, indices };
+}
+
+// Surface of the painted region, in the same scene frame as the bone.
+function buildUserSurface(THREE, fr, colorHex, opacity = 1.0) {
+    const b = paintedBounds();
+    if (!b) return null;
+    const f = smoothOccupancy(buildOccupancy(b));
+    const { positions, indices } = surfaceNets(f, SURF_ISO);
+    if (!indices.length) return null;
+    const dz = study.slice_spacing * study.stride;
+    const pos = new Float32Array(positions.length);
+    for (let i = 0; i < positions.length; i += 3) {
+        // field sample -> voxel/slice index -> patient mm -> scene
+        const vx = b.x0 + (positions[i] - SURF_PAD) * f.step;
+        const vy = b.y0 + (positions[i + 1] - SURF_PAD) * f.step;
+        const vz = b.z0 + (positions[i + 2] - SURF_PAD);
+        pos[i] = -((fr.ox + vx * fr.sx) - fr.cx);
+        pos[i + 1] = (sliceZ[0] + vz * dz) - fr.cz;
+        pos[i + 2] = (fr.oy + vy * fr.sy) - fr.cy;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+    geo.computeVertexNormals();
+    return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        color: colorHex, roughness: 0.5, metalness: 0.05, side: THREE.DoubleSide,
+        transparent: opacity < 1, opacity,
+    }));
+}
+
+// Voxel boxes, still used by the synthetic phantom (no patient frame, and its
+// truth is voxels too, so the two match).
+function buildUserVoxels(THREE, fr, colorHex) {
+    const cells = [];
+    for (let gz = 0; gz < NZ; gz++) for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++)
+        if (sampleUser(gx, gy, gz)) cells.push([gx, gy, gz]);
+    if (!cells.length) return null;
+    const wx = SIZE / GX * fr.sx, wy = SIZE / GY * fr.sy;
+    const wz = study.slice_spacing * study.stride;
+    const geo = new THREE.BoxGeometry(wx * 0.95, wz * 0.95, wy * 0.95);
+    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({
+        color: colorHex, roughness: 0.6, metalness: 0.1 }), cells.length);
+    const m4 = new THREE.Matrix4();
+    for (let i = 0; i < cells.length; i++) {
+        const [gx, gy, gz] = cells[i];
+        const px = fr.ox + ((gx + 0.5) / GX * SIZE - 0.5) * fr.sx;
+        const py = fr.oy + ((gy + 0.5) / GY * SIZE - 0.5) * fr.sy;
+        m4.makeTranslation(-(px - fr.cx), sliceZ[gz] - fr.cz, py - fr.cy);
+        mesh.setMatrixAt(i, m4);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    return mesh;
+}
+
 function makeVoxels(THREE, sample, colorHex, opacity) {
     const pos = [];
-    for (let gz = 0; gz < GZ; gz++) for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++)
+    for (let gz = 0; gz < NZ; gz++) for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++)
         if (sample(gx, gy, gz)) pos.push([gx, gy, gz]);
     if (!pos.length) return null;
-    const cell = 1, cellZ = cell * GX / GZ;
+    const cell = 1, cellZ = cell * cellDepth();
     const geo = new THREE.BoxGeometry(cell * 0.9, cell * 0.9, cellZ * 0.9);
     const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.55, metalness: 0.1,
         transparent: opacity < 1, opacity });
     const mesh = new THREE.InstancedMesh(geo, mat, pos.length);
     const m4 = new THREE.Matrix4();
     pos.forEach((p, i) => {
-        m4.makeTranslation((p[0] - (GX - 1) / 2) * cell, ((GY - 1) / 2 - p[1]) * cell, (p[2] - (GZ - 1) / 2) * cellZ);
+        m4.makeTranslation((p[0] - (GX - 1) / 2) * cell, ((GY - 1) / 2 - p[1]) * cell, (p[2] - (NZ - 1) / 2) * cellZ);
         mesh.setMatrixAt(i, m4);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -487,21 +1509,52 @@ function updateCam() {
         target.z + dist * Math.cos(pitch) * Math.cos(yaw));
     camera.lookAt(target);
 }
-function setMode(mode) {
+const BONE_COLOR = 0xEDE4D0;   // ivory, so the Lava-orange trace reads over it
+async function setMode(mode) {
+    if (!hasTruth && mode !== 'user') mode = 'user';   // nothing to compare against
     curMode = mode;
+    revealEl.querySelectorAll('.reveal-modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     const { THREE, group } = R;
     while (group.children.length) { const c = group.children.pop(); c.geometry?.dispose(); c.material?.dispose(); }
-    if (mode === 'true' || mode === 'both') {
-        const m = makeVoxels(THREE, sampleTrue, 0x00caef, mode === 'both' ? 0.3 : 1.0);
-        if (m) group.add(m);
+
+    if (!study) {
+        // Synthetic phantom: no meshes and no patient frame, so it stays voxels.
+        if (mode === 'true' || mode === 'both') {
+            const m = makeVoxels(THREE, sampleTrue, 0x00caef, mode === 'both' ? 0.3 : 1.0);
+            if (m) group.add(m);
+        }
+        if (mode === 'user' || mode === 'both') {
+            const m = makeVoxels(THREE, sampleUser, 0xff5c39, 1.0);
+            if (m) group.add(m);
+        }
+    } else {
+        const fr = sceneFrame();
+        if (mode === 'true' || mode === 'both') {
+            revealEmpty.hidden = false;
+            revealEmpty.textContent = `Loading the ${target.name} surface…`;
+            try {
+                const ply = await fetchMesh(target.name);
+                if (curMode !== mode) return;            // switched away while loading
+                group.add(buildBoneMesh(THREE, ply, fr, BONE_COLOR,
+                                        mode === 'both' ? 0.35 : 1.0));
+            } catch (err) {
+                console.error('mesh load failed:', err);
+                revealEmpty.hidden = false;
+                revealEmpty.textContent = 'Could not load the bone surface: '
+                    + (err && err.message || err);
+                return;
+            }
+        }
+        if (mode === 'user' || mode === 'both') {
+            const m = buildUserSurface(THREE, fr, 0xff5c39);   // Lava, matches the brush
+            if (m) group.add(m);
+        }
     }
-    if (mode === 'user' || mode === 'both') {
-        const m = makeVoxels(THREE, sampleUser, 0xff5c39, 1.0);   // Lava (matches the brush)
-        if (m) group.add(m);
+    revealEmpty.hidden = group.children.length > 0;
+    if (group.children.length === 0) {
+        revealEmpty.textContent = 'Paint the object first, then switch to “Your segmentation”.';
     }
-    revealEmpty.hidden = !(mode === 'user' && group.children.length === 0);
     frameGroup();
-    revealEl.querySelectorAll('.reveal-modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
 }
 function onResize() {
     if (!R) return;
@@ -553,8 +1606,8 @@ async function openReveal() {
             el.addEventListener('wheel', e => { R.dist = Math.max(5, R.dist * Math.exp(e.deltaY * 0.001)); e.preventDefault(); }, { passive: false });
         }
         onResize();
-        setMode(curMode);
-        if (!R.running) { R.running = true; animate(); }
+        if (!R.running) { R.running = true; animate(); }   // spin up before the mesh lands
+        await setMode(curMode);
     } catch (err) {
         console.error('3D reveal failed:', err);
         revealEmpty.hidden = false;
@@ -565,15 +1618,42 @@ function closeReveal() { revealEl.classList.remove('show'); if (R) R.running = f
 document.getElementById('revealBtn').addEventListener('click', openReveal);
 document.getElementById('closeReveal').addEventListener('click', closeReveal);
 revealEl.querySelectorAll('.reveal-modes button').forEach(b =>
-    b.addEventListener('click', () => setMode(b.dataset.mode)));
+    b.addEventListener('click', () => { setMode(b.dataset.mode).catch(e => console.error(e)); }));
 
 // ---- Boot ----------------------------------------------------------------
-requestAnimationFrame(() => setTimeout(() => {
-    buildVolume();
-    genEl.style.display = 'none';
+// Try the built CT study first; fall back to the synthetic phantom if there
+// isn't one (no image data in the checkout, or build_slices.py not run yet).
+(async function boot() {
+    try {
+        if (!await loadStudy()) {
+            genEl.textContent = 'Generating scan…';
+            await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));
+            buildVolume();
+            hasTruth = true;        // the phantom is the only source of truth we have
+        }
+    } catch (err) {
+        console.error('study load failed, using the synthetic volume:', err);
+        genEl.textContent = 'Generating scan…';
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 30)));
+        // Drop anything half-loaded, including in-flight request bookkeeping.
+        sliceImg.length = objMask.length = userMask.length = sliceZ.length = 0;
+        slicePending.length = maskPending.length = chosenSlices.length = 0;
+        SIZE = 256; NZ = 24; view.width = view.height = SIZE;
+        study = null; target = null; z = 0;
+        buildVolume();
+        hasTruth = true;
+    }
+    showStudyMeta();
+    applyTruthGating();
+    updateSizeReadout();                 // now that spacing (or not) is known
+    genEl.style.display = 'none';        // interactive from here on
     sliceSlider.max = NZ - 1;
-    setSlice(Math.floor(NZ / 2));   // start where the object is visible
-}, 30));
+    setSlice(Math.floor(NZ / 2));        // mid-stack: shoulder joint / phantom object
+    if (study) {
+        updateLoadTag();
+        backgroundFill();                // detached: streams the rest while they play
+    }
+})();
 </script>
 </body>
 </html>
