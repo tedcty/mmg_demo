@@ -16,7 +16,7 @@ Routes:
   GET  /ssm/<path>               → SSM Demo static assets
   GET  /emg/                     → Spikerbox-EMG browser game (Web Audio)
   GET  /emg/<path>               → EMG game assets (web/ + shared resources/)
-  GET  /segment/                 → Strange Object Segmenter (CT stack)
+  GET  /segment/                 → Object Segmenter (CT stack)
   GET  /segment/slices/<s>/...   → built CT slices + manifest (build_slices.py)
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
@@ -250,7 +250,7 @@ def emg_app(path):
 @app.route('/segment/', defaults={'path': 'index.html'})
 @app.route('/segment/<path:path>')
 def segment_app(path):
-    """Strange Object Segmenter — brush-paint segmentation over a CT stack.
+    """Object Segmenter — brush-paint segmentation over a CT stack.
 
     Serves web/, then falls back to bones/ so `slices/<series>/…` resolves to
     the PNGs built by build_slices.py (and `mesh/…` to the ground-truth PLYs).

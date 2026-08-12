@@ -109,14 +109,14 @@ def demo_status():
     demos.append({"name": "Muscles in Control", "route": "/emg/",
                   "status": emg[0], "detail": emg[1]})
 
-    # --- Strange Object Segmenter — static, needs vendored three.js for 3D --
+    # --- Object Segmenter — static, needs vendored three.js for 3D --
     if not os.path.exists(SEG_WEB):
         seg = ("missing", "web/index.html not found")
     elif not os.path.exists(THREE_JS):
         seg = ("degraded", "three.js vendor missing — 3D reveal disabled")
     else:
         seg = ("ready", "static · no build needed")
-    demos.append({"name": "Strange Object Segmenter", "route": "/segment/",
+    demos.append({"name": "Object Segmenter", "route": "/segment/",
                   "status": seg[0], "detail": seg[1]})
 
     return demos

@@ -27,7 +27,7 @@ dodge cats. Ships as both a desktop app (PyQt5 + pyqtgraph) and a browser versio
 
 **Creator:** Manuela Zimmer
 
-### Strange Object Segmenter
+### Object Segmenter
 [`Demos/StrangeObjectSegmenter`](Demos/StrangeObjectSegmenter) · served at `/segment/`
 
 A hands-on **medical-imaging** demo: brush-paint over a foreign object hidden
