@@ -322,9 +322,15 @@
                     </span>
                     <span v-else class="text-[10px] font-bold text-uoa-grey uppercase">Coming soon</span>
                     <span v-if="infoApp.requiresMic" class="text-[10px] font-bold text-red-600 uppercase">Requires audio input</span>
-                    <button @click="launchFromInfo(infoApp)" class="md-btn md-btn--filled touch-target ml-auto">
-                        Start Demo
-                    </button>
+                    <div class="ml-auto flex items-center gap-3">
+                        <a v-if="infoApp.poster" :href="infoApp.poster" target="_blank" rel="noopener"
+                           class="md-btn md-btn--tonal touch-target">
+                            View poster
+                        </a>
+                        <button @click="launchFromInfo(infoApp)" class="md-btn md-btn--filled touch-target">
+                            Start Demo
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -352,7 +358,7 @@
                 title: 'Bone Shape Predictor',
                 description: 'Predict your bone shape using Statistical Shape Models (SSM) based on sparse point clouds or clinical data.',
                 info: 'Enter a few simple measurements (sex, age, height, weight and arm dimensions) and a Statistical Shape Model reconstructs a personalised 3D shoulder. You can then refine the shoulder joint angles and export a report. Runs in your browser — no install needed.',
-                infoPdf: '/posters/SSM-info-A4.pdf',
+                poster: '/posters/SSM-poster-A3.svg',
                 category: 'Modelling',
                 icon: icons.bone,
                 color: 'text-uoa-navy',
@@ -364,7 +370,7 @@
                 title: 'Muscles in Control',
                 description: 'Translate EMG signals into audible sound and use your muscle activations to control a game character.',
                 info: 'Plug a SpikerBox into your device\'s audio input, enable microphone access and pick the input. Calibrate by relaxing then contracting a muscle — your muscle activity then moves a bird up and down to catch the worms and dodge the cats. Needs an audio-input device.',
-                infoPdf: '/posters/EMG-info-A4.pdf',
+                poster: '/posters/EMG-poster-A3.svg',
                 category: 'Biofeedback',
                 icon: icons.mic,
                 color: 'text-uoa-navy',
@@ -377,6 +383,7 @@
                 title: 'Object Segmenter',
                 description: 'A clinical imaging demo where you manually segment a foreign object from medical scans of the body.',
                 info: 'A hands-on imaging demo: brush-paint over the foreign object hidden inside an image stack, slice by slice, then score how accurately you traced it — showing how clinicians delineate structures from imaging data.',
+                poster: '/posters/Segmentation-poster-A3.svg',
                 category: 'Imaging',
                 url: '/segment/',
                 icon: icons.microscope, 
@@ -408,7 +415,7 @@
                 title: 'Ultrasound Imaging',
                 description: 'See how ultrasound captures muscle and soft tissue in real time, and how those scans are turned into measurements.',
                 info: 'Learn how ultrasound imaging visualises muscle and soft tissue in real time and how those scans are analysed. See the info sheet for details. Demo coming soon.',
-                infoPdf: '/posters/Ultrasound-info-A4.pdf',
+                poster: '/posters/Ultrasound-poster-A3.svg',
                 category: 'Imaging',
                 icon: icons.waves,
                 color: 'text-uoa-navy',
@@ -458,15 +465,7 @@
                     }
                 };
 
-                const showInfo = (app) => {
-                    // Prefer the demo's info PDF (opens in a new tab); fall back to
-                    // the in-page details modal for demos without a poster.
-                    if (app.infoPdf) {
-                        window.open(app.infoPdf, '_blank');
-                    } else {
-                        infoApp.value = app;
-                    }
-                };
+                const showInfo = (app) => { infoApp.value = app; };
                 const closeInfo = () => { infoApp.value = null; };
                 const launchFromInfo = (app) => { closeInfo(); launchApp(app); };
 
