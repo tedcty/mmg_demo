@@ -44,12 +44,23 @@
         max-width: 100%; max-height: 100%; position: relative;
         border-radius: var(--md-shape-lg); overflow: hidden; box-shadow: var(--md-elevation-2);
         background: #0a0d16; touch-action: none; }
-    #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+    #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair;
+        transform-origin: 0 0; touch-action: none; }
     #gen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
         color: #cfe; font: 500 15px 'Inter'; background: #0a0d16; }
     .vp-overlay { position: absolute; top: 10px; left: 12px; display: flex; gap: 8px; z-index: 2; pointer-events: none; }
     .vp-tag { background: rgba(12,12,72,.62); color: #e4e1ff; font: 600 12px 'Inter';
         padding: 4px 10px; border-radius: 999px; backdrop-filter: blur(4px); }
+    /* Zoom controls — same on-image pill treatment as .vp-tag, opposite corner */
+    .zoom-ctl { position: absolute; top: 10px; right: 12px; z-index: 2; display: flex; align-items: center;
+        gap: 2px; background: rgba(12,12,72,.62); border-radius: 999px; padding: 4px; backdrop-filter: blur(4px); }
+    .zoom-ctl button { width: 28px; height: 28px; min-height: 0; padding: 0; border: none; border-radius: 50%;
+        background: transparent; color: #e4e1ff; font: 600 15px/1 'Inter'; cursor: pointer; }
+    .zoom-ctl button:hover:not(:disabled) { background: rgba(255,255,255,.16); }
+    .zoom-ctl button:disabled { opacity: .35; cursor: not-allowed; }
+    .zoom-ctl button svg { display: block; margin: auto; }
+    #zoomLabel { color: #e4e1ff; font: 600 12px 'Inter'; min-width: 40px; text-align: center;
+        font-variant-numeric: tabular-nums; }
     .slice-row { display: flex; align-items: center; gap: 12px; }
     .slice-row input[type=range] { flex: 1; }
 
@@ -141,6 +152,10 @@
                 <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-3.5 2-3.5s2 1.9 2 3.5z"/></svg></span>
                 Fill
             </button>
+            <button id="panBtn" class="rail-item" title="Drag to pan around when zoomed in">
+                <span class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg></span>
+                Pan
+            </button>
         </nav>
 
         <!-- Image viewport -->
@@ -152,6 +167,14 @@
                         <span class="vp-tag" id="modalityTag">CT · Axial</span>
                         <span class="vp-tag" id="sliceLabel">Slice 1 / 1</span>
                         <span class="vp-tag" id="loadTag" hidden>Loading…</span>
+                    </div>
+                    <div class="zoom-ctl">
+                        <button id="zoomOutBtn" aria-label="Zoom out">−</button>
+                        <span id="zoomLabel">100%</span>
+                        <button id="zoomInBtn" aria-label="Zoom in">+</button>
+                        <button id="zoomResetBtn" aria-label="Reset zoom" title="Reset zoom">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg>
+                        </button>
                     </div>
                     <div id="gen">Loading study…</div>
                 </div>
@@ -596,6 +619,104 @@ function pushUndo(items) {
     if (undoStack.length > 30) undoStack.shift();
 }
 
+// ---- Zoom / pan ------------------------------------------------------------
+// The canvas's pixel buffer always stays at the slice's native resolution
+// (SIZE x SIZE) — zoom is purely a CSS transform on #view, scaled/translated
+// from its top-left. That also means evtToCanvas() below needs no changes for
+// zoom to work: getBoundingClientRect() already reports the transformed box,
+// so painting stays aligned with the cursor at any zoom level.
+const stageEl = document.getElementById('stage');
+const zoomLabel = document.getElementById('zoomLabel');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomResetBtn = document.getElementById('zoomResetBtn');
+let zoom = 1, panX = 0, panY = 0;
+const ZOOM_MIN = 1, ZOOM_MAX = 8;
+
+function applyViewTransform() {
+    view.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+}
+// Keeps the zoomed image from being panned past its own edges — past zoom 1
+// there's always at least a full stage's worth of image on screen.
+function clampPan() {
+    const rect = stageEl.getBoundingClientRect();
+    const w = rect.width * zoom, h = rect.height * zoom;
+    panX = Math.max(Math.min(0, rect.width - w), Math.min(0, panX));
+    panY = Math.max(Math.min(0, rect.height - h), Math.min(0, panY));
+}
+function updateZoomReadout() {
+    zoomLabel.textContent = Math.round(zoom * 100) + '%';
+    zoomOutBtn.disabled = zoom <= ZOOM_MIN;
+    zoomInBtn.disabled = zoom >= ZOOM_MAX;
+    zoomResetBtn.disabled = zoom === 1;
+}
+// Changes zoom while keeping whatever was under (clientX, clientY) — the
+// pointer for a wheel step, the stage centre for the +/- buttons — fixed in
+// place, the way image viewers and map apps zoom.
+function setZoom(newZoom, clientX, clientY) {
+    newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom));
+    const rect = stageEl.getBoundingClientRect();
+    const cx = clientX ?? (rect.left + rect.width / 2);
+    const cy = clientY ?? (rect.top + rect.height / 2);
+    const lx = (cx - rect.left - panX) / zoom, ly = (cy - rect.top - panY) / zoom;
+    zoom = newZoom;
+    panX = (cx - rect.left) - lx * zoom;
+    panY = (cy - rect.top) - ly * zoom;
+    clampPan();
+    applyViewTransform();
+    updateZoomReadout();
+}
+stageEl.addEventListener('wheel', e => {
+    e.preventDefault();
+    setZoom(zoom * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+}, { passive: false });
+zoomInBtn.addEventListener('click', () => setZoom(zoom * 1.5));
+zoomOutBtn.addEventListener('click', () => setZoom(zoom / 1.5));
+zoomResetBtn.addEventListener('click', () => { zoom = 1; panX = 0; panY = 0; applyViewTransform(); updateZoomReadout(); });
+window.addEventListener('resize', () => { clampPan(); applyViewTransform(); });
+updateZoomReadout();   // start with −/reset correctly disabled at 100%
+
+// Pan-drag state, used only while tool === 'pan' (see the pointer handlers below).
+let panDragging = false, panDragStart = null;
+
+// Two-finger pinch-to-zoom (touch only) — works regardless of the active
+// tool, same as the wheel does on desktop, and also pans as the fingers'
+// midpoint moves so a two-finger drag repositions the image too.
+const touchPts = new Map();   // touch pointerId -> last {x, y}, at most 2 tracked
+let pinchLast = null;         // {mid, dist} from the previous pinch frame
+function pinchMidDist() {
+    const [a, b] = [...touchPts.values()];
+    return { mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, dist: Math.hypot(a.x - b.x, a.y - b.y) };
+}
+function pinchStep(prevMid, prevDist, curMid, curDist) {
+    const rect = stageEl.getBoundingClientRect();
+    // Zoom anchored at the fingers' previous midpoint, using the transform as
+    // it stood before this step...
+    const lx = (prevMid.x - rect.left - panX) / zoom, ly = (prevMid.y - rect.top - panY) / zoom;
+    zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom * (curDist / Math.max(1, prevDist))));
+    panX = (prevMid.x - rect.left) - lx * zoom;
+    panY = (prevMid.y - rect.top) - ly * zoom;
+    // ...then slide by how far the midpoint itself travelled, so the same
+    // patch of image keeps tracking the fingers (two-finger pan).
+    panX += curMid.x - prevMid.x;
+    panY += curMid.y - prevMid.y;
+    clampPan();
+    applyViewTransform();
+    updateZoomReadout();
+}
+// A second finger landing means the gesture is a pinch, not a paint stroke —
+// undo the single dot the first finger may have already stamped, and drop
+// any pan-drag it may have started.
+function cancelActiveStroke() {
+    if (painting) {
+        const u = undoStack.pop();
+        if (u) for (const it of u) userMask[it.z].set(it.snap);
+        painting = false; lastPt = null;
+        render();
+    }
+    endPan();
+}
+
 // ---- Rendering -----------------------------------------------------------
 let overlay = null;
 function render() {
@@ -636,6 +757,7 @@ function render() {
 // paint — so what you see is what you get. Brush is Lava with a faint fill;
 // the eraser is a dashed outline with none, so the two tools read differently.
 function drawBrushRing() {
+    if (tool === 'pan') return;
     let x, y, preview = false;
     if (cursorPt) {
         [x, y] = cursorPt;
@@ -760,6 +882,22 @@ function paintAt(e) {
     render();
 }
 view.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch') {
+        if (touchPts.size >= 2 && !touchPts.has(e.pointerId)) return;   // ignore a 3rd+ finger
+        touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touchPts.size === 2) {
+            cancelActiveStroke();
+            pinchLast = pinchMidDist();
+            return;
+        }
+    }
+    if (tool === 'pan') {
+        panDragging = true;
+        panDragStart = { x: e.clientX, y: e.clientY, panX, panY };
+        view.setPointerCapture(e.pointerId);
+        view.style.cursor = 'grabbing';
+        return;
+    }
     cursorPt = evtToCanvas(e);
     if (tool === 'fill') {
         const r = bucketFill(cursorPt[0], cursorPt[1]);
@@ -781,12 +919,30 @@ view.addEventListener('pointerdown', e => {
 });
 // Track the pointer even when not painting, so the brush ring can follow it.
 view.addEventListener('pointermove', e => {
+    if (e.pointerType === 'touch' && touchPts.has(e.pointerId)) {
+        touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touchPts.size === 2) {
+            const cur = pinchMidDist();
+            pinchStep(pinchLast.mid, pinchLast.dist, cur.mid, cur.dist);
+            pinchLast = cur;
+            return;
+        }
+    }
+    if (panDragging) {
+        panX = panDragStart.panX + (e.clientX - panDragStart.x);
+        panY = panDragStart.panY + (e.clientY - panDragStart.y);
+        clampPan();
+        applyViewTransform();
+        return;
+    }
     cursorPt = evtToCanvas(e);
     if (painting) paintAt(e); else render();
 });
 view.addEventListener('pointerleave', () => { cursorPt = null; render(); });
-view.addEventListener('pointerup', () => { painting = false; lastPt = null; });
-view.addEventListener('pointercancel', () => { painting = false; lastPt = null; });
+function endPan() { if (panDragging) { panDragging = false; view.style.cursor = tool === 'pan' ? 'grab' : 'crosshair'; } }
+function touchEnd(e) { if (e.pointerType === 'touch') touchPts.delete(e.pointerId); }
+view.addEventListener('pointerup', e => { touchEnd(e); painting = false; lastPt = null; endPan(); });
+view.addEventListener('pointercancel', e => { touchEnd(e); painting = false; lastPt = null; endPan(); });
 
 // ---- Interpolation between traced slices ---------------------------------
 // Painting every slice is not on for a visitor, so the gaps between the slices
@@ -947,19 +1103,23 @@ document.getElementById('nextBtn').addEventListener('click', () => setSlice(z + 
 
 // ---- Tools ---------------------------------------------------------------
 const brushBtn = document.getElementById('brushBtn'), eraseBtn = document.getElementById('eraseBtn');
-const fillBtn = document.getElementById('fillBtn');
+const fillBtn = document.getElementById('fillBtn'), panBtn = document.getElementById('panBtn');
 const sizeInput = document.getElementById('size');
 function setTool(t) {
     tool = t;
     brushBtn.classList.toggle('on', t === 'brush');
     eraseBtn.classList.toggle('on', t === 'erase');
     fillBtn.classList.toggle('on', t === 'fill');
-    sizeInput.disabled = (t === 'fill');   // size means nothing to a flood fill
+    panBtn.classList.toggle('on', t === 'pan');
+    sizeInput.disabled = (t === 'fill' || t === 'pan');   // neither uses the brush footprint
+    cursorPt = null;
+    view.style.cursor = t === 'pan' ? 'grab' : 'crosshair';
     render();                              // the cursor changes with the tool
 }
 brushBtn.addEventListener('click', () => setTool('brush'));
 eraseBtn.addEventListener('click', () => setTool('erase'));
 fillBtn.addEventListener('click', () => setTool('fill'));
+panBtn.addEventListener('click', () => setTool('pan'));
 // Brush size readout: pixels always, plus the real-world diameter when a study
 // is loaded (the display grid's spacing is known, so this is exact).
 const sizeValEl = document.getElementById('sizeVal');
