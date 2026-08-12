@@ -1397,6 +1397,83 @@ function overlay(lines, sub) {
     ctx2d.restore();
 }
 
+// Blocky 5x7 dot-matrix glyphs — hand-drawn "pixels" rather than a vector
+// font, so the countdown reads as part of the same pixel-art sprite sheet as
+// the bird/worm/cat/background instead of a smooth system font pasted on top.
+const PIXEL_GLYPHS = {
+    '0': ['01110','10001','10011','10101','11001','10001','01110'],
+    '1': ['00100','01100','00100','00100','00100','00100','01110'],
+    '2': ['01110','10001','00001','00010','00100','01000','11111'],
+    '3': ['11111','00010','00100','00010','00001','10001','01110'],
+    '4': ['00010','00110','01010','10010','11111','00010','00010'],
+    '5': ['11111','10000','11110','00001','00001','10001','01110'],
+    '6': ['00110','01000','10000','11110','10001','10001','01110'],
+    '7': ['11111','00001','00010','00100','01000','01000','01000'],
+    '8': ['01110','10001','10001','01110','10001','10001','01110'],
+    '9': ['01110','10001','10001','01111','00001','00010','01100'],
+    'A': ['01110','10001','10001','11111','10001','10001','10001'],
+    'D': ['11110','10001','10001','10001','10001','10001','11110'],
+    'E': ['11111','10000','10000','11110','10000','10000','11111'],
+    'G': ['01111','10000','10000','10011','10001','10001','01110'],
+    'R': ['11110','10001','10001','11110','10100','10010','10001'],
+    'T': ['11111','00100','00100','00100','00100','00100','00100'],
+    'Y': ['10001','10001','01010','00100','00100','00100','00100'],
+    ' ': ['000','000','000','000','000','000','000'],
+};
+// Draws one glyph's dot grid centred at (cx, cy). `px` is the size of a
+// single dot — a black square one dot bigger sits behind every lit cell,
+// giving the same dark pixel-outline the sprite PNGs already have.
+function drawPixelGlyph(rows, cx, cy, px, color, outline) {
+    const gw = rows[0].length, gh = rows.length;
+    const x0 = cx - (gw * px) / 2, y0 = cy - (gh * px) / 2;
+    if (outline) {
+        ctx2d.fillStyle = outline;
+        for (let r = 0; r < gh; r++) for (let c = 0; c < gw; c++) {
+            if (rows[r][c] !== '1') continue;
+            ctx2d.fillRect(x0 + c * px - px * 0.3, y0 + r * px - px * 0.3, px * 1.6, px * 1.6);
+        }
+    }
+    ctx2d.fillStyle = color;
+    for (let r = 0; r < gh; r++) for (let c = 0; c < gw; c++) {
+        if (rows[r][c] === '1') ctx2d.fillRect(x0 + c * px, y0 + r * px, px, px);
+    }
+}
+function pixelTextWidth(text, px, gap) {
+    let w = 0;
+    for (const ch of text) w += (PIXEL_GLYPHS[ch] || PIXEL_GLYPHS[' '])[0].length * px + gap;
+    return w - gap;
+}
+function drawPixelText(text, cx, cy, px, color, outline, gap = px) {
+    let x = cx - pixelTextWidth(text, px, gap) / 2;
+    for (const ch of text) {
+        const g = PIXEL_GLYPHS[ch] || PIXEL_GLYPHS[' '];
+        const gw = g[0].length;
+        drawPixelGlyph(g, x + (gw * px) / 2, cy, px, color, outline);
+        x += gw * px + gap;
+    }
+}
+
+// Old-arcade-style "3, 2, 1" countdown: a full-screen dark wash, a "GET READY"
+// banner, and a big pixel-art numeral that pops in oversized on each tick and
+// bounces down to rest size — like a coin-op ready screen.
+const CD_POP_DUR = 0.35;   // seconds the bounce-in takes before the numeral settles
+function drawCountdownArcade(remain) {
+    ctx2d.save();
+    ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx2d.fillRect(0, 0, W, H);
+
+    drawPixelText('GET READY', W / 2, H / 2 - 130, 6, '#ffd54a', '#000', 8);
+
+    const num = Math.max(1, Math.ceil(remain));
+    const elapsedInStep = num - remain;                          // 0 at the tick, → CD_POP_DUR as it settles
+    const pop = Math.max(0, 1 - elapsedInStep / CD_POP_DUR);      // 1 → 0 bounce-in
+    const px = 24 + pop * 16;   // dot size grows on the bounce-in, same "pop" feel as before
+
+    drawPixelGlyph(PIXEL_GLYPHS[String(num)], W / 2, H / 2 + 40, px, '#ffcf3d', '#000');
+
+    ctx2d.restore();
+}
+
 // Arcade high-score table, drawn straight on the canvas — one difficulty's
 // board at a time (full size, easy to read), swiped/tapped/clicked between.
 // See lbBoardIdx / lbSyncToDifficulty / the cv pointer handlers below.
@@ -1611,10 +1688,10 @@ function drawPaperPlaneFront(x, y, t) {
 // ~440px, so there's a wide margin either side for these — bird alone on
 // the left; worm-over-cat on the right, clear of both the header text and
 // the leaderboard table.
-const ATTRACT_MASCOT_SCALE = 0.65;
-const ATTRACT_BIRD_X = 120, ATTRACT_BIRD_Y = 165;
-const ATTRACT_WORM_X = 880, ATTRACT_WORM_Y = 105;
-const ATTRACT_CAT_X = 880, ATTRACT_CAT_Y = 235;
+const ATTRACT_MASCOT_SCALE = 1.0;
+const ATTRACT_BIRD_X = 145, ATTRACT_BIRD_Y = 170;
+const ATTRACT_WORM_X = 850, ATTRACT_WORM_Y = 120;
+const ATTRACT_CAT_X = 850, ATTRACT_CAT_Y = 300;
 
 // Runs fn() with the canvas scaled by `scale` around the point (x, y), so a
 // drawing routine written for full-size sprites (fixed pixel offsets, like
@@ -1648,7 +1725,7 @@ function draw(t) {
 
     if (countdownActive) {
         const remain = Math.max(0, COUNTDOWN_SECONDS - (t - countdownStart));
-        overlay('Starting in…', `${Math.ceil(remain)}`);
+        drawCountdownArcade(remain);
         return;
     }
 
@@ -1656,8 +1733,9 @@ function draw(t) {
         // Attract mode: rules up top, high-score table below (arcade style),
         // with the characters flanking the board so they stay clear of it.
         drawBoardScreen('Catch the worms, avoid the cats!', 'Contract & relax to move the bird up and down');
-        drawScaledAt(ATTRACT_BIRD_X, ATTRACT_BIRD_Y, ATTRACT_MASCOT_SCALE, () =>
-            drawImageCentered(imgs.bird, ATTRACT_BIRD_X, ATTRACT_BIRD_Y, BIRD_SIZE));
+        const birdBob = Math.sin(t * 1.6) * 8;   // gentle idle bob, matches the worm/cat's own motion
+        drawScaledAt(ATTRACT_BIRD_X, ATTRACT_BIRD_Y + birdBob, ATTRACT_MASCOT_SCALE, () =>
+            drawImageCentered(imgs.bird, ATTRACT_BIRD_X, ATTRACT_BIRD_Y + birdBob, BIRD_SIZE));
         drawScaledAt(ATTRACT_WORM_X, ATTRACT_WORM_Y, ATTRACT_MASCOT_SCALE, () => {
             drawPaperPlaneBack(ATTRACT_WORM_X, ATTRACT_WORM_Y, t);
             drawImageCentered(imgs.coin, ATTRACT_WORM_X, ATTRACT_WORM_Y, ITEM_SIZE);
