@@ -1381,18 +1381,17 @@ function drawImageCentered(im, x, y, size) {
     }
 }
 
+// Calibration prompt ("Relax your muscle!" / "Contract your muscle!" + the
+// seconds left) — same full-screen dark wash and pixel-grid glyphs as the
+// countdown below, so the two waiting screens read as one style rather than
+// a pixel-art numeral next to a plain system-font sentence.
 function overlay(lines, sub) {
     ctx2d.save();
-    ctx2d.textAlign = 'center';
-    ctx2d.fillStyle = 'rgba(0,0,0,0.6)';
-    const bw = 620, bh = sub ? 180 : 130;
-    ctx2d.fillRect(W / 2 - bw / 2, H / 2 - bh / 2, bw, bh);
-    ctx2d.fillStyle = '#fff';
-    ctx2d.font = 'bold 40px Segoe UI, sans-serif';
-    ctx2d.fillText(lines, W / 2, H / 2 + (sub ? -10 : 14));
+    ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx2d.fillRect(0, 0, W, H);
+    drawPixelText(lines.toUpperCase(), W / 2, H / 2 - (sub ? 34 : 0), 6, '#ffd54a', '#000', 8);
     if (sub) {
-        ctx2d.font = '22px Segoe UI, sans-serif';
-        ctx2d.fillText(sub, W / 2, H / 2 + 40);
+        drawPixelText(sub.toUpperCase(), W / 2, H / 2 + 70, 12, '#ffcf3d', '#000', 10);
     }
     ctx2d.restore();
 }
@@ -1412,13 +1411,22 @@ const PIXEL_GLYPHS = {
     '8': ['01110','10001','10001','01110','10001','10001','01110'],
     '9': ['01110','10001','10001','01111','00001','00010','01100'],
     'A': ['01110','10001','10001','11111','10001','10001','10001'],
+    'C': ['01111','10000','10000','10000','10000','10000','01111'],
     'D': ['11110','10001','10001','10001','10001','10001','11110'],
     'E': ['11111','10000','10000','11110','10000','10000','11111'],
     'G': ['01111','10000','10000','10011','10001','10001','01110'],
+    'L': ['10000','10000','10000','10000','10000','10000','11111'],
+    'M': ['10001','11011','10101','10001','10001','10001','10001'],
+    'N': ['10001','11001','10101','10011','10001','10001','10001'],
+    'O': ['01110','10001','10001','10001','10001','10001','01110'],
     'R': ['11110','10001','10001','11110','10100','10010','10001'],
+    'S': ['01111','10000','01110','00001','00001','10001','11110'],
     'T': ['11111','00100','00100','00100','00100','00100','00100'],
+    'U': ['10001','10001','10001','10001','10001','10001','01110'],
+    'X': ['10001','10001','01010','00100','01010','10001','10001'],
     'Y': ['10001','10001','01010','00100','00100','00100','00100'],
     ' ': ['000','000','000','000','000','000','000'],
+    '!': ['010','010','010','010','010','000','010'],
 };
 // Draws one glyph's dot grid centred at (cx, cy). `px` is the size of a
 // single dot — a black square one dot bigger sits behind every lit cell,
@@ -1718,8 +1726,8 @@ function draw(t) {
 
     if (calibrationActive) {
         const elapsed = t - calStart;
-        if (elapsed < BASELINE_DURATION) overlay('Relax your muscle!', `${(BASELINE_DURATION - elapsed).toFixed(0)}s`);
-        else overlay('Contract your muscle!', `${(TOTAL_CAL - elapsed).toFixed(0)}s`);
+        if (elapsed < BASELINE_DURATION) overlay('Relax your muscle!', `${(BASELINE_DURATION - elapsed).toFixed(0)}`);
+        else overlay('Contract your muscle!', `${(TOTAL_CAL - elapsed).toFixed(0)}`);
         return;
     }
 
