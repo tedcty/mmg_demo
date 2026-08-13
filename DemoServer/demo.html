@@ -376,6 +376,10 @@
                 color: 'text-uoa-navy',
                 type: 'Interactive',
                 requiresMic: true,
+                // Opening from the ⓘ info popup can re-trigger the first-run guided tour
+                // (a fresh kiosk visitor, even on a browser that's already seen it) — see
+                // launchFromInfo(). A direct card click always respects the once-only rule.
+                tourResetOnInfo: true,
                 url: '/emg/'
             },
             { 
@@ -431,6 +435,14 @@
                 const infoApp = ref(null);
                 const categories = ['All', 'Modelling', 'Biofeedback', 'Imaging', 'Clinical', 'Motion Capture'];
 
+                // Dashboard-controlled (Demo Control tab): whether launching the EMG demo
+                // via the ⓘ info popup re-triggers its first-run guided tour. Defaults on —
+                // falls back to that default if the server/config isn't reachable.
+                const emgTourResetOnInfo = ref(true);
+                fetch('/api/emg/config').then(r => r.ok ? r.json() : null).then(cfg => {
+                    if (cfg && typeof cfg.tour_reset_on_info === 'boolean') emgTourResetOnInfo.value = cfg.tour_reset_on_info;
+                }).catch(() => { /* server offline / standalone — keep the default */ });
+
                 // Hero figures cross-fade through these every few seconds.
                 const heroImages = [
                     '/doc-resources/talking.png',
@@ -467,7 +479,15 @@
 
                 const showInfo = (app) => { infoApp.value = app; };
                 const closeInfo = () => { infoApp.value = null; };
-                const launchFromInfo = (app) => { closeInfo(); launchApp(app); };
+                const launchFromInfo = (app) => {
+                    closeInfo();
+                    if (app.tourResetOnInfo && emgTourResetOnInfo.value && app.url) {
+                        const sep = app.url.includes('?') ? '&' : '?';
+                        window.open(app.url + sep + 'tour=reset', '_blank');
+                    } else {
+                        launchApp(app);
+                    }
+                };
 
                 return {
                     searchQuery, selectedCategory, activeApp, infoApp, categories,

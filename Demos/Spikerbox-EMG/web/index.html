@@ -125,6 +125,35 @@
     .switch input:disabled + .slider { opacity: .5; cursor: not-allowed; }
     #modeLabel { font-size: 14px; font-weight: 500; color: #1b1b1f; min-width: 104px; }
     .diff-label { font-size: 14px; font-weight: 500; color: #1b1b1f; }
+
+    /* First-run guided tour (mobile only) — dims the page and cuts a spotlight
+       out around the real control so the tap that advances the tour is also
+       the actual gesture the browser needs (required for iOS mic permission). */
+    .tour-spot {
+        position: fixed; z-index: 30; pointer-events: none; border-radius: 12px;
+        box-shadow: 0 0 0 9999px rgba(12,12,72,0.65);
+        transition: top .25s ease, left .25s ease, width .25s ease, height .25s ease;
+    }
+    .tour-spot::after {
+        content: ''; position: absolute; inset: -4px; border-radius: 16px;
+        border: 2px solid var(--mahina); animation: tourPulse 1.4s ease-out infinite;
+    }
+    @keyframes tourPulse {
+        0% { box-shadow: 0 0 0 0 rgba(0,202,239,.55); }
+        100% { box-shadow: 0 0 0 14px rgba(0,202,239,0); }
+    }
+    .tour-tip {
+        position: fixed; z-index: 31; max-width: 260px;
+        background: #fff; color: #1b1b1f; border-radius: 14px;
+        padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+        font-size: 14px; line-height: 1.4;
+    }
+    .tour-tip .tour-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 10px; }
+    .tour-tip .tour-step { font-size: 11px; color: #8a8a94; }
+    .tour-tip .tour-skip {
+        background: none; border: none; padding: 0; min-height: auto;
+        color: #6b6b78; font-size: 12px; text-decoration: underline; cursor: pointer;
+    }
 </style>
 </head>
 <body>
@@ -210,7 +239,12 @@
 // ---- Game / signal constants (from main.py) ----
 const GAME_DURATION = 30.0;      // seconds
 const WINDOW_SECONDS = 2;        // object travel time base — smaller = faster
-const COIN_DISAPPEAR = 0.6;      // object vanishes after this fraction of WINDOW_SECONDS
+// Object vanishes after this fraction of WINDOW_SECONDS — since x is driven by
+// the same fraction (x = W - p*W), this also sets how far across the screen it
+// travels first. 1.1 carries it fully past the left edge (score column) before
+// it disappears, so it always reads as flying off rather than popping out
+// mid-screen; >1 because it needs a bit past x=0 to clear its own sprite width.
+const COIN_DISAPPEAR = 1.1;
 
 // Difficulty presets. coinChance = P(worm) vs cat; catJumpChance = of the cats,
 // the fraction that pounce from the floor (the rest fly across on a paramotor);
@@ -413,6 +447,7 @@ const menuModal = document.getElementById('menuModal');
 // Opening the menu pauses the game (see update()); drop any held arrow key so
 // the bird doesn't lurch when play resumes.
 document.getElementById('menuBtn').addEventListener('click', () => {
+    ensureSfxCtx();   // belt-and-braces: guarantees an unlock attempt tied to this exact click
     menuModal.hidden = false;
     releaseKeys();
 });
@@ -435,6 +470,108 @@ clearScoresBtn.addEventListener('click', async () => {
     clearScoresBtn.disabled = false;
 });
 
+// ---- First-run guided tour ----
+// Visitors land straight on the game with no obvious way to find the mic
+// switch (it's a tap on ☰ Menu away). Always shown once on phones/tablets;
+// on desktop it's opt-out via /api/emg/config (Demo Control tab in the
+// dashboard) since a PC/kiosk booth may prefer the plain text hint instead.
+// Steps mirror how to actually reach mic mode: ☰ Menu → the switch (this tap
+// is also the real user gesture iOS needs to allow getUserMedia) → the device
+// picker, once initDevices() has populated it.
+const TOUR_SEEN_KEY = 'emgTourSeen';
+// The landing page's "Start Demo" launches this with ?tour=reset (see
+// demo.html) so the tour runs again for whoever just picked up the kiosk,
+// even if a previous player already saw it on this same browser/tablet.
+if (new URLSearchParams(location.search).get('tour') === 'reset') {
+    try { localStorage.removeItem(TOUR_SEEN_KEY); } catch (e) { /* private mode */ }
+    history.replaceState(null, '', location.pathname);   // don't re-trigger on a plain refresh
+}
+function isMobileClient() {
+    const ua = navigator.userAgent || '';
+    const iOS = /iPad|iPhone|iPod/.test(ua) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);   // iPadOS 13+ reports as Mac
+    return iOS || /Android/.test(ua);
+}
+
+let tourSpot = null, tourTip = null, tourTarget = null;
+function tourReposition() {
+    if (!tourTarget || !tourSpot) return;
+    const r = tourTarget.getBoundingClientRect();
+    const pad = 6;
+    tourSpot.style.top = `${r.top - pad}px`;
+    tourSpot.style.left = `${r.left - pad}px`;
+    tourSpot.style.width = `${r.width + pad * 2}px`;
+    tourSpot.style.height = `${r.height + pad * 2}px`;
+    const tipRect = tourTip.getBoundingClientRect();
+    const below = r.bottom + 16 + tipRect.height < window.innerHeight;
+    tourTip.style.top = below ? `${r.bottom + 16}px` : `${Math.max(12, r.top - tipRect.height - 16)}px`;
+    const left = Math.max(12, Math.min(r.left + r.width / 2 - tipRect.width / 2, window.innerWidth - tipRect.width - 12));
+    tourTip.style.left = `${left}px`;
+}
+function tourEnd() {
+    try { localStorage.setItem(TOUR_SEEN_KEY, '1'); } catch (e) { /* private mode — fine to just not persist */ }
+    if (tourSpot) { tourSpot.remove(); tourSpot = null; }
+    if (tourTip) { tourTip.remove(); tourTip = null; }
+    tourTarget = null;
+    window.removeEventListener('resize', tourReposition);
+}
+function tourShow(target, stepNum, totalSteps, html) {
+    tourTarget = target;
+    if (!tourSpot) {
+        tourSpot = document.createElement('div'); tourSpot.className = 'tour-spot';
+        document.body.appendChild(tourSpot);
+    }
+    if (!tourTip) {
+        tourTip = document.createElement('div'); tourTip.className = 'tour-tip';
+        document.body.appendChild(tourTip);
+    }
+    tourTip.innerHTML = `<div>${html}</div>
+        <div class="tour-actions">
+            <span class="tour-step">${stepNum} / ${totalSteps}</span>
+            <button type="button" class="tour-skip">Skip tour</button>
+        </div>`;
+    tourTip.querySelector('.tour-skip').addEventListener('click', tourEnd);
+    tourReposition();
+}
+function startTour() {
+    window.addEventListener('resize', tourReposition);
+    const menuBtnEl = document.getElementById('menuBtn');
+    tourShow(menuBtnEl, 1, 3,
+        'Tap <strong>☰ Menu</strong> to find game options — including the SpikerBox microphone.');
+
+    menuBtnEl.addEventListener('click', function toStep2() {
+        menuBtnEl.removeEventListener('click', toStep2);
+        if (!tourSpot) return;   // skipped before the menu was opened
+        const pill = document.querySelector('.mode-pill');
+        tourShow(pill, 2, 3,
+            'Flip this switch to use the <strong>SpikerBox microphone</strong>. Your browser will '
+            + 'then ask to allow microphone access — allow it.');
+
+        micToggle.addEventListener('change', function toStep3() {
+            micToggle.removeEventListener('change', toStep3);
+            if (!tourSpot || !micToggle.checked) { tourEnd(); return; }
+            const onReady = () => {
+                document.removeEventListener('emg:mic-failed', onFailed);
+                if (!tourSpot) return;
+                tourShow(deviceSel, 3, 3,
+                    'Select your SpikerBox from this list, then press <strong>Start the game</strong>.');
+                deviceSel.addEventListener('change', tourEnd, { once: true });
+            };
+            const onFailed = () => {
+                document.removeEventListener('emg:mic-ready', onReady);
+                tourEnd();   // permission denied or no device — don't block keyboard play
+            };
+            document.addEventListener('emg:mic-ready', onReady, { once: true });
+            document.addEventListener('emg:mic-failed', onFailed, { once: true });
+        });
+    });
+
+    // Closing the menu manually (✕ or backdrop) ends the tour rather than
+    // reappearing on every future visit.
+    document.getElementById('menuClose').addEventListener('click', tourEnd, { once: true });
+    menuModal.addEventListener('click', e => { if (e.target === menuModal) tourEnd(); }, { once: true });
+}
+
 // ---- Images ----
 const imgs = {};
 function loadImg(name, src) {
@@ -444,6 +581,289 @@ function loadImg(name, src) {
         im.onerror = () => { imgs[name] = null; res(); };   // draw a fallback shape
         im.src = src;
     });
+}
+
+// ---- Sound effects ----
+// Plain HTMLAudioElement playback — deliberately kept off the Web Audio
+// graph below (that AudioContext is the live EMG mic pipeline, torn down
+// and rebuilt on every input-mode change; SFX has no business on it).
+// Off by default; dashboard-controlled (Demo Control tab) via /api/emg/config.
+// Two independent flags: sfxEnabled covers propeller/whoosh/flap/countdown/
+// score sounds, musicEnabled covers the background music tracks — see
+// tickMusic() below for the latter.
+let sfxEnabled = false;
+let musicEnabled = false;
+const SFX_PROPELLER_SRC = 'sounds/propellerwav-14433.mp3';
+const SFX_WHOOSH_SRC = 'sounds/simple-whoosh-382724.mp3';
+const SFX_FLAP_SRC = 'sounds/short-pigeon-wing-flap-14625.mp3';
+const SFX_RUSTLE_SRC = 'sounds/grass-rustling-05-504017.mp3';
+function playSfx(src, volume) {
+    if (!sfxEnabled) return null;
+    const a = new Audio(src);
+    a.volume = volume;
+    a.play().catch(() => {});   // blocked before any user gesture yet — fine, just no sound
+    return a;
+}
+const playPropellerSfx = () => playSfx(SFX_PROPELLER_SRC, 0.08);
+const playWhooshSfx = () => playSfx(SFX_WHOOSH_SRC, 0.15);
+// playFlapSfx is defined below, off sfxCtx — flaps happen several times a
+// second, and new Audio().play()'s startup latency (fine for the occasional
+// whoosh/propeller) read as a noticeable delay at that rate.
+
+// Synthesized retro-arcade countdown beeps + background music — square/triangle
+// waves for the classic 8-bit timbre, no audio files needed (and it lands
+// exactly on each tick/step, which a fixed-length clip couldn't guarantee).
+let sfxCtx = null;
+function ensureSfxCtx() {
+    if (!sfxCtx) sfxCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (sfxCtx.state === 'suspended') sfxCtx.resume().catch(() => {});
+    return sfxCtx;
+}
+// Web Audio requires a user gesture to start — this unlocks it on the very
+// first tap/click/key anywhere on the page, so title music can pick up on
+// the attract screen without a dedicated "enable sound" button. Several event
+// types, not just one: some mobile browsers only count specific ones (e.g.
+// Safari can be picky about pointerdown vs touchend) as gesture-eligible.
+['pointerdown', 'mousedown', 'touchstart', 'touchend', 'keydown'].forEach(evt =>
+    document.addEventListener(evt, ensureSfxCtx, { once: true, passive: true }));
+
+// Flap + rustle: pre-decoded into AudioBuffers and played via
+// AudioBufferSourceNode.start(), which has essentially no startup latency —
+// unlike new Audio().play(), which is fine once every second or two (whoosh,
+// propeller) but reads as a lag when it has to fire tightly timed to a fast
+// repeating animation (wingbeats, paw-steps).
+let flapBuffer = null;
+let rustleBuffer = null;
+function loadSfxBuffer(src, onLoaded) {
+    fetch(src)
+        .then(r => r.arrayBuffer())
+        .then(arr => ensureSfxCtx().decodeAudioData(arr))
+        .then(onLoaded)
+        .catch(() => { /* that sound just won't play — nothing else depends on it */ });
+}
+function playBuffer(buffer, volume) {
+    if (!sfxEnabled || !buffer) return;
+    const ctx = ensureSfxCtx();
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.value = volume;
+    src.connect(gain).connect(ctx.destination);
+    src.start(ctx.currentTime);
+}
+const playFlapSfx = () => playBuffer(flapBuffer, 0.4);
+const playGrassRustleSfx = () => playBuffer(rustleBuffer, 0.35);
+
+// All SFX files (~500KB combined) used to start fetching the instant the
+// script parsed — before the game's own images even began loading, so they
+// competed for the browser's limited concurrent-connection slots with
+// background_pixel.png (4.4MB, already the single biggest thing on the
+// page) and visibly slowed first paint. sfxEnabled defaults off anyway, so
+// there's no reason to pay for this at all unless it's actually wanted —
+// boot() calls this only after the images are loaded and only if enabled.
+function warmSfxCache() {
+    [SFX_PROPELLER_SRC, SFX_WHOOSH_SRC].forEach(src => new Audio(src).load());
+    loadSfxBuffer(SFX_FLAP_SRC, buf => { flapBuffer = buf; });
+    loadSfxBuffer(SFX_RUSTLE_SRC, buf => { rustleBuffer = buf; });
+}
+
+function beepTone(freq, durationMs, opts = {}) {
+    if (!sfxEnabled) return;
+    ensureSfxCtx();
+    const t0 = sfxCtx.currentTime;
+    const dur = durationMs / 1000;
+    const osc = sfxCtx.createOscillator();
+    const gain = sfxCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, t0);
+    if (opts.sweepTo) osc.frequency.exponentialRampToValueAtTime(opts.sweepTo, t0 + dur);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(opts.peak || 0.2, t0 + 0.008);   // snappy attack
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);               // decay to silence
+    osc.connect(gain).connect(sfxCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+}
+// Pitch rises as the countdown approaches zero — classic arcade tension ramp.
+const COUNTDOWN_TICK_BASE = 440, COUNTDOWN_TICK_STEP = 110;
+const playCountdownTick = (num) => beepTone(COUNTDOWN_TICK_BASE + (COUNTDOWN_SECONDS - num) * COUNTDOWN_TICK_STEP, 90);
+const playCountdownGo = () => beepTone(660, 260, { sweepTo: 1320, peak: 0.28 });   // upward "power-up" sweep
+
+// Scoring blips — short so they don't pile up when worms/dodges land in
+// quick succession. Up chirps, down womps; mirrors of each other.
+const playScoreUpSfx = () => beepTone(880, 90, { sweepTo: 1320, peak: 0.18 });
+const playScoreDownSfx = () => beepTone(420, 130, { sweepTo: 180, peak: 0.2 });
+
+// ---- Original chiptune background music (synthesized — no external track) ----
+// Two short, seamlessly-looping patterns: a driving title/high-score theme and
+// a bouncier in-game one. Square-wave lead + triangle bass + noise hats/kick,
+// scheduled off sfxCtx a little ahead of playback time (the standard Web Audio
+// lookahead trick) so the loop stays tight regardless of frame-rate jitter.
+const NOTE_HZ = {
+    C3: 130.81, D3: 146.83, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, B3: 246.94,
+    C4: 261.63, D4: 293.66, E4: 329.63, F4: 349.23, G4: 392.00, A4: 440.00, B4: 493.88,
+    C5: 523.25, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99, A5: 880.00, B5: 987.77,
+};
+function musicNote(freq, t0, dur, type, peak) {
+    const osc = sfxCtx.createOscillator();
+    const gain = sfxCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(sfxCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+}
+function musicHat(t0) {
+    const dur = 0.04;
+    const buf = sfxCtx.createBuffer(1, sfxCtx.sampleRate * dur, sfxCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = sfxCtx.createBufferSource(); src.buffer = buf;
+    const filt = sfxCtx.createBiquadFilter(); filt.type = 'highpass'; filt.frequency.value = 6000;
+    const gain = sfxCtx.createGain();
+    gain.gain.setValueAtTime(0.06, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(filt).connect(gain).connect(sfxCtx.destination);
+    src.start(t0);
+}
+function musicKick(t0) {
+    const dur = 0.12;
+    const osc = sfxCtx.createOscillator();
+    const gain = sfxCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(150, t0);
+    osc.frequency.exponentialRampToValueAtTime(45, t0 + dur);
+    gain.gain.setValueAtTime(0.22, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(sfxCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+}
+// Snare: filtered noise like the hat, but band-passed lower and held a touch
+// longer for a "crack" instead of a "tick" — sits on the backbeat.
+function musicSnare(t0) {
+    const dur = 0.09;
+    const buf = sfxCtx.createBuffer(1, sfxCtx.sampleRate * dur, sfxCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const src = sfxCtx.createBufferSource(); src.buffer = buf;
+    const filt = sfxCtx.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = 1800; filt.Q.value = 0.7;
+    const gain = sfxCtx.createGain();
+    gain.gain.setValueAtTime(0.16, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(filt).connect(gain).connect(sfxCtx.destination);
+    src.start(t0);
+}
+const rep = (pattern, times) => Array(times).fill(pattern).flat();
+
+const MUSIC_TRACKS = {
+    // Title / high-score screen — Mario-Odyssey-style bounce (a walking bass
+    // that moves every beat instead of sitting on a pedal, syncopated
+    // off-beat melody) rendered in old-arcade square/triangle/noise timbre.
+    // Same 8-bar verse+chorus over C-G-Am-F as before, recomposed for groove.
+    title: {
+        bpm: 150, swing: 0.15,
+        lead: [
+            // ---- Verse: mostly on-beat with one syncopated pickup per bar ----
+            'C5',null,null,null,null,null,'E5',null,'G5',null,null,null,null,null,'E5',null,   // C
+            'G4',null,null,null,null,null,'B4',null,'D5',null,null,null,null,null,'B4',null,   // G
+            'A4',null,null,null,null,null,'C5',null,'E5',null,null,null,null,null,'C5',null,   // Am
+            'F4',null,null,null,null,null,'A4',null,'C5',null,null,null,null,null,'A4',null,   // F
+            // ---- Chorus: full syncopated hook — six hits/bar, off the beat ----
+            'C5',null,null,'E5',null,null,'G5','E5',null,'G5',null,'A5',null,null,null,null,   // C
+            'G4',null,null,'B4',null,null,'D5','B4',null,'D5',null,'E5',null,null,null,null,   // G
+            'A4',null,null,'C5',null,null,'E5','C5',null,'E5',null,'F5',null,null,null,null,   // Am
+            'F4',null,null,'A4',null,null,'C5','A4',null,'C5',null,'D5',null,null,null,null,   // F
+        ],
+        bass: [
+            // Verse — walking bass: root-3rd-5th-6th of the chord, one per beat.
+            'C3',null,null,null,'E3',null,null,null,'G3',null,null,null,'A3',null,null,null,   // C
+            'G3',null,null,null,'B3',null,null,null,'D4',null,null,null,'E4',null,null,null,   // G
+            'A3',null,null,null,'C4',null,null,null,'E4',null,null,null,'F4',null,null,null,   // Am
+            'F3',null,null,null,'A3',null,null,null,'C4',null,null,null,'D4',null,null,null,   // F
+            // Chorus — same walk, still moving every beat under the busier hook.
+            'C3',null,null,null,'E3',null,null,null,'G3',null,null,null,'A3',null,null,null,   // C
+            'G3',null,null,null,'B3',null,null,null,'D4',null,null,null,'E4',null,null,null,   // G
+            'A3',null,null,null,'C4',null,null,null,'E4',null,null,null,'F4',null,null,null,   // Am
+            'F3',null,null,null,'A3',null,null,null,'C4',null,null,null,'D4',null,null,null,   // F
+        ],
+        // Verse: quarter-note hats, no kick, light backbeat snare.
+        // Chorus: driving 16th hats + four-on-the-floor kick, same snare backbeat on top.
+        hat:   [...rep([1, 0, 0, 0], 16), ...Array(64).fill(1)],
+        kick:  [...Array(64).fill(0), ...rep([1, 0, 0, 0], 16)],
+        snare: rep([0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], 8),   // beats 2 & 4, every bar
+    },
+    // In-game loop — same walking-bass/syncopation treatment, swung 8ths kept
+    // (that's already the bounce), pentatonic-flavoured for a lighter touch
+    // than the title's full-diatonic hook.
+    game: {
+        bpm: 132, swing: 0.18,
+        lead: [
+            'C5',null,'G4',null,'A4',null,'E5',null,   // C
+            'G4',null,'D5',null,'E5',null,'B4',null,   // G
+            'A4',null,'E5',null,'F5',null,'C5',null,   // Am
+            'F4',null,'C5',null,'D5',null,'A4',null,   // F
+        ],
+        bass: [
+            'C3',null,'E3',null,'G3',null,'A3',null,   // C
+            'G3',null,'B3',null,'D4',null,'E4',null,   // G
+            'A3',null,'C4',null,'E4',null,'F4',null,   // Am
+            'F3',null,'A3',null,'C4',null,'D4',null,   // F
+        ],
+        hat:   rep([0, 0, 1, 0, 0, 0, 1, 0], 4),
+        kick:  rep([1, 0, 0, 0, 1, 0, 0, 0], 4),
+        snare: rep([0, 0, 1, 0, 0, 0, 1, 0], 4),   // layered with the hat on the backbeat
+    },
+    // Get-ready countdown — short (loops several times over the 5s countdown).
+    // Bass now walks up through the chord instead of static root-fifth
+    // alternation, for a touch of the same groove — still no lead melody:
+    // the countdown's own rising-pitch beeps (see playCountdownTick) stay
+    // the foreground sound, this just sits underneath as a building pulse.
+    countdown: {
+        bpm: 160, swing: 0,
+        lead:  [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+        bass:  ['C3', null, 'D3', null, 'E3', null, 'G3', null, 'C3', null, 'D3', null, 'E3', null, 'G3', null],
+        hat:   Array(16).fill(1),
+        kick:  [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        snare: Array(16).fill(0),
+    },
+};
+let musicTrack = null;      // 'title' | 'game' | 'countdown' | null
+let musicStepIdx = 0;
+let musicNextTime = 0;
+function setMusicTrack(name) {
+    if (musicTrack === name) return;
+    musicTrack = name;
+    musicStepIdx = 0;
+    musicNextTime = 0;   // rebase to "now" on the next tick
+}
+function tickMusic() {
+    if (!musicEnabled || !musicTrack || !sfxCtx || sfxCtx.state !== 'running') return;
+    const track = MUSIC_TRACKS[musicTrack];
+    const baseStep = 60 / track.bpm / 4;   // 16th-note duration at this bpm
+    if (musicNextTime === 0) musicNextTime = sfxCtx.currentTime + 0.05;
+    while (musicNextTime < sfxCtx.currentTime + 0.15) {   // small lookahead window
+        const i = musicStepIdx % track.lead.length;
+        const thisStep = baseStep * (i % 2 === 0 ? 1 + track.swing : 1 - track.swing);
+        const lead = track.lead[i];
+        if (lead) musicNote(NOTE_HZ[lead], musicNextTime, thisStep * 0.85, 'square', 0.05);
+        const bass = track.bass[i];
+        if (bass) musicNote(NOTE_HZ[bass], musicNextTime, thisStep * 3, 'triangle', 0.06);
+        if (track.hat[i]) musicHat(musicNextTime);
+        if (track.kick[i]) musicKick(musicNextTime);
+        if (track.snare[i]) musicSnare(musicNextTime);
+        musicNextTime += thisStep;
+        musicStepIdx++;
+    }
+}
+
+function stopSfx(a) {
+    if (!a) return;
+    a.pause();
+    a.currentTime = 0;
 }
 
 // ---- Audio state ----
@@ -462,6 +882,7 @@ let birdY = H / 2;
 // Wing-flap animation state: the bird beats its wings while climbing and holds
 // them extended (a glide) while descending. Driven by its vertical velocity.
 let birdPrevY = H / 2, birdVY = 0, flapPhase = 0;
+let lastFlapFrame = -1;   // frame the flap sound last fired on, so it plays once per up-stroke
 // Mic mode flies the bird toward birdTargetY (see MIC_TRAVEL_SPEED); birdSnap
 // places it there outright on the first frame of a game.
 let birdTargetY = H / 2, birdSnap = false;
@@ -550,6 +971,7 @@ async function initDevices() {
         }
         statusEl.textContent = msg;
         setKeyboardMode();            // revert to keyboard control on failure
+        document.dispatchEvent(new Event('emg:mic-failed'));   // lets the first-run tour bail out
         return;
     }
     const devs = (await navigator.mediaDevices.enumerateDevices())
@@ -557,6 +979,7 @@ async function initDevices() {
     if (!devs.length) {
         statusEl.textContent = 'No audio input devices detected. Connect the SpikerBox and try again.';
         setKeyboardMode();
+        document.dispatchEvent(new Event('emg:mic-failed'));
         return;
     }
     deviceSel.innerHTML = '';
@@ -569,6 +992,7 @@ async function initDevices() {
     deviceSel.disabled = false;
     startBtn.disabled = false;
     statusEl.textContent = 'Select your SpikerBox input above, then press "Start the game" to calibrate.';
+    document.dispatchEvent(new Event('emg:mic-ready'));   // lets the first-run tour advance
 }
 
 // ---- Input mode (keyboard vs microphone) ----
@@ -716,6 +1140,7 @@ function waitForAudio(timeout = 4000) {
 }
 
 startBtn.addEventListener('click', () => {
+    ensureSfxCtx();   // belt-and-braces: guarantees an unlock attempt tied to this exact click
     // Keyboard mode: skip mic + calibration, straight to the countdown.
     if (keyboardMode) {
         beginCountdown();
@@ -758,6 +1183,8 @@ function resetToIdle(message) {
     gameSession++;   // drop any name entry still waiting on the server
     calibrateEmg = false; gameActive = false; calibrationActive = false; countdownActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    stopSfx(coin.sfx); stopSfx(penalty.sfx); stopSfx(trailer.sfx);
+    setMusicTrack('title');
     particles = []; floatTexts = [];
     hitFlash = -1;             // don't carry a red blink into the next game
     releaseKeys();
@@ -773,9 +1200,12 @@ function resetToIdle(message) {
 // ---- Countdown: "Starting in…" before every game, mic or keyboard ----
 const COUNTDOWN_SECONDS = 5;
 let countdownActive = false, countdownStart = 0;
+let lastCountdownTick = -1;   // last number a beep fired on, so each tick beeps once
 function beginCountdown() {
     countdownStart = now();
     countdownActive = true;
+    lastCountdownTick = -1;
+    setMusicTrack('countdown');
     startBtn.disabled = true;   // no re-triggering the countdown mid-tick
     quitBtn.disabled = false;   // still bail-able while it ticks down
     statusEl.textContent = 'Starting…';
@@ -788,6 +1218,7 @@ function startGame() {
     diffName = DIFFICULTY[difficultySel.value] ? difficultySel.value : 'normal';
     diff = DIFFICULTY[diffName];
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    stopSfx(coin.sfx); stopSfx(penalty.sfx); stopSfx(trailer.sfx);
     particles = []; floatTexts = [];
     hitFlash = -1;             // fresh game, no leftover hit flash
     nameEntryEl.hidden = true;
@@ -795,6 +1226,7 @@ function startGame() {
     birdSnap = !keyboardMode;          // mic mode: place the bird, don't fly it in
     birdTargetY = birdY;
     birdPrevY = birdY; birdVY = 0; flapPhase = 0;   // no flap spike on frame 1
+    lastFlapFrame = -1;
     score = 0;
     gameStart = now();
     gameActive = true;
@@ -806,6 +1238,8 @@ function startGame() {
 function endGame() {
     gameActive = false;
     coin.active = penalty.active = trailer.active = trailer.pending = false;
+    stopSfx(coin.sfx); stopSfx(penalty.sfx); stopSfx(trailer.sfx);
+    setMusicTrack('title');
     particles = []; floatTexts = [];
     startBtn.disabled = false;   // free to start over (mic mode recalibrates)
     // Snapshot the score, difficulty and session: onGameOver awaits the server,
@@ -827,6 +1261,7 @@ function spawnCoin() {
     coin.start = now();
     coin.active = true;
     coin.x = W;
+    if (!onGrass(coin.y)) coin.sfx = playWhooshSfx();   // paper-plane worm, not the grounded crawl
 }
 function spawnPenalty() {
     penalty.jump = Math.random() < diff.catJumpChance;   // pounce vs fly across
@@ -847,6 +1282,11 @@ function spawnPenalty() {
     } else {
         penalty.y = spawnY();
         penalty.start = now();
+        // spawnY() can land low enough to be "on the grass" — the draw code
+        // already skips the paraglider sprite and shows a plain running cat
+        // there (see the !onGrass check in draw()); the propeller drone has
+        // to skip it too, or it plays under a cat that looks fully grounded.
+        if (!onGrass(penalty.y)) penalty.sfx = playPropellerSfx();
     }
 }
 
@@ -892,6 +1332,8 @@ function update() {
     if (countdownActive && (t - countdownStart) >= COUNTDOWN_SECONDS) {
         countdownActive = false;
         againBtn.disabled = false;
+        playCountdownGo();
+        setMusicTrack('game');
         startGame();
     }
 
@@ -931,13 +1373,15 @@ function update() {
         const travel = COIN_DISAPPEAR * WINDOW_SECONDS;   // seconds visible
         if (coin.active) {
             const p = (t - coin.start) / WINDOW_SECONDS * diff.speed;   // easy mode slows the crossing
-            if (p >= COIN_DISAPPEAR) { coin.active = false; }
+            if (p >= COIN_DISAPPEAR) { coin.active = false; stopSfx(coin.sfx); }
             else {
                 coin.x = W - p * W;
                 if (Math.abs(coin.x - W / 2) < WORM_X_HIT && Math.abs(coin.y - birdY) < WORM_Y_HIT) {
                     coin.active = false; score += 1;
                     spawnCatchBurst(W / 2, birdY, t);
                     spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
+                    playScoreUpSfx();
+                    stopSfx(coin.sfx);
                 }
             }
         }
@@ -968,6 +1412,7 @@ function update() {
                         score += 1;
                         spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
                         spawnCatchBurst(W / 2, birdY, t);
+                        playScoreUpSfx();
                     }
                 }
                 else {
@@ -980,6 +1425,7 @@ function update() {
                     if (Math.abs(c.x - W / 2) < X_HIT && Math.abs(c.y - birdY) < Y_HIT) {
                         c.active = false; score -= 1; hitFlash = t;
                         spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
+                        playScoreDownSfx();
                     }
                 }
             } else {   // land — trot off and vanish
@@ -988,12 +1434,14 @@ function update() {
             }
         } else if (penalty.active) {
             const p = (t - penalty.start) / WINDOW_SECONDS * diff.speed;
-            if (p >= COIN_DISAPPEAR) { penalty.active = false; }
+            if (p >= COIN_DISAPPEAR) { penalty.active = false; stopSfx(penalty.sfx); }
             else {
                 penalty.x = W - p * W;
                 if (Math.abs(penalty.x - W / 2) < X_HIT && Math.abs(penalty.y - birdY) < Y_HIT) {
                     penalty.active = false; score -= 1; hitFlash = t;
                     spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
+                    playScoreDownSfx();
+                    stopSfx(penalty.sfx);
                 }
             }
         }
@@ -1003,10 +1451,13 @@ function update() {
             trailer.pending = false; trailer.active = true;
             trailer.y = 60 + Math.random() * (H * 0.5);   // upper lane, [60, 410]
             trailer.start = t; trailer.x = W;
+            // Upper lane is always above the grass line, so a trailer worm is
+            // always the paper-plane kind — never the grounded crawl.
+            trailer.sfx = trailer.type === 'cat' ? playPropellerSfx() : playWhooshSfx();
         }
         if (trailer.active) {
             const p = (t - trailer.start) / WINDOW_SECONDS * diff.speed;
-            if (p >= COIN_DISAPPEAR) { trailer.active = false; }
+            if (p >= COIN_DISAPPEAR) { trailer.active = false; stopSfx(trailer.sfx); }
             else {
                 trailer.x = W - p * W;
                 const xh = trailer.type === 'worm' ? WORM_X_HIT : X_HIT;
@@ -1017,10 +1468,13 @@ function update() {
                     if (trailer.type === 'worm') {
                         spawnCatchBurst(W / 2, birdY, t);
                         spawnFloatText('+1', '#2ecc40', W / 2, birdY, t);
+                        playScoreUpSfx();
                     } else {
                         hitFlash = t;
                         spawnFloatText('-1', '#ff4136', W / 2, birdY, t);
+                        playScoreDownSfx();
                     }
+                    stopSfx(trailer.sfx);
                 }
             }
         }
@@ -1030,6 +1484,7 @@ function update() {
         }   // end if (controllable)
     }
 
+    tickMusic();
     draw(t);
     requestAnimationFrame(update);
 }
@@ -1113,12 +1568,24 @@ function sliceCatFrames() {
         catRunFrames.push(c);
     }
 }
-function drawCat(x, y, t) {
+// Paw-strike frames in the 4-frame gallop (0 and 2 — opposite phases of the
+// stride, the two moments a paw actually lands rather than mid-stride).
+const CATRUN_PAW_FRAMES = new Set([0, 2]);
+let lastCatRunFrame = -1;   // gallop frame a rustle last fired on, so it patters once per step
+function drawCat(x, y, t, bob = 0) {
+    // onGrass classification always uses the real y — only the airborne
+    // sprite's draw position gets the bob, so a small sway can never flip a
+    // cat between the running and paragliding look near the grass line.
     if (onGrass(y) && catRunFrames.length) {
         const f = Math.floor(t * 10) % CATRUN_FRAMES;   // ~10fps gallop
+        if (f !== lastCatRunFrame) {
+            lastCatRunFrame = f;
+            if (CATRUN_PAW_FRAMES.has(f)) playGrassRustleSfx();
+        }
         drawImageCentered(catRunFrames[f], x, y, CATRUN_SIZE);
     } else {
-        drawImageCentered(imgs.penalty, x, y, ITEM_SIZE);
+        lastCatRunFrame = -1;   // re-arm so stepping back onto grass fires cleanly
+        drawImageCentered(imgs.penalty, x, y + bob, ITEM_SIZE);
     }
 }
 // The stretched-out gallop frame (frame 0), rotated to the pounce arc — used
@@ -1264,26 +1731,41 @@ const GRASS_LAYERS = [
     { baseY: 686, s: 2.4, speed: 230, gap: 60, alpha: 0.75, off: 0,  seed: 3.1 },   // back, slower
     { baseY: 701, s: 3.3, speed: 330, gap: 48, alpha: 1.0,  off: 20, seed: 11.7 },  // front, faster
 ];
-function drawMovingGrass(t) {
+// xMin/xMax restrict the tufts drawn to a local patch instead of the whole
+// layer — used to redraw just the front tufts over a grounded worm (see
+// drawWormGrassCover()) without touching anything else on screen.
+function drawGrassLayer(t, L, xMin = 0, xMax = W) {
     const spr = getGrassSprite();
     const prev = ctx2d.imageSmoothingEnabled;
     ctx2d.imageSmoothingEnabled = false;
-    for (const L of GRASS_LAYERS) {
-        const scroll = L.speed * t + L.off;
-        const margin = spr.width * L.s * 1.4;
-        const nStart = Math.floor((scroll - margin) / L.gap);
-        const nEnd = Math.ceil((scroll + W + margin) / L.gap);
-        ctx2d.save();
-        ctx2d.globalAlpha = L.alpha;
-        for (let n = nStart; n <= nEnd; n++) {
-            const sc = L.s * (0.75 + cloudHash(n * 1.7 + L.seed) * 0.6);   // per-tuft height
-            const w = spr.width * sc, h = spr.height * sc;
-            const x = n * L.gap - scroll;
-            ctx2d.drawImage(spr, Math.round(x - w / 2), Math.round(L.baseY - h), w, h);
-        }
-        ctx2d.restore();
+    const scroll = L.speed * t + L.off;
+    const margin = spr.width * L.s * 1.4;
+    const nStart = Math.floor((xMin - margin + scroll) / L.gap);
+    const nEnd = Math.ceil((xMax + margin + scroll) / L.gap);
+    ctx2d.save();
+    ctx2d.globalAlpha = L.alpha;
+    for (let n = nStart; n <= nEnd; n++) {
+        const sc = L.s * (0.75 + cloudHash(n * 1.7 + L.seed) * 0.6);   // per-tuft height
+        const w = spr.width * sc, h = spr.height * sc;
+        const x = n * L.gap - scroll;
+        if (x + w / 2 < xMin || x - w / 2 > xMax) continue;
+        ctx2d.drawImage(spr, Math.round(x - w / 2), Math.round(L.baseY - h), w, h);
     }
+    ctx2d.restore();
     ctx2d.imageSmoothingEnabled = prev;
+}
+function drawMovingGrass(t) {
+    for (const L of GRASS_LAYERS) drawGrassLayer(t, L);
+}
+// Front-layer tufts are tall enough to cover a grounded (crawling) worm — redraw
+// a small patch of them over it while it's still far from the bird, so it reads
+// as hidden in the grass; skip this once it's close enough to actually catch,
+// so it pops back in front instead of staying obscured right up to the miss/catch.
+const WORM_GRASS_REVEAL_DIST = 2 * BIRD_SIZE;
+function drawWormGrassCover(x, t) {
+    if (Math.abs(x - W / 2) <= WORM_GRASS_REVEAL_DIST) return;
+    const pad = 40;   // wide enough to cover the widest tuft that could overlap x
+    drawGrassLayer(t, GRASS_LAYERS[1], x - pad, x + pad);
 }
 
 // Little pixel-art flowers (like the ones dotted in the background), cached per
@@ -1355,6 +1837,10 @@ function birdPose() {
     else flapPhase = 0;                              // reset so a new climb starts wings-up
     // Climbing → flap cycle; descending → wings down; holding → wings up (gliding).
     const frame = climbing ? (Math.floor(flapPhase) % BIRD_FRAMES) : (descending ? 2 : 0);
+    // One flap sound per up-stroke (frame 0) — not a retrigger on every animation
+    // frame that happens to still be showing frame 0.
+    if (climbing && frame === 0 && lastFlapFrame !== 0) playFlapSfx();
+    lastFlapFrame = climbing ? frame : -1;
     return {
         frame,
         tilt: Math.max(-0.35, Math.min(0.35, birdVY * 0.0005)),   // nose up/down
@@ -1473,6 +1959,7 @@ function drawCountdownArcade(remain) {
     drawPixelText('GET READY', W / 2, H / 2 - 130, 6, '#ffd54a', '#000', 8);
 
     const num = Math.max(1, Math.ceil(remain));
+    if (num !== lastCountdownTick) { lastCountdownTick = num; playCountdownTick(num); }
     const elapsedInStep = num - remain;                          // 0 at the tick, → CD_POP_DUR as it settles
     const pop = Math.max(0, 1 - elapsedInStep / CD_POP_DUR);      // 1 → 0 bounce-in
     const px = 24 + pop * 16;   // dot size grows on the bounce-in, same "pop" feel as before
@@ -1596,6 +2083,12 @@ function drawBoardScreen(title, subtitle) {
     ctx2d.restore();
     drawLeaderboard(165);
 }
+
+// Gentle vertical sway for a paragliding cat — drifts rather than holding a
+// dead-straight line, like a real paraglider riding the air. Applied to both
+// the rig (drawParaglider) and the cat's own sprite so they move together;
+// never applied to the grounded/pouncing cat, which has no business bobbing.
+const catGliderBob = (t) => Math.sin(t * 2.5) * 6;
 
 // A cat cruising in on a motorised paraglider — used for the "flying" cats
 // (easy/normal) that enter above the grass. `t` drives the spinning propeller.
@@ -1784,14 +2277,16 @@ function draw(t) {
         if (!grounded) drawPaperPlaneBack(coin.x, coin.y, t);
         drawImageCentered(imgs.coin, coin.x, coin.y, ITEM_SIZE);
         if (!grounded) drawPaperPlaneFront(coin.x, coin.y, t);
+        else drawWormGrassCover(coin.x, t);   // hidden in the grass until it's close
     }
     if (trailer.active) {
         const grounded = onGrass(trailer.y);
+        const trailerBob = (trailer.type === 'cat' && !grounded) ? catGliderBob(t) : 0;
         if (!grounded) {
-            if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y, t);
+            if (trailer.type === 'cat') drawParaglider(trailer.x, trailer.y + trailerBob, t);
             else drawPaperPlaneBack(trailer.x, trailer.y, t);
         }
-        drawImageCentered(trailer.type === 'worm' ? imgs.coin : imgs.penalty, trailer.x, trailer.y, ITEM_SIZE);
+        drawImageCentered(trailer.type === 'worm' ? imgs.coin : imgs.penalty, trailer.x, trailer.y + trailerBob, ITEM_SIZE);
         if (!grounded && trailer.type === 'worm') drawPaperPlaneFront(trailer.x, trailer.y, t);
     }
     if (penalty.active) {
@@ -1800,14 +2295,14 @@ function draw(t) {
             // Wiggle while crouched, lining up the pounce.
             if (penalty.phase === 'wiggle') px += Math.sin(t * 45) * 8;
         } else if (!onGrass(penalty.y)) {
-            drawParaglider(px, penalty.y, t);   // flying cats cruise in on a paramotor
+            drawParaglider(px, penalty.y + catGliderBob(t), t);   // flying cats cruise in on a paramotor
         }
         if (penalty.jump && penalty.phase === 'wiggle') {
             drawImageCentered(imgs.penalty, px, penalty.y, ITEM_SIZE);   // seated cat, ready to pounce
         } else if (penalty.jump && penalty.phase === 'jump') {
             drawCatStretched(px, penalty.y, penalty.angle);   // stretched, angled to the arc
         } else {
-            drawCat(px, penalty.y, t);   // runs when on the grass, static when airborne
+            drawCat(px, penalty.y, t, penalty.jump ? 0 : catGliderBob(t));   // runs when on the grass, static (and bobbing) when airborne
         }
     }
     drawParticles(t);
@@ -1850,12 +2345,40 @@ function draw(t) {
     ]);
     sliceBirdFrames();   // split the flap strip into individual frames
     sliceCatFrames();    // split the cat-run strip into individual frames
+    setMusicTrack('title');
     requestAnimationFrame(update);
     fetchScores();       // populate the leaderboard on load
+
+    // Dashboard-editable settings (Demo Control tab). Defaults hold if the
+    // server (or its config) isn't reachable — e.g. opened standalone. This
+    // has to resolve *before* setKeyboardMode() enables the Start button —
+    // otherwise a fast click could spawn the first worm/cat while sfxEnabled
+    // is still at its startup default, silently skipping their sound even
+    // though the dashboard has it turned on.
+    let emgConfig = null;
+    try {
+        const r = await fetch('/api/emg/config');
+        if (r.ok) emgConfig = await r.json();
+    } catch (e) { /* server offline / standalone — use defaults below */ }
+    sfxEnabled = !!(emgConfig && emgConfig.sfx_enabled);       // off by default
+    musicEnabled = !!(emgConfig && emgConfig.music_enabled);   // off by default, independent of sfxEnabled
+    if (sfxEnabled) warmSfxCache();   // only fetch the SFX files if they'll actually be used
+
     setKeyboardMode();   // default: keyboard control, no permissions needed
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         // No Web Audio input — keyboard only; disable the mic switch.
         micToggle.disabled = true;
+    } else {
+        // Tour always runs once on phones/tablets; on desktop it's gated by
+        // the same config since a booth running this on a PC/kiosk may not
+        // want it. Defaults on (unlike sfxEnabled) if the config's missing.
+        const tourDesktop = emgConfig ? !!emgConfig.tour_desktop : true;
+        if (isMobileClient() || tourDesktop) {
+            let seen = false;
+            try { seen = !!localStorage.getItem(TOUR_SEEN_KEY); } catch (e) { /* private mode */ }
+            if (!seen) setTimeout(startTour, 400);   // let the page settle first
+        }
     }
 })();
 </script>

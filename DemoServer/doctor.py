@@ -18,6 +18,7 @@ process handling, otherwise falls back to OS commands.
 """
 
 import argparse
+import json
 import os
 import socket
 import ssl
@@ -38,7 +39,10 @@ SSM_MODEL = os.path.join(RES_DIR, "SSM_shape_model_103")
 CERT_FILE = os.path.join(HERE, "certs", "cert.pem")
 KEY_FILE  = os.path.join(HERE, "certs", "key.pem")
 SERVER_PY = os.path.join(HERE, "server.py")
-EMG_SCORES = os.path.join(HERE, "emg_scores.json")   # mirrors server.py EMG_SCORES_FILE
+EMG_SCORES = os.path.join(HERE, "emg_scores.json")    # mirrors server.py EMG_SCORES_FILE
+EMG_CONFIG = os.path.join(HERE, "emg_config.json")    # mirrors server.py EMG_CONFIG_FILE
+EMG_CONFIG_DEFAULT = {"tour_desktop": True, "tour_reset_on_info": True,   # mirrors server.py
+                       "sfx_enabled": False, "music_enabled": False}
 
 # Other served demos (static — no build step) + their key assets.
 GUI_SRC   = os.path.join(GUI_DIR, "src")
@@ -275,14 +279,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _get(url, timeout=4, method="GET"):
-    """Return (status_code, detail). status_code None on transport error."""
+def _get(url, timeout=4, method="GET", json_body=None):
+    """Return (status_code, detail). status_code None on transport error.
+    Pass json_body for PUT/POST — it's JSON-encoded as the request body."""
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ctx))
     try:
-        req = urllib.request.Request(url, method=method)
+        data = json.dumps(json_body).encode() if json_body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
         with opener.open(req, timeout=timeout) as r:
             return r.status, ""
     except urllib.error.HTTPError as e:

@@ -111,6 +111,23 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 # survives restarts and is shared by every tablet hitting this server).
 EMG_SCORES_FILE = os.path.join(BASE_DIR, 'emg_scores.json')
 EMG_TOP_N       = 10
+
+# EMG-game client settings (persisted like the leaderboard).
+#   tour_desktop       — the first-run guided tour also shows on desktop browsers
+#                        (it always shows once on phones/tablets regardless).
+#   tour_reset_on_info — launching the demo via the landing page's info popup
+#                        (demo.html) re-triggers the tour even if this browser
+#                        already saw it; a direct card click never does.
+#   sfx_enabled        — propeller/whoosh/flap/countdown/score sound effects.
+#                        Off by default.
+#   music_enabled      — background music (title/game/countdown tunes).
+#                        Independent of sfx_enabled; also off by default.
+EMG_CONFIG_FILE = os.path.join(BASE_DIR, 'emg_config.json')
+EMG_CONFIG_DEFAULT = {
+    'tour_desktop': True, 'tour_reset_on_info': True,
+    'sfx_enabled': False, 'music_enabled': False,
+}
+_emg_config_lock = threading.Lock()
 _emg_lock       = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -359,6 +376,46 @@ def emg_scores_clear():
         except OSError as e:
             return jsonify({'error': f'could not clear: {e}'}), 500
     return jsonify(_group_top([], EMG_TOP_N))
+
+
+def _load_emg_config():
+    """Read client settings from disk; tolerate a missing/corrupt file."""
+    try:
+        with open(EMG_CONFIG_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {**EMG_CONFIG_DEFAULT, **data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return dict(EMG_CONFIG_DEFAULT)
+
+
+@app.route('/api/emg/config', methods=['GET'])
+def emg_config_get():
+    """Client settings for the EMG game (e.g. whether the guided tour also
+    runs on desktop — the dashboard's Demo Control tab toggles this)."""
+    return jsonify(_load_emg_config())
+
+
+@app.route('/api/emg/config', methods=['PUT'])
+def emg_config_put():
+    data = request.get_json(force=True, silent=True) or {}
+    with _emg_config_lock:
+        cfg = _load_emg_config()
+        if 'tour_desktop' in data:
+            cfg['tour_desktop'] = bool(data['tour_desktop'])
+        if 'tour_reset_on_info' in data:
+            cfg['tour_reset_on_info'] = bool(data['tour_reset_on_info'])
+        if 'sfx_enabled' in data:
+            cfg['sfx_enabled'] = bool(data['sfx_enabled'])
+        if 'music_enabled' in data:
+            cfg['music_enabled'] = bool(data['music_enabled'])
+        try:
+            with open(EMG_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f)
+        except OSError as e:
+            return jsonify({'error': f'could not save: {e}'}), 500
+    return jsonify(cfg)
 
 
 # ---------------------------------------------------------------------------

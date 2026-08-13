@@ -21,8 +21,9 @@ Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
 # DemoServer runtime output (per-session prediction artifacts)
 DemoServer/sessions/
 
-# EMG-game leaderboard scores (runtime data, shared per deployment)
+# EMG-game leaderboard scores + client settings (runtime data, shared per deployment)
 DemoServer/emg_scores.json
+DemoServer/emg_config.json
 
 # DemoServer TLS cert + private key (auto-generated or dropped in locally)
 DemoServer/certs/

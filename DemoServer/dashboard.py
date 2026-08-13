@@ -922,6 +922,56 @@ class Dashboard(QtWidgets.QWidget):
         self.clear_scores_btn.clicked.connect(self._clear_emg_scores)
         row.addWidget(self.clear_scores_btn); row.addStretch(1)
         el.addLayout(row)
+
+        cfg = self._load_emg_config()
+
+        self.sfx_chk = QtWidgets.QCheckBox("Enable sound effects")
+        self.sfx_chk.setToolTip("Flying-cat propeller, paper-plane whoosh, wing flap, countdown "
+                                "beeps, and the catch/hit blips. Independent of the music toggle "
+                                "below. Off by default.")
+        self.sfx_chk.blockSignals(True)
+        self.sfx_chk.setChecked(cfg.get("sfx_enabled", False))
+        self.sfx_chk.blockSignals(False)
+        self.sfx_chk.toggled.connect(
+            lambda checked: self._set_emg_config_flag("sfx_enabled", checked, "sound effects"))
+        el.addWidget(self.sfx_chk)
+
+        self.music_chk = QtWidgets.QCheckBox("Enable background music")
+        self.music_chk.setToolTip("Looping chiptune themes for the title/high-score screen, the "
+                                  "get-ready countdown, and gameplay. Independent of the sound "
+                                  "effects toggle above. Off by default.")
+        self.music_chk.blockSignals(True)
+        self.music_chk.setChecked(cfg.get("music_enabled", False))
+        self.music_chk.blockSignals(False)
+        self.music_chk.toggled.connect(
+            lambda checked: self._set_emg_config_flag("music_enabled", checked, "background music"))
+        el.addWidget(self.music_chk)
+
+        self.tour_pc_chk = QtWidgets.QCheckBox("Show the first-run guided tour on PC browsers too")
+        self.tour_pc_chk.setToolTip("The tour always shows once on phones/tablets (pointing at the "
+                                    "☰ Menu → mic switch → device list). This also shows "
+                                    "it once on desktop browsers — turn off if it's more distracting "
+                                    "than useful on a PC/kiosk setup.")
+        self.tour_pc_chk.blockSignals(True)
+        self.tour_pc_chk.setChecked(cfg.get("tour_desktop", True))
+        self.tour_pc_chk.blockSignals(False)
+        self.tour_pc_chk.toggled.connect(
+            lambda checked: self._set_emg_config_flag("tour_desktop", checked, "PC guided tour"))
+        el.addWidget(self.tour_pc_chk)
+
+        self.tour_info_chk = QtWidgets.QCheckBox("Rerun the tour when launched from the landing page's ⓘ info popup")
+        self.tour_info_chk.setToolTip("Normally the tour only ever shows once per browser. With this on, "
+                                      "opening the demo via the info popup's \"Start Demo\" button "
+                                      "re-triggers it anyway — useful at a kiosk where a new visitor "
+                                      "launches it that way each time. A direct click on the demo card "
+                                      "never re-triggers it.")
+        self.tour_info_chk.blockSignals(True)
+        self.tour_info_chk.setChecked(cfg.get("tour_reset_on_info", True))
+        self.tour_info_chk.blockSignals(False)
+        self.tour_info_chk.toggled.connect(
+            lambda checked: self._set_emg_config_flag("tour_reset_on_info", checked, "info-popup tour re-run"))
+        el.addWidget(self.tour_info_chk)
+
         v.addWidget(emg)
         v.addStretch(1)
         return w
@@ -1560,6 +1610,36 @@ class Dashboard(QtWidgets.QWidget):
                 ok = False
                 self._append_log(f"[dashboard] clear high scores failed: {e}")
         self._append_log(f"[dashboard] EMG leaderboard {'cleared' if ok else 'clear FAILED'}")
+
+    def _load_emg_config(self):
+        try:
+            with open(doctor.EMG_CONFIG, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {**doctor.EMG_CONFIG_DEFAULT, **data}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+        return dict(doctor.EMG_CONFIG_DEFAULT)
+
+    def _set_emg_config_flag(self, key, checked, log_label):
+        if self._running_now():
+            code, detail = doctor._get(f"https://localhost:{doctor.HTTPS_PORT}/api/emg/config",
+                                       method="PUT", json_body={key: checked})
+            ok = code == 200
+            if not ok:
+                self._append_log(f"[dashboard] {log_label} setting update failed: {detail or code}")
+        else:
+            cfg = self._load_emg_config()
+            cfg[key] = checked
+            try:
+                with open(doctor.EMG_CONFIG, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f)
+                ok = True
+            except OSError as e:
+                ok = False
+                self._append_log(f"[dashboard] {log_label} setting update failed: {e}")
+        self._append_log(f"[dashboard] {log_label} {'enabled' if checked else 'disabled'}"
+                         f"{'' if ok else ' (save FAILED)'}")
 
     def rebuild_frontend(self):
         if self._rebuilding:
