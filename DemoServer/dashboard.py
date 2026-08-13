@@ -15,6 +15,7 @@ launch the server with the right interpreter.
 """
 
 import io
+import json
 import os
 import shutil
 import socket
@@ -192,6 +193,13 @@ def _draw_shape(p, kind, size, color):
     elif kind == "stopsq":  # stop
         p.setPen(QtCore.Qt.NoPen)
         p.drawRoundedRect(QtCore.QRectF(c - size * 0.2, c - size * 0.2, size * 0.4, size * 0.4), 2, 2)
+    elif kind == "ctrl":  # demo control (equalizer sliders)
+        for dy, knob_dx in ((-0.18, -0.08), (0.0, 0.12), (0.18, -0.04)):
+            y = c + dy * size
+            p.setPen(QtGui.QPen(QtGui.QColor(color), 2.0)); p.setBrush(QtCore.Qt.NoBrush)
+            p.drawLine(QtCore.QPointF(c - size * 0.26, y), QtCore.QPointF(c + size * 0.26, y))
+            p.setPen(QtCore.Qt.NoPen); p.setBrush(QtGui.QColor(color))
+            p.drawEllipse(QtCore.QPointF(c + knob_dx * size, y), size * 0.06, size * 0.06)
 
 
 def _pixmap(kind, color, size=40, bg=None):
@@ -482,7 +490,8 @@ class Dashboard(QtWidgets.QWidget):
     _log_sig = QtCore.Signal(str)
     _exit_sig = QtCore.Signal(object, int)   # (proc, returncode) from the log pump
 
-    NAV = [("grid", "Dashboard"), ("term", "Console"), ("link", "Access"), ("cross", "Doctor")]
+    NAV = [("grid", "Dashboard"), ("ctrl", "Demo Control"), ("term", "Console"),
+           ("link", "Access"), ("cross", "Doctor")]
     MAX_RESTARTS = 5          # keep-alive gives up after this many rapid crashes
 
     def __init__(self, autostart=False, keepalive=False):
@@ -607,6 +616,7 @@ class Dashboard(QtWidgets.QWidget):
         # scrolls instead of compressing its cards (which would overlap).
         self.stack = QtWidgets.QStackedWidget()
         self.stack.addWidget(self._scrollable(self._page_dashboard()))
+        self.stack.addWidget(self._scrollable(self._page_democontrol()))
         self.stack.addWidget(self._scrollable(self._page_console()))
         self.stack.addWidget(self._scrollable(self._page_access()))
         self.stack.addWidget(self._scrollable(self._page_doctor()))
@@ -894,6 +904,27 @@ class Dashboard(QtWidgets.QWidget):
                 f"background:{bg};color:{fg};font-size:10px;font-weight:800;"
                 f"border-radius:10px;padding:3px 10px")
             detail.setText(f"{d['route']} · {d['detail']}")
+
+    def _page_democontrol(self):
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(16)
+
+        emg = QtWidgets.QGroupBox("Spikerbox-EMG game"); _shadow(emg)
+        el = QtWidgets.QVBoxLayout(emg)
+        note = QtWidgets.QLabel(
+            "Wipes the shared leaderboard every tablet plays into — use this to "
+            "reset the board between outreach sessions.")
+        note.setWordWrap(True)
+        el.addWidget(note)
+        row = QtWidgets.QHBoxLayout()
+        self.clear_scores_btn = QtWidgets.QPushButton("Clear high scores")
+        self.clear_scores_btn.setObjectName("danger")
+        self.clear_scores_btn.clicked.connect(self._clear_emg_scores)
+        row.addWidget(self.clear_scores_btn); row.addStretch(1)
+        el.addLayout(row)
+        v.addWidget(emg)
+        v.addStretch(1)
+        return w
 
     def _page_console(self):
         w = QtWidgets.QGroupBox("Server console"); _shadow(w)
@@ -1504,6 +1535,31 @@ class Dashboard(QtWidgets.QWidget):
     def _doctor_done(self, text):
         self.docout.setPlainText(text)
         self.doctor_btn.setEnabled(True)
+
+    def _clear_emg_scores(self):
+        r = QtWidgets.QMessageBox.question(
+            self, "Clear EMG high scores",
+            "This wipes the shared EMG-game leaderboard for every tablet. Continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if r != QtWidgets.QMessageBox.Yes:
+            return
+        if self._running_now():
+            # Server owns the file — go through its own clear route rather than
+            # writing underneath it while it may be mid-request.
+            code, detail = doctor._get(f"https://localhost:{doctor.HTTPS_PORT}/api/emg/scores",
+                                       method="DELETE")
+            ok = code == 200
+            if not ok:
+                self._append_log(f"[dashboard] clear high scores failed: {detail or code}")
+        else:
+            try:
+                with open(doctor.EMG_SCORES, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                ok = True
+            except OSError as e:
+                ok = False
+                self._append_log(f"[dashboard] clear high scores failed: {e}")
+        self._append_log(f"[dashboard] EMG leaderboard {'cleared' if ok else 'clear FAILED'}")
 
     def rebuild_frontend(self):
         if self._rebuilding:
