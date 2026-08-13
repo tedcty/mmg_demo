@@ -93,6 +93,11 @@ QPushButton#primary:disabled {{ background: #b9bdec; }}
 QPushButton#danger {{ background: #fdecea; color: {RED}; border: 1px solid #f6c9c7; }}
 QPushButton#danger:hover {{ background: #fadedb; }}
 
+/* Rebuild-frontend progress bar — sized to replace the button in place */
+QProgressBar#rebuildProgress {{ background: #f1f4f9; color: {INK}; border: 1px solid #dde3ec;
+                                border-radius: 10px; font-size: 14px; font-weight: 700; }}
+QProgressBar#rebuildProgress::chunk {{ background: {AZURE}; border-radius: 9px; }}
+
 /* Server control buttons — large, easy-to-hit targets */
 QPushButton[ctl="true"] {{ font-size: 16px; font-weight: 800;
                            padding: 15px 24px; border-radius: 12px; }}
@@ -828,6 +833,17 @@ class Dashboard(QtWidgets.QWidget):
         "missing":  ("MISSING", "#fdecea", RED),
     }
 
+    # stage markers matched (in order) against `vite build` output lines —
+    # (substring to look for, % complete once seen, label to display)
+    REBUILD_STEPS = [
+        ("building for production", 10, "Starting build…"),
+        ("transforming",            25, "Transforming modules…"),
+        ("modules transformed",     55, "Modules transformed"),
+        ("rendering chunks",        75, "Rendering chunks…"),
+        ("computing gzip size",     90, "Computing sizes…"),
+        ("built in",               100, "Build complete"),
+    ]
+
     def _build_demos_box(self):
         box = QtWidgets.QGroupBox("Demos"); _shadow(box)
         v = QtWidgets.QVBoxLayout(box); v.setSpacing(10)
@@ -846,6 +862,16 @@ class Dashboard(QtWidgets.QWidget):
                                     "the SSM UI shows REBUILD (Ctrl+Shift+R)")
         self.rebuild_btn.clicked.connect(self.rebuild_frontend)
         v.addWidget(self.rebuild_btn)
+        self.rebuild_progress = QtWidgets.QProgressBar()
+        self.rebuild_progress.setObjectName("rebuildProgress")
+        self.rebuild_progress.setRange(0, 100)
+        self.rebuild_progress.setTextVisible(True)
+        self.rebuild_progress.setAlignment(QtCore.Qt.AlignCenter)
+        # match the button's exact footprint so swapping the two doesn't
+        # shift the layout
+        self.rebuild_progress.setFixedHeight(self.rebuild_btn.sizeHint().height())
+        self.rebuild_progress.setVisible(False)
+        v.addWidget(self.rebuild_progress)
         return box
 
     def _demo_item(self, name):
@@ -1486,17 +1512,31 @@ class Dashboard(QtWidgets.QWidget):
             self._append_log("[dashboard] TauriGUI dir not found — cannot rebuild")
             return
         self._rebuilding = True
-        self.rebuild_btn.setEnabled(False); self.rebuild_btn.setText("Rebuilding…")
-        self._go(1)                          # show the Console so output is visible
+        self._rebuild_step = -1
+        self.rebuild_btn.setVisible(False)
+        self.rebuild_progress.setValue(0)
+        self.rebuild_progress.setFormat("Starting build…")
+        self.rebuild_progress.setVisible(True)
         self._append_log("[dashboard] rebuilding SSM frontend (vite build --base /ssm/)…")
         self._rw = RebuildWorker(doctor.GUI_DIR)
         self._rw.line.connect(self._append_log)
+        self._rw.line.connect(self._rebuild_progress_line)
         self._rw.done.connect(self._rebuild_done)
         self._rw.start()
 
+    def _rebuild_progress_line(self, line):
+        low = line.lower()
+        for i, (needle, pct, label) in enumerate(self.REBUILD_STEPS):
+            if i > self._rebuild_step and needle in low:
+                self._rebuild_step = i
+                self.rebuild_progress.setValue(pct)
+                self.rebuild_progress.setFormat(label)
+                break
+
     def _rebuild_done(self, code):
         self._rebuilding = False
-        self.rebuild_btn.setEnabled(True); self.rebuild_btn.setText("Rebuild frontend")
+        self.rebuild_progress.setVisible(False)
+        self.rebuild_btn.setVisible(True); self.rebuild_btn.setEnabled(True)
         self._append_log(f"[dashboard] rebuild {'complete' if code == 0 else f'failed (code {code})'}")
         self.refresh()                       # refresh the demo build-status chips
 
