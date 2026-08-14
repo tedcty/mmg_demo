@@ -151,8 +151,34 @@ class Scapula(BoneBase):
         # Projection target on posterior ribcage
         p_proj = thorax.project_scapula(aa_seed, ts_seed, ai_seed, self.side)
 
+        # World-space C7/T8 (midline spine landmarks, already loaded by Thorax) —
+        # trapezius origin proxies for Step 4's joint rotation+translation
+        # search.
+        tho_rot3 = thorax.jcs_matrix[:3, :3]
+        c7_g = tho_rot3 @ (thorax.c7_pt - thorax.ij_pt)
+        t8_g = tho_rot3 @ (thorax.t8_pt - thorax.ij_pt)
+
         # Run FABRIK
         solver = FabrikScapulaSolver(thorax.vertices, clavicle.sc_joint)
+
+        # DIAGNOSTIC: raw JCS-seed clearance, before ANY FABRIK correction
+        # (Steps 1-4 haven't run yet) — isolates whether left/right asymmetry
+        # downstream traces back to the seed itself (possible chirality issue
+        # in _build_jcs_matrix, which already uses a different formula per
+        # side) versus the correction search. If left's seed is dramatically
+        # worse than right's here, that's the JCS construction, not Step 4.
+        p_cp_seed, n_cp_seed = solver.get_surface_info(cp_seed)
+        cp_seed_clearance = np.dot(cp_seed - p_cp_seed, n_cp_seed)
+        subscap_seed_min = None
+        if subscap_seed is not None:
+            seed_dists = np.array([
+                np.dot(pt - solver.get_surface_info(pt)[0], solver.get_surface_info(pt)[1])
+                for pt in np.array(subscap_seed)
+            ])
+            subscap_seed_min = float(np.min(seed_dists))
+        subscap_msg = f"{subscap_seed_min:.1f}mm" if subscap_seed_min is not None else "n/a"
+        print(f"  FABRIK SEED DIAG ({self.side}): raw JCS seed (pre-correction) — "
+              f"CP_clearance={cp_seed_clearance:.1f}mm, subscap_d_min={subscap_msg}")
 
         # Validate anchor: must be on the correct side and within 120 mm of
         # the seed centroid in Y.  A bad anchor (wrong side or wildly too low)
@@ -172,6 +198,7 @@ class Scapula(BoneBase):
             'aa': aa_seed - ac_seed,
             'ts': ts_seed - ac_seed,
             'ai': ai_seed - ac_seed,
+            'cp': cp_seed - ac_seed,   # coracoid — Step 4 now penalizes it penetrating the thorax
         }
         # lms_local vectors are in world-offset space (world minus ac_seed), so the
         # solver's initial rotation must be identity — the local frame IS world.
@@ -183,16 +210,27 @@ class Scapula(BoneBase):
             ac_seed, centroid_seed, lms_local, None, p_proj,
             subscap_seed=subscap_seed,
             initial_rot=rot_seed,
+            c7=c7_g, t8=t8_g,
             max_step=fabrik_step,
         )
 
-        # SANITY CLAMP: FABRIK should never move AC more than 60 mm in Y or
-        # 80 mm total from the seed.  If it does, the chain has gone unstable
+        # SANITY CLAMP: FABRIK should never move AC more than 100 mm in Y or
+        # 130 mm total from the seed. If it does, the chain has gone unstable
         # (bad anchor / runaway bubble translation) and we fall back to the
         # JCS seed pose to avoid visible dislocation.
+        # Was 60/80mm — calibrated when Step 4 was rotation-only, so all AC
+        # movement came from Steps 1-3. Step 4 now includes a deliberate
+        # translation search (up to 40mm) as part of resolving genuine
+        # subscap-vs-coracoid conflicts, so the same cumulative movement that
+        # used to only mean "something went wrong" can now also mean "the
+        # optimizer found a real fix" — the old threshold was discarding
+        # correct, intentional results (observed: 81.6mm total for a result
+        # that brought coracoid clearance from -15.8mm to -3.8mm) along with
+        # actually-broken ones. Widened rather than removed — a genuinely
+        # unstable chain (bad anchor, runaway search) should still get caught.
         d_total = float(np.linalg.norm(ac_sol - ac_seed))
         d_y     = float(abs(ac_sol[1] - ac_seed[1]))
-        if d_y > 60.0 or d_total > 80.0:
+        if d_y > 100.0 or d_total > 130.0:
             print(
                 f"  FABRIK SANITY ({self.side}): ac_sol drifted too far "
                 f"(|Δy|={d_y:.1f}mm, |Δ|={d_total:.1f}mm). Falling back to seed pose."
@@ -217,12 +255,19 @@ class Scapula(BoneBase):
         self.origin    = ac_sol.copy()
         self.gh_joint_seed = _apply(gh_seed)
 
-        # --- CORACOID CLEARANCE CHECK ---
+        # --- CORACOID CLEARANCE CHECK (diagnostic only — NOT reliable) ---
+        # Step 4's coracoid penalty is disabled (see fabrik_solver.joint_cost,
+        # term 4B) because this check itself is unsound: _fit_thorax_surface
+        # only fits the posterior glide region, and the coracoid process sits
+        # ~30-34mm outside that fitted range on both sides (verified on the
+        # SSM_103 mean shape) — get_surface_info clips out-of-range queries
+        # to the nearest knot, so the number below is CP's distance from a
+        # clamped, not-actually-fitted surface value, not real bone-to-rib
+        # clearance. Left in only as a rough heads-up, not a pass/fail check.
         p_cp_surf, n_cp_surf = solver.get_surface_info(self.cp)
         cp_clearance = np.dot(self.cp - p_cp_surf, n_cp_surf)
-        print(f"  FABRIK: Coracoid (CAP) clearance from thorax = {cp_clearance:.1f}mm")
-        if cp_clearance < 0:
-            print("  FABRIK WARNING: Coracoid is PENETRATING the thorax!")
+        print(f"  FABRIK: Coracoid (CAP) clearance from thorax = {cp_clearance:.1f}mm "
+              f"(diagnostic only, surface not fitted this far out — see comment above)")
 
         if subscap_seed is not None:
             self.subscapularis = rot_sol.apply(subscap_seed - ac_seed) + ac_sol
