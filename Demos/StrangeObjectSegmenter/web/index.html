@@ -120,6 +120,7 @@
     .reveal-empty { position: absolute; inset: 0; display: flex; align-items: center;
         justify-content: center; color: var(--md-sys-color-on-surface-variant); font-size: 15px;
         pointer-events: none; }
+    .reveal-empty[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -1690,8 +1691,10 @@ async function setMode(mode) {
     } else {
         const fr = sceneFrame();
         if (mode === 'true' || mode === 'both') {
-            revealEmpty.hidden = false;
-            revealEmpty.textContent = `Loading the ${target.name} surface…`;
+            if (!(target.name in plyCache)) {
+                revealEmpty.hidden = false;
+                revealEmpty.textContent = `Loading the ${target.name} surface…`;
+            }
             try {
                 const ply = await fetchMesh(target.name);
                 if (curMode !== mode) return;            // switched away while loading
