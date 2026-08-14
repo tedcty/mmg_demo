@@ -121,11 +121,11 @@ EMG_TOP_N       = 10
 #   sfx_enabled        — propeller/whoosh/flap/countdown/score sound effects.
 #                        Off by default.
 #   music_enabled      — background music (title/game/countdown tunes).
-#                        Independent of sfx_enabled; also off by default.
+#                        Independent of sfx_enabled; on by default.
 EMG_CONFIG_FILE = os.path.join(BASE_DIR, 'emg_config.json')
 EMG_CONFIG_DEFAULT = {
     'tour_desktop': True, 'tour_reset_on_info': True,
-    'sfx_enabled': False, 'music_enabled': False,
+    'sfx_enabled': False, 'music_enabled': True,
 }
 _emg_config_lock = threading.Lock()
 _emg_lock       = threading.Lock()

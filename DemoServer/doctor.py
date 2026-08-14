@@ -42,7 +42,7 @@ SERVER_PY = os.path.join(HERE, "server.py")
 EMG_SCORES = os.path.join(HERE, "emg_scores.json")    # mirrors server.py EMG_SCORES_FILE
 EMG_CONFIG = os.path.join(HERE, "emg_config.json")    # mirrors server.py EMG_CONFIG_FILE
 EMG_CONFIG_DEFAULT = {"tour_desktop": True, "tour_reset_on_info": True,   # mirrors server.py
-                       "sfx_enabled": False, "music_enabled": False}
+                       "sfx_enabled": False, "music_enabled": True}
 
 # Other served demos (static — no build step) + their key assets.
 GUI_SRC   = os.path.join(GUI_DIR, "src")

@@ -587,12 +587,12 @@ function loadImg(name, src) {
 // Plain HTMLAudioElement playback — deliberately kept off the Web Audio
 // graph below (that AudioContext is the live EMG mic pipeline, torn down
 // and rebuilt on every input-mode change; SFX has no business on it).
-// Off by default; dashboard-controlled (Demo Control tab) via /api/emg/config.
-// Two independent flags: sfxEnabled covers propeller/whoosh/flap/countdown/
-// score sounds, musicEnabled covers the background music tracks — see
-// tickMusic() below for the latter.
+// Dashboard-controlled (Demo Control tab) via /api/emg/config. Two independent
+// flags: sfxEnabled covers propeller/whoosh/flap/countdown/score sounds (off
+// by default), musicEnabled covers the background music tracks (on by
+// default) — see tickMusic() below for the latter.
 let sfxEnabled = false;
-let musicEnabled = false;
+let musicEnabled = true;
 const SFX_PROPELLER_SRC = 'sounds/propellerwav-14433.mp3';
 const SFX_WHOOSH_SRC = 'sounds/simple-whoosh-382724.mp3';
 const SFX_FLAP_SRC = 'sounds/short-pigeon-wing-flap-14625.mp3';
@@ -2360,8 +2360,8 @@ function draw(t) {
         const r = await fetch('/api/emg/config');
         if (r.ok) emgConfig = await r.json();
     } catch (e) { /* server offline / standalone — use defaults below */ }
-    sfxEnabled = !!(emgConfig && emgConfig.sfx_enabled);       // off by default
-    musicEnabled = !!(emgConfig && emgConfig.music_enabled);   // off by default, independent of sfxEnabled
+    sfxEnabled = emgConfig ? !!emgConfig.sfx_enabled : false;      // off by default
+    musicEnabled = emgConfig ? !!emgConfig.music_enabled : true;   // on by default, independent of sfxEnabled
     if (sfxEnabled) warmSfxCache();   // only fetch the SFX files if they'll actually be used
 
     setKeyboardMode();   // default: keyboard control, no permissions needed
