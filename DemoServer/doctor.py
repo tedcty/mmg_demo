@@ -53,11 +53,46 @@ EMG_WEB   = os.path.join(REPO, "Demos", "Spikerbox-EMG", "web", "index.html")
 SEG_WEB   = os.path.join(REPO, "Demos", "StrangeObjectSegmenter", "web", "index.html")
 THREE_JS  = os.path.join(HERE, "resources", "vendor", "three", "three.module.js")
 
-HTTPS_PORT = 8443
-HTTP_PORT  = 8000
+HTTPS_PORT_DEFAULT = 8443
+HTTP_PORT_DEFAULT  = 8000
+HTTPS_PORT = HTTPS_PORT_DEFAULT
+HTTP_PORT  = HTTP_PORT_DEFAULT
+STATUS_FILE = os.path.join(HERE, "server_status.json")  # mirrors server.py STATUS_FILE
 
 # mDNS name the server advertises (keep in sync with server.py MDNS_FQDN).
 MDNS_FQDN = "mmg-demo.local"
+
+
+def refresh_ports():
+    """Sync HTTPS_PORT/HTTP_PORT to whatever server.py actually bound this
+    run — it falls back off the 8443/8000 defaults when those are taken by
+    another program (see _find_free_port in server.py). Resets to the
+    defaults when the status file is missing, unreadable, or stale (its pid
+    isn't actually listening on the port it claims), e.g. after a crash.
+    Call this before reading HTTPS_PORT/HTTP_PORT anywhere ports matter.
+    """
+    global HTTPS_PORT, HTTP_PORT
+    https_port, http_port = HTTPS_PORT_DEFAULT, HTTP_PORT_DEFAULT
+    try:
+        with open(STATUS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        HTTPS_PORT, HTTP_PORT = https_port, http_port
+        return
+
+    claimed_https, claimed_http = data.get("https_port"), data.get("http_port")
+    pid = data.get("pid")
+    claimed = [p for p in (claimed_https, claimed_http) if p]
+    listeners = find_listeners(claimed) if claimed else {}
+
+    def _live(port):
+        return bool(port) and any(hit[0] == pid for hit in listeners.get(port, ()))
+
+    if _live(claimed_https):
+        https_port = claimed_https
+    if _live(claimed_http):
+        http_port = claimed_http
+    HTTPS_PORT, HTTP_PORT = https_port, http_port
 
 
 # ---- demo build/health status -------------------------------------------
@@ -395,6 +430,11 @@ def main():
     print("=" * 54)
     print("MMG Demo Server — Doctor")
     print("=" * 54)
+
+    # Pick up whatever ports a running server actually bound (it may have
+    # fallen back off 8443/8000) so --reset/--restart target the real
+    # listener instead of silently no-op'ing against the unused defaults.
+    refresh_ports()
 
     if args.restart:
         restart(want_https)

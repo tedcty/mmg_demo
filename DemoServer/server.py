@@ -798,11 +798,44 @@ def _port_free(port):
         s.close()
 
 
+PORT_FALLBACK_RANGE = 20  # how many ports above the preferred one to try
+STATUS_FILE = os.path.join(BASE_DIR, 'server_status.json')  # actual bound ports, for dashboard.py/doctor.py
+
+
+def _find_free_port(preferred, avoid=()):
+    """Return `preferred` if it's free, otherwise the nearest free port above
+    it (skipping anything in `avoid`). None if nothing free turned up —
+    that's a genuine "give up", not just the preferred port being busy."""
+    for port in range(preferred, preferred + 1 + PORT_FALLBACK_RANGE):
+        if port in avoid or port > 65535:
+            continue
+        if _port_free(port):
+            return port
+    return None
+
+
+def _write_status_file(https_port, http_port, want_https):
+    """Record the ports actually bound this run so dashboard.py/doctor.py can
+    find the server even when a fallback port was used. Best-effort — a
+    missing/stale file just means those tools fall back to the defaults."""
+    try:
+        with open(STATUS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({
+                'pid': os.getpid(),
+                'https_port': https_port if want_https else None,
+                'http_port': http_port,
+                'started_at': time.time(),
+            }, f)
+    except OSError:
+        pass
+
+
 def _doctor(https_port, http_port, want_https):
     """Check the common things that break a run and print a clear report.
 
-    Returns False only on a fatal problem (the port we need is taken); warnings
-    don't stop the server.
+    Port conflicts are no longer fatal here — the real run resolves a
+    fallback port automatically (see _find_free_port in __main__). This
+    still reports the originally-requested ports' status for visibility.
     """
     print('\n' + '-' * 50)
     print('Preflight check')
@@ -847,11 +880,11 @@ def _doctor(https_port, http_port, want_https):
     if _port_free(main_port):
         line(f'port {main_port} free', 'OK')
     else:
-        line(f'port {main_port} free', 'FAIL',
-             'already in use — stop the other server (close its window) and retry')
-        fatal = True
+        line(f'port {main_port} free', 'INFO',
+             'in use by something else — will fall back to a nearby free port')
     if want_https and not _port_free(http_port):
-        line(f'port {http_port} (redirect)', 'WARN', 'in use → redirect will be skipped')
+        line(f'port {http_port} (redirect)', 'INFO',
+             'in use — redirect will fall back to a nearby free port')
 
     print('-' * 50)
     return not fatal
@@ -902,13 +935,39 @@ if __name__ == '__main__':
 
     ssl_context = None if args.http else _ensure_cert()
     ip = _lan_ip()
+    want_https = ssl_context is not None
 
-    ok = _doctor(args.https_port, args.http_port, ssl_context is not None)
+    ok = _doctor(args.https_port, args.http_port, want_https)
     if args.check:
         sys.exit(0 if ok else 1)
     if not ok:
         print('\nPreflight found a fatal problem (see FAIL above). Not starting.')
         sys.exit(1)
+
+    # Resolve the ports we'll actually bind: if the requested one is taken by
+    # something else (another program, not stopping-and-retrying our own
+    # server), fall back to the nearest free port instead of refusing to
+    # start. The redirect port tries to stay put and only moves if it
+    # genuinely has to — it's the one users/tablets are told to type in.
+    main_requested = args.https_port if want_https else args.http_port
+    main_port = _find_free_port(main_requested)
+    if main_port is None:
+        print(f'[FAIL] No free port found near {main_requested}. Not starting.')
+        sys.exit(1)
+    if main_port != main_requested:
+        print(f'[INFO] Port {main_requested} is busy — using {main_port} instead.')
+
+    if want_https:
+        https_port = main_port
+        http_port = _find_free_port(args.http_port, avoid={main_port})
+        if http_port is None:
+            print(f'[WARN] No free port found for the HTTP redirect near '
+                  f'{args.http_port} — redirect will be skipped.')
+        elif http_port != args.http_port:
+            print(f'[INFO] Redirect port {args.http_port} is busy — using {http_port} instead.')
+    else:
+        https_port = None
+        http_port = main_port
 
     if args.open:
         # Open the DIRECT url (https app port when TLS is on) rather than the
@@ -916,40 +975,40 @@ if __name__ == '__main__':
         # then hit the redirect port with TLS → ERR_SSL_PROTOCOL_ERROR. A short
         # delay lets the server bind first so the first load doesn't fail.
         import webbrowser
-        if ssl_context:
-            url = f'https://localhost:{args.https_port}'
-        else:
-            url = f'http://localhost:{args.http_port}'
+        url = f'https://localhost:{https_port}' if want_https else f'http://localhost:{http_port}'
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print()
+    _write_status_file(https_port, http_port, want_https)
 
-    if ssl_context:
-        # HTTPS app on 8443, with a plain-HTTP redirector on 8000 so that
-        # typing http://host:8000 auto-upgrades instead of resetting.
-        _start_http_redirect(args.http_port, args.https_port)
-        zc = _start_mdns(ip, args.https_port, https=True)
-        print(f'Serving HTTPS on 0.0.0.0:{args.https_port}')
-        print(f'  This device : https://localhost:{args.https_port}')
-        print(f'  Tablets     : https://{MDNS_FQDN}:{args.https_port}')
-        print(f'                https://{ip}:{args.https_port}  (if .local does not resolve)')
-        print(f'  (or just open http://<host>:{args.http_port} — it redirects to HTTPS)')
-        print(f'  New tablet? open http://{ip}:{args.http_port}/trust to install the cert.')
+    if want_https:
+        # HTTPS app on https_port, with a plain-HTTP redirector on http_port
+        # so that typing http://host:<port> auto-upgrades instead of resetting.
+        if http_port is not None:
+            _start_http_redirect(http_port, https_port)
+        zc = _start_mdns(ip, https_port, https=True)
+        print(f'Serving HTTPS on 0.0.0.0:{https_port}')
+        print(f'  This device : https://localhost:{https_port}')
+        print(f'  Tablets     : https://{MDNS_FQDN}:{https_port}')
+        print(f'                https://{ip}:{https_port}  (if .local does not resolve)')
+        if http_port is not None:
+            print(f'  (or just open http://<host>:{http_port} — it redirects to HTTPS)')
+            print(f'  New tablet? open http://{ip}:{http_port}/trust to install the cert.')
         print('=' * 50)
         try:
-            _serve(args.https_port, ssl_context)
+            _serve(https_port, ssl_context)
         finally:
             if zc:
                 zc.close()
     else:
-        zc = _start_mdns(ip, args.http_port, https=False)
-        print(f'Serving HTTP on 0.0.0.0:{args.http_port}  (no TLS — mic only on localhost)')
-        print(f'  This device : http://localhost:{args.http_port}')
-        print(f'  Tablets     : http://{MDNS_FQDN}:{args.http_port}  (mic blocked without HTTPS)')
-        print(f'                http://{ip}:{args.http_port}')
+        zc = _start_mdns(ip, http_port, https=False)
+        print(f'Serving HTTP on 0.0.0.0:{http_port}  (no TLS — mic only on localhost)')
+        print(f'  This device : http://localhost:{http_port}')
+        print(f'  Tablets     : http://{MDNS_FQDN}:{http_port}  (mic blocked without HTTPS)')
+        print(f'                http://{ip}:{http_port}')
         print('=' * 50)
         try:
-            _serve(args.http_port, None)
+            _serve(http_port, None)
         finally:
             if zc:
                 zc.close()

@@ -333,6 +333,11 @@ class StatusWorker(QtCore.QThread):
         self.done.emit(s)
 
     def _collect(self):
+        # Pick up whatever ports a running server actually bound (it may
+        # have fallen back off 8443/8000 if those were taken by something
+        # else) before every other doctor.HTTPS_PORT/HTTP_PORT read below —
+        # and, via the `done` signal, everywhere _apply_status reads them too.
+        doctor.refresh_ports()
         ports = [doctor.HTTPS_PORT, doctor.HTTP_PORT]
         # Only adopt our own server.py — not whatever else may hold the port.
         listeners = doctor.find_server_listeners(ports)
@@ -508,6 +513,9 @@ class Dashboard(QtWidgets.QWidget):
         self._restart_pending = False
         self._start_t0 = 0.0
         self._stop_t0 = 0.0
+        # Pick up a fallback port from an already-running server (adopted or
+        # left over from a previous launch) before the first status poll.
+        doctor.refresh_ports()
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = self._url
         self._tablet_ip_url = self._url
@@ -1080,7 +1088,7 @@ class Dashboard(QtWidgets.QWidget):
         self.restart_btn.clicked.connect(self.restart_server)
         self.reset_btn.clicked.connect(self.reset_ports)
         self.restart_btn.setToolTip("Restart the server (Ctrl+R)")
-        self.reset_btn.setToolTip("Force-free ports 8443 + 8000 if a server is stuck")
+        self.reset_btn.setToolTip("Force-free the demo server's ports if it's stuck")
         for b in (self.restart_btn, self.reset_btn):
             b.setProperty("ctl", "true")      # enlarged via QSS [ctl="true"]
             b.setMinimumHeight(54)            # uniform, easy-to-hit height
@@ -1324,15 +1332,17 @@ class Dashboard(QtWidgets.QWidget):
 
         if running:
             self.ports_lbl.setText(
-                f"{_dot(GREEN if s['port_https'] else RED)} 8443 &nbsp; "
-                f"{_dot(GREEN if s['port_http'] else RED)} 8000")
+                f"{_dot(GREEN if s['port_https'] else RED)} {doctor.HTTPS_PORT} &nbsp; "
+                f"{_dot(GREEN if s['port_http'] else RED)} {doctor.HTTP_PORT}")
             hok = s["https_code"] == 200
             rok = s["http_code"] in (301, 302)
             self.health_lbl.setText(
                 f"{_dot(GREEN if hok else RED)} https {s['https_code']} &nbsp; "
                 f"{_dot(GREEN if rok else RED)} http {s['http_code']}")
         else:
-            self.ports_lbl.setText(f'<span style="color:{GREY}">8443 / 8000 free</span>')
+            self.ports_lbl.setText(
+                f'<span style="color:{GREY}">{doctor.HTTPS_PORT_DEFAULT} / '
+                f'{doctor.HTTP_PORT_DEFAULT} free</span>')
             self.health_lbl.setText(f'<span style="color:{GREY}">—</span>')
 
         if not running:
@@ -1439,14 +1449,15 @@ class Dashboard(QtWidgets.QWidget):
 
     # ---- controls --------------------------------------------------------
     def start_server(self):
-        if doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
-            # Port is busy — but is it *our* server, or something else squatting?
-            if doctor.find_server_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
-                self._append_log("[dashboard] already running — skipping start")
-            else:
-                self._append_log("[dashboard] port 8443 is held by another process "
-                                 "(not the MMG server) — use Reset ports to free it")
+        if doctor.find_server_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT):
+            self._append_log("[dashboard] already running — skipping start")
             self.refresh(); return
+        # Some other process holding the default port is no longer a reason
+        # to block: server.py falls back to a nearby free port on its own.
+        if doctor.find_listeners([doctor.HTTPS_PORT_DEFAULT]).get(doctor.HTTPS_PORT_DEFAULT):
+            self._append_log(
+                f"[dashboard] port {doctor.HTTPS_PORT_DEFAULT} is held by another "
+                "process (not the MMG server) — falling back to a free port automatically")
         self._append_log("[dashboard] starting server…")
         self.alert.setVisible(False)          # clear any prior crash notice
         self._last_restart_t = time.time()    # baseline for keep-alive backoff reset
@@ -1569,7 +1580,7 @@ class Dashboard(QtWidgets.QWidget):
             self._kill_listeners(only_ours=False)
             QtCore.QTimer.singleShot(800, self.refresh)
             return
-        self._append_log("[dashboard] freeing ports 8443 + 8000…")
+        self._append_log(f"[dashboard] freeing ports {doctor.HTTPS_PORT} + {doctor.HTTP_PORT}…")
         self._kill_listeners(only_ours=False)
         self._begin_teardown("Resetting ports…",
                              "[dashboard] ports freed",

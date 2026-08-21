@@ -25,6 +25,10 @@ DemoServer/sessions/
 DemoServer/emg_scores.json
 DemoServer/emg_config.json
 
+# Actual ports bound this run (may differ from the 8443/8000 defaults if
+# those were busy) — read by dashboard.py/doctor.py, written by server.py
+DemoServer/server_status.json
+
 # DemoServer TLS cert + private key (auto-generated or dropped in locally)
 DemoServer/certs/
 
