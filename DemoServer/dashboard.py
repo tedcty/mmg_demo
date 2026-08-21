@@ -1689,8 +1689,11 @@ class Dashboard(QtWidgets.QWidget):
 
     # ---- power toggle (Start / Stop in one button) ----------------------
     def _running_now(self):
+        # find_server_listeners (not find_listeners) — an unrelated process
+        # squatting on the port must not look like "our server is running"
+        # and get stuck offering Stop with nothing of ours to actually stop.
         return bool(self.proc and self.proc.poll() is None) or \
-            bool(doctor.find_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT))
+            bool(doctor.find_server_listeners([doctor.HTTPS_PORT]).get(doctor.HTTPS_PORT))
 
     def _on_power_clicked(self):
         if self._running_now():
