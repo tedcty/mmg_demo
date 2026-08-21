@@ -431,9 +431,19 @@ class FabrikScapulaSolver:
             _, push_dir_raw = self.get_surface_info(cen_snap)
             push_dir = push_dir_raw.copy()
             push_dir[1] = 0.0
-            push_dir /= np.linalg.norm(push_dir)
-            slide_dir = np.cross(push_dir, np.array([0., 1., 0.]))
-            slide_dir /= np.linalg.norm(slide_dir)
+            push_len = np.linalg.norm(push_dir)
+            if push_len < 1e-6:
+                # Degenerate case: the surface normal points (near-)vertically
+                # here, so there's no meaningful horizontal push direction —
+                # disable the 2-DOF translation search for this joint instead
+                # of dividing by ~0 (mirrors the tilt_axis/roll_axis guards
+                # above).
+                push_dir = np.zeros(3)
+                slide_dir = np.zeros(3)
+            else:
+                push_dir /= push_len
+                slide_dir = np.cross(push_dir, np.array([0., 1., 0.]))
+                slide_dir /= np.linalg.norm(slide_dir)
 
             def _translate_and_rotate(t_push, t_slide, td, rd):
                 """One joint trial: move the centroid target by t_push*push_dir
