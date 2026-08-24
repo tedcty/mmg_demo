@@ -41,6 +41,7 @@ import os
 import re
 import sys
 import json
+import orjson
 import shutil
 import socket
 import argparse
@@ -659,17 +660,19 @@ def predict_pc():
         # pose (see _get_pc_model) instead of re-deriving placement — no
         # landmark/JCS/FABRIK work at all, so this is fast enough for
         # near-live slider dragging.
-        replay_shape(model['reference'], out_ply, bones_json)
+        #
+        # replay_shape returns the payload directly (it also writes
+        # bones_json to disk, but this route has no reason to read that
+        # back) — with the mesh math itself down to a few ms, the response's
+        # ~10MB of JSON was the biggest remaining cost. Serializing once with
+        # orjson instead of round-tripping through json.dump+json.load+
+        # Flask's stdlib-json jsonify() (three full passes over the same
+        # data) is what actually moved the needle.
+        payload = replay_shape(model['reference'], out_ply, bones_json)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-    if not os.path.exists(bones_json):
-        return jsonify({'error': 'Pipeline succeeded but bones.json was not written'}), 500
-
-    with open(bones_json) as f:
-        bones_data = json.load(f)
-
-    return jsonify(bones_data)
+    return Response(orjson.dumps(payload), mimetype='application/json')
 
 
 # ---------------------------------------------------------------------------

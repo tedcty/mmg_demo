@@ -11,7 +11,7 @@ Bone-specific logic lives in scripts/bones/:
 """
 import os
 import copy
-import json
+import orjson
 import vtk
 import numpy as np
 from ptb.util.data import VTKMeshUtl
@@ -99,8 +99,8 @@ def process_and_export(target_ply: str | None = None, fabrik_step: int = 1,
 
     payload = _build_payload(thorax, clav_r, clav_l, scap_r, scap_l, hum_r, hum_l)
 
-    with open(export_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f)
+    with open(export_path, 'wb') as f:
+        f.write(orjson.dumps(payload))
     print(f"Hierarchical Assembly Complete! File: {export_path}")
 
     return {
@@ -199,7 +199,7 @@ def _build_payload(thorax: Thorax, clav_r: Clavicle, clav_l: Clavicle,
     }
 
 
-def replay_shape(reference: dict, target_ply: str, export_path: str) -> None:
+def replay_shape(reference: dict, target_ply: str, export_path: str) -> dict:
     """Rebuild bones.json from target_ply's mesh shape while reusing every
     bone's already-solved ORIENTATION from a prior process_and_export()
     call — no landmark-derived rotation matrix or FABRIK search re-runs.
@@ -213,7 +213,11 @@ def replay_shape(reference: dict, target_ply: str, export_path: str) -> None:
     re-running FABRIK's Step-4 search are the only two things skipped — but
     it is a shape-only preview, not a substitute for a real solve.
 
-    `reference` is the dict returned by process_and_export().
+    `reference` is the dict returned by process_and_export(). Returns the
+    built payload dict directly (as well as writing it to export_path) so
+    an in-process caller (unlike predict_headless.py's subprocess callers,
+    which have no choice but to go through the file) doesn't have to pay a
+    second full JSON parse just to read back what it already has.
     """
     # Only the raw vertex positions are needed — face topology and the
     # per-bone vertex-id mapping are frozen (cached on each bone as
@@ -250,9 +254,11 @@ def replay_shape(reference: dict, target_ply: str, export_path: str) -> None:
 
     payload = _build_payload(thorax, clav_r, clav_l, scap_r, scap_l, hum_r, hum_l)
 
-    with open(export_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f)
+    with open(export_path, 'wb') as f:
+        f.write(orjson.dumps(payload))
     print(f"Shape replay complete! File: {export_path}")
+
+    return payload
 
 
 if __name__ == "__main__":

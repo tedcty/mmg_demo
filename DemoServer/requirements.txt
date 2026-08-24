@@ -9,6 +9,10 @@
 # --- Web server ---
 Flask==3.1.3
 flask-cors==6.0.2
+# Fast JSON (de)serialization for the PC-adjustment tab's large per-update
+# mesh payloads — stdlib json was the dominant cost once everything else
+# about that path got fast (see generate_isb_joints.replay_shape).
+orjson==3.12.0
 # HTTPS is on by default; cryptography generates the self-signed cert.
 cryptography
 # Advertises the server as mmg-demo.local over mDNS so tablets can use a fixed
