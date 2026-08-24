@@ -139,7 +139,19 @@ const PIPELINE_STAGES: { match: string; pct: number }[] = [
 ];
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
+// Kinematics tab is kept fully working but hidden from the toolbar while the
+// PC (Shape) tab is being debugged — flip this back to true to bring it back.
+const SHOW_KINEMATICS_TAB = false;
 const isKinematicVisible = ref(false);
+const isPcVisible = ref(false);
+// PC (Shape) adjustment — sliders over the shape model's principal-component
+// weights, so PC changes can be previewed independently of the anthropometric
+// PLSR prediction. Populated lazily from /api/pc_info the first time the tab
+// is opened, since loading the PCA model is as slow as a full prediction.
+const pcInfo = ref<{ n_modes: number; std: number[]; variance_pct: number[] } | null>(null);
+const pcWeights = ref<number[]>([]);
+const isPcLoading = ref(false);
+const isPcUpdating = ref(false);
 // Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
 // full-screen; toggled open with the hamburger button.
 const isPanelOpen = ref(false);
@@ -252,6 +264,10 @@ let isFirstLoad = true;
 const isViewingOriginal = ref(true);
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
 const hasPrediction = ref(false);
+// Distinguishes the two ways the non-mean mesh can be produced, so the
+// viewport label doesn't call a raw PC-weight exploration a "prediction".
+const isPcShapeMesh = ref(false);
+const predictedMeshLabel = computed(() => isPcShapeMesh.value ? 'Shape-Adjusted Mesh' : 'Predicted Patient-Specific Mesh');
 // Viewport model picker — the label doubles as a dropdown to switch models.
 const isModelListOpen = ref(false);
 const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
@@ -1150,6 +1166,7 @@ async function runPrediction() {
     statusMessage.value = "Prediction Complete! Rendering...";
     statusColor.value = "#48c774";
     hasPrediction.value = true;
+    isPcShapeMesh.value = false;
     isViewingOriginal.value = false;
     loadBones(boneData);
   } catch (error) {
@@ -1160,6 +1177,63 @@ async function runPrediction() {
   }
 
   isPredicting.value = false;
+}
+
+// Lazily loads PCA mode metadata (std dev + variance% per mode) the first
+// time the Shape (PCA) tab is opened, then initializes one weight slider per
+// mode at 0 (= mean shape). Cached in pcInfo so re-opening the tab is instant.
+async function fetchPcInfo() {
+  if (pcInfo.value || isPcLoading.value) return;
+  isPcLoading.value = true;
+  statusMessage.value = "Loading shape model (first time can take ~30s)...";
+  statusColor.value = "#ffffff";
+  try {
+    const response = await fetch("/api/pc_info");
+    if (!response.ok) throw await response.text();
+    pcInfo.value = await response.json();
+    pcWeights.value = new Array(pcInfo.value!.n_modes).fill(0);
+    statusMessage.value = "Shape model loaded.";
+    statusColor.value = "#48c774";
+  } catch (error) {
+    statusMessage.value = "Failed to load shape model: " + error;
+    statusColor.value = "#f14668";
+  }
+  isPcLoading.value = false;
+}
+
+// Sends the current PC weights to the backend for reconstruction. Bound to
+// slider @change (fires on release, not per drag-pixel) so dragging doesn't
+// flood the backend with subprocess spawns.
+async function updatePcShape() {
+  if (isPcUpdating.value) return;
+  isPcUpdating.value = true;
+  statusMessage.value = "Updating shape...";
+  statusColor.value = "#ffffff";
+  try {
+    const response = await fetch("/api/predict_pc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, pc_weights: pcWeights.value }),
+    });
+    if (!response.ok) throw await response.text();
+    const boneData = await response.json();
+    statusMessage.value = "Shape updated.";
+    statusColor.value = "#48c774";
+    hasPrediction.value = true;
+    isPcShapeMesh.value = true;
+    isViewingOriginal.value = false;
+    loadBones(boneData);
+  } catch (error) {
+    statusMessage.value = "Shape update failed: " + error;
+    statusColor.value = "#f14668";
+  }
+  isPcUpdating.value = false;
+}
+
+function resetPcShape() {
+  if (!pcInfo.value) return;
+  pcWeights.value = new Array(pcInfo.value.n_modes).fill(0);
+  updatePcShape();
 }
 
 async function saveReport() {
@@ -1225,6 +1299,7 @@ async function runFabrikStep() {
     statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
     hasPrediction.value = true;
+    isPcShapeMesh.value = false;
     isViewingOriginal.value = false;
     loadBones(boneData);
   } catch (error) {
@@ -1266,13 +1341,16 @@ function selectModel(viewOriginal: boolean) {
            <div v-show="!isPanelOpen" class="viewport-tools">
               <!-- Blender-style axis gizmo — click an axis to snap the view. -->
               <canvas ref="gizmoCanvas" class="view-gizmo" title="Click an axis to orient the view"></canvas>
-              <button @click="isPanelOpen = true; isKinematicVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
+              <button @click="isPanelOpen = true; isKinematicVisible = false; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
               </button>
-              <button @click="isPanelOpen = true; isKinematicVisible = true; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
+              <button v-if="SHOW_KINEMATICS_TAB" @click="isPanelOpen = true; isKinematicVisible = true; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
               </button>
-              <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
+              <button @click="isPanelOpen = true; isPcVisible = true; isKinematicVisible = false; isSettingsVisible = false; fetchPcInfo()" class="tool-btn" title="Shape (PCA)" aria-label="Shape (PCA)">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"></line><circle cx="14" cy="6" r="2" fill="currentColor"></circle><line x1="4" y1="12" x2="20" y2="12"></line><circle cx="8" cy="12" r="2" fill="currentColor"></circle><line x1="4" y1="18" x2="20" y2="18"></line><circle cx="16" cy="18" r="2" fill="currentColor"></circle></svg>
+              </button>
+              <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false; isPcVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
               </button>
            </div>
@@ -1282,7 +1360,7 @@ function selectModel(viewOriginal: boolean) {
               <button class="viewport-label" :class="{ open: isModelListOpen }" @click="isModelListOpen = !isModelListOpen" title="Switch model">
                  <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
                  <span class="label-text">
-                   {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? 'Predicted Patient-Specific Mesh' : 'Initial Model') }}
+                   {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? predictedMeshLabel : 'Initial Model') }}
                  </span>
                  <svg class="chevron" :class="{ flipped: isModelListOpen }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
               </button>
@@ -1293,7 +1371,7 @@ function selectModel(viewOriginal: boolean) {
                  </button>
                  <button v-if="hasPrediction" class="model-option" :class="{ active: !isViewingOriginal }" @click="selectModel(false)">
                     <div class="status-indicator active"></div>
-                    <span>Predicted Patient-Specific Mesh</span>
+                    <span>{{ predictedMeshLabel }}</span>
                  </button>
                  <div v-else class="model-empty">Run a prediction to add a patient-specific mesh.</div>
               </div>
@@ -1312,7 +1390,7 @@ function selectModel(viewOriginal: boolean) {
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
-              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : 'Shoulder Predictor') }}</h2>
+              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : (isPcVisible ? 'Shape (PCA) Adjustment' : 'Shoulder Predictor')) }}</h2>
               <div class="header-actions">
                 <button @click="isPanelOpen = false" class="icon-btn" title="Close panel" aria-label="Close panel">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -1484,6 +1562,39 @@ function selectModel(viewOriginal: boolean) {
               </div>
 
               <button @click="isKinematicVisible = false" class="secondary-btn">Close</button>
+            </div>
+
+            <div v-else-if="isPcVisible" class="settings-view animate-in kinematic-scroll">
+              <div class="card transparent-card">
+                <h3 style="color: #a06cd5">🧬 Shape (PCA) Adjustment</h3>
+                <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — joint pose is not recalculated live.</p>
+
+                <div v-if="isPcLoading" class="hint">Loading shape model (first time can take ~30s)...</div>
+                <div v-else-if="!pcInfo" class="hint">Failed to load shape model. Re-open this tab to retry.</div>
+
+                <div v-else class="sub-group">
+                  <div v-for="(weight, i) in pcWeights" :key="i" class="slider-row">
+                    <label><span>PC{{ i + 1 }} ({{ pcInfo.variance_pct[i].toFixed(1) }}% variance)</span> <span>{{ weight.toFixed(2) }}</span></label>
+                    <input
+                      type="range"
+                      v-model.number="pcWeights[i]"
+                      :min="-3 * pcInfo.std[i]"
+                      :max="3 * pcInfo.std[i]"
+                      :step="pcInfo.std[i] / 50"
+                      @change="updatePcShape"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="footer-actions">
+                <button :disabled="!pcInfo || isPcUpdating" @click="resetPcShape" class="run-btn step-btn">
+                  <span v-if="!isPcUpdating">↺ Reset to Mean Shape</span>
+                  <span v-else>🔄 Updating...</span>
+                </button>
+              </div>
+
+              <button @click="isPcVisible = false" class="secondary-btn">Close</button>
             </div>
 
             <div v-else class="main-view animate-in">
