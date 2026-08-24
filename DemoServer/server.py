@@ -474,10 +474,21 @@ def predict():
     _cleanup_old_sessions()
 
     sess_dir   = _session_dir(sid)
-    q          = _get_queue(sid)
     out_ply    = os.path.join(sess_dir, 'predicted_model.ply')
     bones_json = os.path.join(sess_dir, 'bones.json')
 
+    if data.get('use_full_solve'):
+        return _predict_full_solve(data, sid, out_ply, bones_json)
+    return _predict_fast(data, out_ply, bones_json)
+
+
+def _predict_full_solve(data, sid, out_ply, bones_json):
+    """Settings > "Solve full per-person joint pose" path: the original
+    subprocess-based pipeline, deriving THIS person's own joint orientation
+    from their own predicted anatomy via a fresh FABRIK search. Slower
+    (~10-30s heavy imports + up to ~90s search) but more individualized than
+    _predict_fast's reused mean-model orientation."""
+    q = _get_queue(sid)
     args = {
         'sex':             str(data.get('sex', '0')),
         'age':             str(data.get('age', '0')),
@@ -533,6 +544,39 @@ def predict():
         bones_data = json.load(f)
 
     return jsonify(bones_data)
+
+
+def _predict_fast(data, out_ply, bones_json):
+    """Default prediction path: reuses the reference skeleton's frozen
+    joint ORIENTATION (see _get_pc_model / generate_isb_joints.replay_shape)
+    instead of running FABRIK for this person — same mechanism the Shape
+    (PCA) tab uses. Joint *positions* still come from this person's own
+    predicted anatomy (fresh landmarks); only the orientation is shared
+    with the mean model. No FABRIK search, so this is fast."""
+    try:
+        import pc_shape
+        from ptb.util.data import VTKMeshUtl
+        from generate_isb_joints import replay_shape
+
+        with _pc_lock:
+            model = _get_pc_model()
+
+        case_data = [
+            float(data.get('sex', 0)), float(data.get('age', 0)), float(data.get('height', 0)),
+            float(data.get('weight', 0)), float(data.get('r_clav_len', 0)),
+            float(data.get('r_hum_len', 0)), float(data.get('r_hum_epi_width', 0)),
+        ]
+        pred_weights = pc_shape.predict_weights_from_anthro(model['coupled_pcs'], ANTHRO_CSV, case_data)
+
+        mesh = pc_shape.reconstruct_mesh(
+            model['coupled_pcs'], model['mesh_data'], model['mean_verts'], pred_weights,
+        )
+        VTKMeshUtl.write(out_ply, mesh)
+        payload = replay_shape(model['reference'], out_ply, bones_json)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return Response(orjson.dumps(payload), mimetype='application/json')
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import * as THREE from 'three';
 
 // Unique ID for this browser tab — isolates predictions and progress from other sessions.
@@ -169,6 +169,14 @@ const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
 // reloads; only an explicit 'dark' opts out of light.
 const isLightMode = ref(localStorage.getItem('ssm_theme') !== 'dark');
 const SCENE_BG = { light: 0xe8ecf4, dark: 0x0c0c48 };
+
+// Off (default) = fast prediction: reuses the mean model's joint
+// orientation, only joint *positions* are re-derived from this person's
+// anatomy (see server.py's _predict_fast). On = the original full per-person
+// FABRIK solve — slower but derives this person's own joint orientation
+// too. Persisted so the choice survives reloads.
+const useFullJointSolve = ref(localStorage.getItem('ssm_full_joint_solve') === '1');
+watch(useFullJointSolve, (v) => localStorage.setItem('ssm_full_joint_solve', v ? '1' : '0'));
 
 function toggleTheme() {
   isLightMode.value = !isLightMode.value;
@@ -1194,7 +1202,8 @@ async function runPrediction() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        fabrik_step: 4
+        fabrik_step: 4,
+        use_full_solve: useFullJointSolve.value,
       })
     });
 
@@ -1341,7 +1350,10 @@ async function runFabrikStep() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        fabrik_step: 4
+        fabrik_step: 4,
+        // Always a real solve — this dev-only button exists specifically to
+        // test FABRIK, regardless of the fast-prediction Settings toggle.
+        use_full_solve: true,
       })
     });
 
@@ -1491,6 +1503,15 @@ function selectModel(mode: ViewMode) {
                   <input type="checkbox" v-model="isMusclePointsEnabled" @change="loadBones()" id="musclePointsToggle" />
                   <label for="musclePointsToggle">Show Muscle Points</label>
                 </div>
+              </div>
+              <div class="card transparent-card">
+                <h3 style="color: #00caef">🦴 Prediction Accuracy</h3>
+                <p class="hint">Choose how the anthropometric prediction's joint pose is solved.</p>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="useFullJointSolve" id="fullSolveToggle" />
+                  <label for="fullSolveToggle">Solve full per-person joint pose (slower)</label>
+                </div>
+                <p class="hint" style="margin-top: 6px;">Off (default): fast — reuses the mean model's joint orientation, only joint positions are personalized. On: derives this person's own joint orientation too, via a full solve that can take significantly longer.</p>
               </div>
               <div class="card transparent-card">
                 <h3 style="color: #3d49d8">📂 Backend Path Configuration</h3>

@@ -8,7 +8,9 @@ cost of importing gias3/vtk each time.
 """
 import os
 import numpy as np
+import pandas as pd
 from gias3.learning import PCA
+from sklearn.cross_decomposition import PLSRegression
 import vtk
 from ptb.util.data import VTKMeshUtl
 
@@ -58,6 +60,30 @@ def compute_pc_info(coupled_pcs, max_modes=10):
         "std": [float(np.std(Y[:, i])) for i in range(n)],
         "variance_pct": [float(variances[i] / total_var * 100) for i in range(n)],
     }
+
+
+def predict_weights_from_anthro(coupled_pcs, anthro_path, case_data):
+    """PLSR-predict PC weights from anthropometric measurements. `case_data`
+    is [sex, age, height, weight, r_clav_len, r_hum_len, r_hum_epi_width].
+    Shared by predict_headless.py (the full-solve subprocess path) and
+    server.py's in-process fast-prediction path, so both train the exact
+    same regression the exact same way."""
+    P = pd.read_csv(anthro_path, header=None)
+    # Assuming the CSV structure is fixed as per the project requirements
+    predictors_train = P.iloc[:, [0, 1, 2, 3, 4, 5, 8, 9]].copy()
+    predictors_train.drop([0], axis=0, inplace=True)
+    predictors_train.drop([0], axis=1, inplace=True)
+
+    # projectedWeights might be (n_samples, n_modes). We need (n_samples, n_modes) for fit.
+    Y = coupled_pcs.projectedWeights
+    if Y.shape[0] != predictors_train.shape[0]:
+        Y = Y.T
+
+    # n_components must be <= min(n_samples, n_features)
+    n_comp = min(10, Y.shape[1], predictors_train.shape[1], predictors_train.shape[0])
+    pls2 = PLSRegression(n_components=n_comp, scale=True)
+    pls2.fit(predictors_train, Y)
+    return pls2.predict([case_data])[0]
 
 
 def reconstruct_mesh(coupled_pcs, mesh_data, mean_mesh_verts, weights):

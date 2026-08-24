@@ -3,10 +3,8 @@ import sys
 # and emit nothing, which otherwise leaves the progress bar frozen at the start.
 print("STATUS|Loading libraries...", flush=True)
 import json
-import pandas as pd
-from sklearn.cross_decomposition import PLSRegression
 from ptb.util.data import VTKMeshUtl
-from pc_shape import load_pca_model, load_mean_mesh, reconstruct_mesh
+from pc_shape import load_pca_model, load_mean_mesh, reconstruct_mesh, predict_weights_from_anthro
 
 
 def run_prediction(json_args_str):
@@ -27,30 +25,10 @@ def run_prediction(json_args_str):
 
         print("STATUS|Starting PLSR training...", flush=True)
 
-        P = pd.read_csv(args['anthro_path'], header=None)
-        # Assuming the CSV structure is fixed as per the project requirements
-        predictors_train = P.iloc[:, [0, 1, 2, 3, 4, 5, 8, 9]].copy()
-        predictors_train.drop([0], axis=0, inplace=True)
-        predictors_train.drop([0], axis=1, inplace=True)
-
         print("STATUS|Loading PCA shape model...", flush=True)
         coupled_pcs = load_pca_model(args['ssm_path'])
 
-        # projectedWeights might be (n_samples, n_modes). We need (n_samples, n_modes) for fit.
-        # Check orientation
-        Y = coupled_pcs.projectedWeights
-        if Y.shape[0] != predictors_train.shape[0]:
-            Y = Y.T
-
-        print(f"STATUS|Running PLSR with {Y.shape[1]} modes...", flush=True)
-        # n_components must be <= min(n_samples, n_features)
-        n_comp = min(10, Y.shape[1], predictors_train.shape[1], predictors_train.shape[0])
-        pls2 = PLSRegression(n_components=n_comp, scale=True)
-        pls2.fit(predictors_train, Y)
-        pred_weights = pls2.predict([case_data])[0]
-
-        # Use the PCA object's weights (eigenvalues) for normalization if needed
-        # In this workflow, pred_weights are the absolute weights
+        pred_weights = predict_weights_from_anthro(coupled_pcs, args['anthro_path'], case_data)
 
         print("STATUS|Reconstructing 3D Mesh...", flush=True)
         mesh_data, mean_mesh_verts = load_mean_mesh(args['ssm_path'])
