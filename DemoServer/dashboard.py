@@ -453,6 +453,25 @@ class DoctorWorker(QtCore.QThread):
         self.done.emit(buf.getvalue())
 
 
+class JointAnglesWorker(QtCore.QThread):
+    """Fetches /api/pc_reference_angles so the Demo Control tab can show it
+    without blocking the UI thread. `done` always fires — same reasoning as
+    StatusWorker.run's comment above."""
+    done = QtCore.Signal(dict)
+
+    def run(self):
+        # Generous timeout: /api/pc_reference_angles blocks on the PC model's
+        # one-time warm-up (up to ~1-2 min) if it hasn't finished yet — this
+        # runs off the UI thread, so waiting it out here is fine.
+        code, body, err = doctor._get_json(
+            f"https://localhost:{doctor.HTTPS_PORT}/api/pc_reference_angles", timeout=110)
+        if code == 200 and body and "error" not in body:
+            self.done.emit({"ok": True, "data": body})
+        else:
+            detail = (body or {}).get("error") if isinstance(body, dict) else None
+            self.done.emit({"ok": False, "error": detail or err or f"HTTP {code}"})
+
+
 class RebuildWorker(QtCore.QThread):
     """Runs `npx vite build --base /ssm/` in the TauriGUI dir, streaming output."""
     line = QtCore.Signal(str)
@@ -507,6 +526,7 @@ class Dashboard(QtWidgets.QWidget):
         self.setMinimumSize(880, 560)         # fits small 13" portable screens
         self.proc = None
         self._polling = False
+        self._angles_polling = False
         self._starting = False
         self._stopping = False
         self._stop_gave_up = False            # UI stopped waiting, but exit still expected
@@ -980,6 +1000,28 @@ class Dashboard(QtWidgets.QWidget):
             lambda checked: self._set_emg_config_flag("tour_reset_on_info", checked, "info-popup tour re-run"))
         el.addWidget(self.tour_info_chk)
 
+        angles = QtWidgets.QGroupBox("SSM shoulder model — joint angles"); _shadow(angles)
+        al = QtWidgets.QVBoxLayout(angles)
+        anote = QtWidgets.QLabel(
+            "Current SC/AC/GH joint angles for the reference (mean) shape — the "
+            "left side is forced to match the right side's SC and GH angles; AC "
+            "is a consequence of those two, not independently set, so it's "
+            "close but not forced identical.")
+        anote.setWordWrap(True)
+        al.addWidget(anote)
+        arow = QtWidgets.QHBoxLayout()
+        self.angles_refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.angles_refresh_btn.clicked.connect(self.refresh_joint_angles)
+        arow.addWidget(self.angles_refresh_btn); arow.addStretch(1)
+        al.addLayout(arow)
+        self.angles_out = QtWidgets.QPlainTextEdit()
+        self.angles_out.setObjectName("docout")
+        self.angles_out.setReadOnly(True)
+        self.angles_out.setPlaceholderText("Click Refresh (server must be running)…")
+        self.angles_out.setFixedHeight(120)
+        al.addWidget(self.angles_out)
+
+        v.addWidget(angles)
         v.addWidget(emg)
         v.addStretch(1)
         return w
@@ -1268,6 +1310,12 @@ class Dashboard(QtWidgets.QWidget):
             # a fresh run appeared → (re)arm crash detection
             self._exit_handled = False
             self._last_rc = None
+            # Also try showing current joint angles without the operator
+            # needing to click Refresh. The PC model can take up to ~1-2 min
+            # to warm up after startup (first request blocks on it), so this
+            # may time out right after a fresh start — the Refresh button
+            # covers that case, this is just a best-effort convenience.
+            self.refresh_joint_angles()
         if running and self.proc is None and not self._starting:
             pid = s["pids"][0] if s.get("pids") else None
             if pid and pid != self._adopted_pid:
@@ -1596,6 +1644,41 @@ class Dashboard(QtWidgets.QWidget):
     def _doctor_done(self, text):
         self.docout.setPlainText(text)
         self.doctor_btn.setEnabled(True)
+
+    def refresh_joint_angles(self):
+        if self._angles_polling:
+            return
+        if not self._running_now():
+            self.angles_out.setPlainText("Server isn't running — start it to see joint angles.")
+            return
+        self._angles_polling = True
+        self.angles_refresh_btn.setEnabled(False)
+        self.angles_worker = JointAnglesWorker()
+        self.angles_worker.done.connect(self._apply_joint_angles)
+        self.angles_worker.start()
+
+    def _apply_joint_angles(self, result):
+        self._angles_polling = False
+        self.angles_refresh_btn.setEnabled(True)
+        if not result.get("ok"):
+            self.angles_out.setPlainText(f"Failed to fetch joint angles: {result.get('error')}")
+            return
+        data = result["data"]
+
+        def side_lines(s):
+            sc, ac, gh = s["sc"], s["ac"], s["gh"]
+            return [
+                f"{sc['elevation']:6.1f}° {sc['abduction']:6.1f}° {sc['upward_rot']:6.1f}°",
+                f"{ac['internal']:6.1f}° {ac['upward']:6.1f}° {ac['posterior']:6.1f}°",
+                f"{gh['flexion']:6.1f}° {gh['abduction']:6.1f}° {gh['internal']:6.1f}°",
+            ]
+
+        r_lines, l_lines = side_lines(data["right"]), side_lines(data["left"])
+        labels = ["SC  elev/abd/upw", "AC  int/upw/post", "GH  flex/abd/int"]
+        lines = [f"{'':18s}{'Right':>22s}{'Left':>22s}"]
+        for label, r_l, l_l in zip(labels, r_lines, l_lines):
+            lines.append(f"{label:18s}{r_l:>22s}{l_l:>22s}")
+        self.angles_out.setPlainText("\n".join(lines))
 
     def _clear_emg_scores(self):
         r = QtWidgets.QMessageBox.question(

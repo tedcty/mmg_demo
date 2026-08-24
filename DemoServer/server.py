@@ -689,6 +689,25 @@ def pc_info():
         return jsonify(model['info'])
 
 
+@app.route('/api/pc_reference_angles')
+def pc_reference_angles():
+    """Current SC/AC/GH joint angles (both sides) for the reference/mean
+    shape — see generate_isb_joints.compute_joint_angles. Read by the
+    dashboard's "Demo control" tab so operators can check the left/right
+    mirroring fix without an ad-hoc script."""
+    with _pc_lock:
+        try:
+            model = _get_pc_model()
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        bones = model['reference']['bones']
+        from generate_isb_joints import compute_joint_angles
+        return jsonify({
+            'right': compute_joint_angles(bones['clav_r']._sync_rot, bones['scap_r'].solved_rot, 'right'),
+            'left':  compute_joint_angles(bones['clav_l']._sync_rot, bones['scap_l'].solved_rot, 'left'),
+        })
+
+
 _pc_client_cache = None  # {'meta': {...}, 'mesh_bytes': b'...'}
 
 

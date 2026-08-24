@@ -334,6 +334,29 @@ def _get(url, timeout=4, method="GET", json_body=None):
         return None, type(e).__name__ + ": " + str(e)
 
 
+def _get_json(url, timeout=4):
+    """Like _get, but for GET routes whose response body matters — returns
+    (status_code, parsed_json_or_None, error_str). status_code None and
+    error_str set on transport failure; parsed_json None if the body
+    wasn't valid JSON even though the request itself succeeded."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ctx))
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with opener.open(req, timeout=timeout) as r:
+            body = r.read()
+            try:
+                return r.status, json.loads(body), ""
+            except json.JSONDecodeError as e:
+                return r.status, None, f"invalid JSON response: {e}"
+    except urllib.error.HTTPError as e:
+        return e.code, None, ""
+    except Exception as e:
+        return None, None, type(e).__name__ + ": " + str(e)
+
+
 # ---- commands ------------------------------------------------------------
 def diagnose(want_https=True):
     ip = lan_ip()
