@@ -73,9 +73,14 @@ class Humerus(BoneBase):
         self.gh_joint  = sca_gh_world.copy()
         self.origin    = sca_gh_world.copy()
 
-        # Store for replay
-        self._ij    = ij
-        self._h_mat = h_mat
+        # Store for replay. _gh_offset is the frozen (reference-shape)
+        # version — replay() computes a fresh one each call instead of using
+        # this — kept only for the PC-tab's client-side live-preview export
+        # (server.py's /api/pc_client_meta), which intentionally always uses
+        # the frozen transform.
+        self._ij        = ij
+        self._h_mat     = h_mat
+        self._gh_offset = gh_offset
         return self
 
     def replay(self, case_arr: np.ndarray, maps_dir: str, scapula: Scapula) -> "Humerus":

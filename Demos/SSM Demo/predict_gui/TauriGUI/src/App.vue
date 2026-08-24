@@ -159,6 +159,70 @@ const PC_SD_RANGE = 2;
 const isPcLoading = ref(false);
 const isPcUpdating = ref(false);
 const isPcInfoOpen = ref(false); // "About this tab" popup, toggled by the info-icon button
+
+// Client-side live-preview data (see fetchPcClientData/applyPcLiveFromSd
+// below) — the frozen per-bone rigid-transform recipe plus the raw
+// mean-mesh + PC-mode vertex arrays needed to reconstruct and skin the mesh
+// entirely in the browser, so slider *dragging* is instant with no network
+// round trip. Held as plain module-level variables (not ref()s) since these
+// arrays are large (~16MB) and never need Vue's reactivity — only read
+// inside applyPcLiveFromSd, never rendered.
+interface PcBoneMetaCommon {
+  validIds: number[];
+  indices: number[];
+  origin: [number, number, number];
+  ij: [number, number, number];
+  mat: number[]; // 16 floats, column-major — matches THREE.Matrix4.fromArray
+}
+// Vertex-id lists used to derive fresh joint centers each frame (see
+// computeLiveJoints below) — the same landmark/sphere-fit CSVs
+// bones/base_bone.py's get_landmark/get_sphere_center read server-side.
+interface PcThoraxLandmarks { scRSphereIds: number[]; scLSphereIds: number[]; }
+interface PcClavicleLandmarks { acIds: number[]; scSphereIds: number[]; }
+interface PcScapulaLandmarks { aaIds: number[]; tsIds: number[]; aiIds: number[]; cpIds: number[]; ghSphereIds: number[]; }
+interface PcHumerusLandmarks { ghSphereIds: number[]; }
+
+interface PcThoraxMeta extends PcBoneMetaCommon { kind: 'thorax'; landmarks: PcThoraxLandmarks; }
+interface PcClavicleMeta extends PcBoneMetaCommon {
+  kind: 'clavicle';
+  offset: [number, number, number];
+  // Frozen fallback values (see computeLiveJoints, which recomputes these
+  // fresh from `landmarks` every frame instead of using them directly) —
+  // sync_to_scapula's rotation (snaps the AC end onto the scapula's solved
+  // AC joint), applied around scJoint after the base seed transform below.
+  scJoint: [number, number, number];
+  syncQuat: [number, number, number, number];
+  landmarks: PcClavicleLandmarks;
+}
+interface PcHumerusMeta extends PcBoneMetaCommon { kind: 'humerus'; offset: [number, number, number]; landmarks: PcHumerusLandmarks; }
+interface PcScapulaMeta extends PcBoneMetaCommon {
+  kind: 'scapula';
+  offset: [number, number, number];
+  seed: [number, number, number];
+  quat: [number, number, number, number];
+  solvedPos: [number, number, number];
+  landmarks: PcScapulaLandmarks;
+}
+type PcBoneMeta = PcThoraxMeta | PcClavicleMeta | PcHumerusMeta | PcScapulaMeta;
+interface PcClientMeta {
+  nVerts: number;
+  nModes: number;
+  pcStd: number[];
+  bones: {
+    thorax: PcThoraxMeta;
+    clav_r: PcClavicleMeta; clav_l: PcClavicleMeta;
+    scap_r: PcScapulaMeta; scap_l: PcScapulaMeta;
+    hum_r: PcHumerusMeta; hum_l: PcHumerusMeta;
+  };
+}
+let pcClientMeta: PcClientMeta | null = null;
+let pcClientMeanVerts: Float32Array | null = null;
+let pcClientModes: Float32Array | null = null; // n_modes blocks of n_verts*3 floats, mode-major
+let pcClientLoading = false;
+// Set by onPcSliderInput, consumed once per rendered frame by the animate()
+// loop — see the comment there for why this indirection exists (coalescing
+// many 'input' events per frame down to one recompute).
+let pcLiveDirty = false;
 // Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
 // full-screen; toggled open with the hamburger button.
 const isPanelOpen = ref(false);
@@ -840,6 +904,9 @@ onMounted(async () => {
   // done or well underway. Fire-and-forget; fetchPcInfo already guards
   // against duplicate/overlapping calls.
   fetchPcInfo();
+  // Also pre-warm the client-side live-preview data (~16MB one-time
+  // download) so it's likely ready by the time the user starts dragging.
+  fetchPcClientData();
 
   // Stream progress messages from the Python pipeline via SSE
   const evtSource = new EventSource(`/api/progress?session=${sessionId}`);
@@ -1141,6 +1208,16 @@ onMounted(async () => {
     const animate = () => {
       requestAnimationFrame(animate);
       const delta = clock.getDelta();
+      // Apply at most once per rendered frame (~60fps) rather than once per
+      // 'input' DOM event — pointer input events can fire far faster than
+      // the screen redraws, and each application recomputes vertex normals
+      // across ~107k vertices (7 bones); doing that many times more often
+      // than a frame can even show it was the actual cause of drag lag,
+      // not the client-vs-backend split itself (see onPcSliderInput).
+      if (pcLiveDirty) {
+        pcLiveDirty = false;
+        applyPcLiveFromSd(pcSd.value);
+      }
       updateKinematicChain('right');
       updateKinematicChain('left');
       if (viewHelper && viewHelper.animating) viewHelper.update(delta);
@@ -1245,6 +1322,344 @@ async function fetchPcInfo() {
   isPcLoading.value = false;
 }
 
+// One-time ~16MB fetch (mean mesh + 10 PC modes, float32) that makes fully
+// client-side live mesh preview possible — see applyPcLiveFromSd below.
+// Fire-and-forget background pre-warm, same pattern as fetchPcInfo; guarded
+// against duplicate/overlapping calls. If this hasn't finished (or failed)
+// by the time the user starts dragging, onPcSliderInput falls back to the
+// original debounced-backend path, so there's no hard dependency on it.
+async function fetchPcClientData() {
+  if (pcClientMeta || pcClientLoading) return;
+  pcClientLoading = true;
+  try {
+    const metaResp = await fetch("/api/pc_client_meta");
+    if (!metaResp.ok) throw await metaResp.text();
+    const meta = (await metaResp.json()) as PcClientMeta;
+
+    const meshResp = await fetch("/api/pc_client_mesh");
+    if (!meshResp.ok) throw await meshResp.text();
+    const floats = new Float32Array(await meshResp.arrayBuffer());
+    const n3 = meta.nVerts * 3;
+    pcClientMeanVerts = floats.subarray(0, n3);
+    pcClientModes = floats.subarray(n3);
+    pcClientMeta = meta;
+  } catch (error) {
+    console.error("Failed to load PC client-side live-preview data (slider drag will fall back to the backend path):", error);
+  }
+  pcClientLoading = false;
+}
+
+// mean_verts + Σ weight_i · mode_i, reused across calls via one scratch
+// buffer to avoid allocating ~1.5MB on every slider tick.
+let _pcScratchVerts: Float32Array | null = null;
+function reconstructPcVertsLive(weights: number[]): Float32Array | null {
+  if (!pcClientMeta || !pcClientMeanVerts || !pcClientModes) return null;
+  const n3 = pcClientMeta.nVerts * 3;
+  if (!_pcScratchVerts || _pcScratchVerts.length !== n3) {
+    _pcScratchVerts = new Float32Array(n3);
+  }
+  const combined = _pcScratchVerts;
+  combined.set(pcClientMeanVerts);
+  const nModes = Math.min(weights.length, pcClientMeta.nModes);
+  for (let m = 0; m < nModes; m++) {
+    const w = weights[m];
+    if (!w) continue;
+    const base = m * n3;
+    for (let i = 0; i < n3; i++) {
+      combined[i] += pcClientModes[base + i] * w;
+    }
+  }
+  return combined;
+}
+
+// ── Live joint-center recompute ─────────────────────────────────────────
+// Ports bones/base_bone.py's get_landmark/get_sphere_center plus each
+// bone's replay() joint-derivation formula to TS, so joint centers (SC/AC/
+// GH) are freshly re-derived from the live-reconstructed mesh every dirty
+// frame instead of held at their frozen reference-shape value. Bone
+// *orientation* (mat/ij, from PcBoneMetaCommon) stays frozen either way —
+// only these joint *positions* move. See the "Recompute joint centers live
+// during PC-slider drag" plan for the full derivation.
+type Vec3 = [number, number, number];
+function vSub(a: Vec3, b: Vec3): Vec3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function vAdd(a: Vec3, b: Vec3): Vec3 { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+
+// Direct port of BoneBase.get_landmark: mean of the reconstructed vertices
+// at `ids`.
+function meanLandmark(combined: Float32Array, ids: number[]): Vec3 {
+  let x = 0, y = 0, z = 0;
+  for (const id of ids) {
+    const s = id * 3;
+    x += combined[s]; y += combined[s + 1]; z += combined[s + 2];
+  }
+  const n = ids.length;
+  return [x / n, y / n, z / n];
+}
+
+// 3x3 linear solve via Cramer's rule — used by sphereFit below. Returns
+// null (caller falls back to the landmark mean) if the system is singular,
+// which real anatomical landmark sets should never hit.
+function solve3x3(A: number[][], b: Vec3): Vec3 | null {
+  const det3 = (m: number[][]) =>
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+    m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+    m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  const d = det3(A);
+  if (Math.abs(d) < 1e-9) return null;
+  const withCol = (col: number, v: Vec3): number[][] => {
+    const m = [A[0].slice(), A[1].slice(), A[2].slice()];
+    m[0][col] = v[0]; m[1][col] = v[1]; m[2][col] = v[2];
+    return m;
+  };
+  return [det3(withCol(0, b)) / d, det3(withCol(1, b)) / d, det3(withCol(2, b)) / d];
+}
+
+// Direct, term-for-term port of BoneBase.sphere_fit (base_bone.py) — a
+// least-squares sphere center through `ids`' reconstructed vertices. Kept
+// structurally identical to the Python (not a reformulated/"optimized"
+// version) so it stays byte-for-byte comparable when cross-checked against
+// the backend.
+function sphereFit(combined: Float32Array, ids: number[]): Vec3 {
+  const n = ids.length;
+  const mean = meanLandmark(combined, ids);
+  const a: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const b: Vec3 = [0, 0, 0];
+  for (const id of ids) {
+    const s = id * 3;
+    const p: Vec3 = [combined[s], combined[s + 1], combined[s + 2]];
+    const d: Vec3 = [p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) a[i][j] += p[i] * d[j];
+    const sq = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+    b[0] += sq * d[0]; b[1] += sq * d[1]; b[2] += sq * d[2];
+  }
+  for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) a[i][j] = (2 * a[i][j]) / n; b[i] /= n; }
+  // Solve (AᵀA)c = Aᵀb, matching np.linalg.solve(a.T@a, a.T@b).
+  const at = [[a[0][0], a[1][0], a[2][0]], [a[0][1], a[1][1], a[2][1]], [a[0][2], a[1][2], a[2][2]]];
+  const ata: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { let s = 0; for (let k = 0; k < 3; k++) s += at[i][k] * a[k][j]; ata[i][j] = s; }
+  const atb: Vec3 = [0, 0, 0];
+  for (let i = 0; i < 3; i++) { let s = 0; for (let k = 0; k < 3; k++) s += at[i][k] * b[k]; atb[i] = s; }
+  return solve3x3(ata, atb) ?? mean;
+}
+
+const _pcRotMat = new THREE.Matrix4();
+const _pcRotVec = new THREE.Vector3();
+// mat * (p - ij) — a frozen bone's rotation-only transform, direct
+// equivalent of transform_mesh(v, ij, mat) for a single point. mat's 4x4
+// translation column is always ~0 for these bones (built from pure 3x3
+// point-set alignments via Cloud.transform_between_3x3_points_sets), so
+// applyMatrix4 (which includes translation) still matches exactly.
+function applyFrozenRot(mat16: number[], ij: Vec3, p: Vec3): Vec3 {
+  _pcRotMat.fromArray(mat16);
+  _pcRotVec.set(p[0] - ij[0], p[1] - ij[1], p[2] - ij[2]);
+  _pcRotVec.applyMatrix4(_pcRotMat);
+  return [_pcRotVec.x, _pcRotVec.y, _pcRotVec.z];
+}
+
+const _pcPivotVec = new THREE.Vector3();
+const _pcPivotQuat = new THREE.Quaternion();
+// quat.apply(p - pivot) + target — the scapula FABRIK-correction /
+// clavicle sync_to_scapula pivot-rotate stage, as a reusable single-point
+// operation (also used to carry scapula's gh_joint_seed through its own
+// pivot stage before humerus consumes it).
+function pivotRotate(p: Vec3, pivot: Vec3, quat: [number, number, number, number], target: Vec3): Vec3 {
+  _pcPivotVec.set(p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]);
+  _pcPivotQuat.set(quat[0], quat[1], quat[2], quat[3]);
+  _pcPivotVec.applyQuaternion(_pcPivotQuat);
+  return [_pcPivotVec.x + target[0], _pcPivotVec.y + target[1], _pcPivotVec.z + target[2]];
+}
+
+const _pcSyncFrom = new THREE.Vector3();
+const _pcSyncTo = new THREE.Vector3();
+const _pcSyncQuatOut = new THREE.Quaternion();
+// Direct equivalent of Clavicle.sync_to_scapula's
+// scipy.spatial.transform.Rotation.align_vectors([v_new],[v_old]) — the
+// minimal rotation aligning direction vOld to vNew — via THREE's built-in
+// shortest-arc quaternion. Guards near-zero-length inputs the same way the
+// Python does (identity rotation).
+function syncRotation(vOld: Vec3, vNew: Vec3): [number, number, number, number] {
+  const lenOld = Math.hypot(vOld[0], vOld[1], vOld[2]);
+  const lenNew = Math.hypot(vNew[0], vNew[1], vNew[2]);
+  if (lenOld < 1e-6 || lenNew < 1e-6) return [0, 0, 0, 1];
+  _pcSyncFrom.set(vOld[0] / lenOld, vOld[1] / lenOld, vOld[2] / lenOld);
+  _pcSyncTo.set(vNew[0] / lenNew, vNew[1] / lenNew, vNew[2] / lenNew);
+  _pcSyncQuatOut.setFromUnitVectors(_pcSyncFrom, _pcSyncTo);
+  return [_pcSyncQuatOut.x, _pcSyncQuatOut.y, _pcSyncQuatOut.z, _pcSyncQuatOut.w];
+}
+
+// Per-bone "how to skin this frame" recipe consumed by skinBoneLive, in
+// addition to the always-frozen meta.ij/meta.mat. offset alone = a single
+// translate after the base rotation (clavicle/scapula/humerus); offset +
+// pivot/pivotTarget/quat = translate then a pivot-rotate stage on top
+// (scapula's FABRIK correction, clavicle's sync_to_scapula). Thorax uses
+// neither (mesh transform never depends on any joint center).
+interface LiveBoneTransform {
+  offset: Vec3 | null;
+  pivot: Vec3 | null;
+  pivotTarget: Vec3 | null;
+  quat: [number, number, number, number] | null;
+}
+interface LiveSideJoints {
+  clav: LiveBoneTransform;
+  scap: LiveBoneTransform;
+  hum: LiveBoneTransform;
+  scJoint: Vec3;  // clavicle/thorax SC joint — also this side's clavicle origin marker
+  acJoint: Vec3;  // scapula's solved AC joint — also this side's scapula origin marker
+  ghJoint: Vec3;  // scapula's gh_joint_seed — also this side's humerus origin marker
+}
+interface LiveJoints { right: LiveSideJoints; left: LiveSideJoints; }
+
+// Replicates one side of generate_isb_joints.replay_shape's call order —
+// Clavicle (pre-sync) → Scapula (FABRIK delta reused, frozen quat) →
+// Clavicle.sync_to_scapula (fresh quat) → Humerus — using only frozen
+// orientation data (already in *Meta) plus landmarks freshly measured on
+// `combined`.
+function computeSideLiveJoints(
+  combined: Float32Array,
+  thoraxSc: Vec3,
+  clavMeta: PcClavicleMeta,
+  scapMeta: PcScapulaMeta,
+  humMeta: PcHumerusMeta,
+): LiveSideJoints {
+  // --- Clavicle, pre-sync seed pose (Clavicle.replay, before sync_to_scapula) ---
+  const acPt = meanLandmark(combined, clavMeta.landmarks.acIds);
+  const scRaw = sphereFit(combined, clavMeta.landmarks.scSphereIds);
+  const scWorld = thoraxSc;
+  const clavOffset = vSub(scWorld, applyFrozenRot(clavMeta.mat, clavMeta.ij, scRaw));
+  const acPresync = vAdd(applyFrozenRot(clavMeta.mat, clavMeta.ij, acPt), clavOffset);
+
+  // --- Scapula (Scapula.replay) ---
+  const aaRaw = meanLandmark(combined, scapMeta.landmarks.aaIds);
+  const ghRawScap = sphereFit(combined, scapMeta.landmarks.ghSphereIds);
+  const acSeed = acPresync; // clavicle's own pre-sync ac_joint feeds scapula as its seed anchor
+  const scapOffset = vSub(acSeed, applyFrozenRot(scapMeta.mat, scapMeta.ij, aaRaw));
+  const scapSeed = (pt: Vec3): Vec3 => vAdd(applyFrozenRot(scapMeta.mat, scapMeta.ij, pt), scapOffset);
+  // Frozen FABRIK Step-4 delta (solvedPos - seed) — a constant, reused
+  // exactly like Scapula.replay's `self.ac_joint - self._ac_seed`.
+  const frozenDelta: Vec3 = vSub(scapMeta.solvedPos, scapMeta.seed);
+  const acSol = vAdd(acSeed, frozenDelta);
+  const ghJointSeed = pivotRotate(scapSeed(ghRawScap), acSeed, scapMeta.quat, acSol);
+
+  // --- Clavicle sync_to_scapula (fresh rotation, runs after Scapula.replay) ---
+  const syncQuat = syncRotation(vSub(acPresync, scWorld), vSub(acSol, scWorld));
+
+  // --- Humerus (Humerus.replay) ---
+  const ghRawHum = sphereFit(combined, humMeta.landmarks.ghSphereIds);
+  const humOffset = vSub(ghJointSeed, applyFrozenRot(humMeta.mat, humMeta.ij, ghRawHum));
+
+  return {
+    clav: { offset: clavOffset, pivot: scWorld, pivotTarget: scWorld, quat: syncQuat },
+    scap: { offset: scapOffset, pivot: acSeed, pivotTarget: acSol, quat: scapMeta.quat },
+    hum:  { offset: humOffset, pivot: null, pivotTarget: null, quat: null },
+    scJoint: scWorld,
+    acJoint: acSol,
+    ghJoint: ghJointSeed,
+  };
+}
+
+// Top-level entry point, run once per dirty frame (same pcLiveDirty gate as
+// the mesh skinning) — Thorax first (both SC joints), then each side.
+function computeLiveJoints(combined: Float32Array): LiveJoints | null {
+  if (!pcClientMeta) return null;
+  const bones = pcClientMeta.bones;
+  const thorax = bones.thorax;
+  const scR = applyFrozenRot(thorax.mat, thorax.ij, sphereFit(combined, thorax.landmarks.scRSphereIds));
+  const scL = applyFrozenRot(thorax.mat, thorax.ij, sphereFit(combined, thorax.landmarks.scLSphereIds));
+  return {
+    right: computeSideLiveJoints(combined, scR, bones.clav_r, bones.scap_r, bones.hum_r),
+    left:  computeSideLiveJoints(combined, scL, bones.clav_l, bones.scap_l, bones.hum_l),
+  };
+}
+
+// Reusable scratch objects for skinBoneLive — this runs over ~123k vertices
+// per full slider update, so avoiding one allocation per vertex matters.
+const _pcSkinMat = new THREE.Matrix4();
+const _pcSkinQuat = new THREE.Quaternion();
+const _pcSkinVec = new THREE.Vector3();
+
+// Applies one bone's rigid-transform recipe for this frame to `combined`'s
+// reconstructed vertices, writing straight into the already-live mesh's own
+// position buffer. `meta.ij`/`meta.mat` (orientation) are always frozen;
+// `live` (offset/pivot/pivotTarget/quat, from computeLiveJoints) carries
+// this frame's freshly-derived joint-center data — null for thorax, whose
+// mesh transform never depends on a joint center.
+function skinBoneLive(meta: PcBoneMeta | undefined, live: LiveBoneTransform | null, combined: Float32Array, mesh: THREE.Mesh | null) {
+  if (!meta || !mesh) return;
+  const posAttr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+  const ids = meta.validIds;
+  if (!posAttr || posAttr.count !== ids.length) return;
+
+  _pcSkinMat.fromArray(meta.mat);
+  const [ijx, ijy, ijz] = meta.ij;
+  const offset = live?.offset ?? null;
+  const pivot = live?.pivot ?? null;
+  const pivotTarget = live?.pivotTarget ?? null;
+  if (live?.quat) {
+    _pcSkinQuat.set(live.quat[0], live.quat[1], live.quat[2], live.quat[3]);
+  }
+
+  for (let i = 0; i < ids.length; i++) {
+    const s = ids[i] * 3;
+    _pcSkinVec.set(combined[s] - ijx, combined[s + 1] - ijy, combined[s + 2] - ijz);
+    _pcSkinVec.applyMatrix4(_pcSkinMat);
+    if (offset) {
+      _pcSkinVec.x += offset[0]; _pcSkinVec.y += offset[1]; _pcSkinVec.z += offset[2];
+    }
+    if (pivot && pivotTarget && live?.quat) {
+      _pcSkinVec.x -= pivot[0]; _pcSkinVec.y -= pivot[1]; _pcSkinVec.z -= pivot[2];
+      _pcSkinVec.applyQuaternion(_pcSkinQuat);
+      _pcSkinVec.x += pivotTarget[0]; _pcSkinVec.y += pivotTarget[1]; _pcSkinVec.z += pivotTarget[2];
+    }
+    posAttr.setXYZ(i, _pcSkinVec.x, _pcSkinVec.y, _pcSkinVec.z);
+  }
+  posAttr.needsUpdate = true;
+  // Deliberately NOT calling geometry.computeVertexNormals() here: it's an
+  // O(triangles) accumulation pass (213k triangles summed across all 7
+  // bones, 137k of those on the barely-visible 0.1-opacity thorax alone),
+  // and doing that every single frame during a drag was the actual cause of
+  // the lag — confirmed by comparing against the reference VTK-based
+  // viewer's (ssm_viewer's) update path, which likewise only replaces point
+  // positions per interactive update and never recomputes normals live.
+  // Shading is very slightly stale while dragging as a result (normals lag
+  // one step behind the deformed positions) — self-corrects the instant
+  // @change fires the accurate backend call, which fully rebuilds the mesh
+  // (see loadBones's full-recreation path) with fresh normals.
+}
+
+// Instant, synchronous, client-only mesh + joint-center update — no
+// network. Returns false (does nothing) if the one-time client data hasn't
+// finished loading yet, so callers can fall back to the backend path.
+function applyPcLiveFromSd(sdValues: number[]): boolean {
+  if (!pcClientMeta || !pcInfo.value) return false;
+  const weights = sdValues.map((sd, i) => sd * (pcInfo.value!.std[i] ?? 0));
+  const combined = reconstructPcVertsLive(weights);
+  if (!combined) return false;
+  const joints = computeLiveJoints(combined);
+  if (!joints) return false;
+  const bones = pcClientMeta.bones;
+  skinBoneLive(bones.thorax, null, combined, thoraxMesh.value);
+  skinBoneLive(bones.clav_r, joints.right.clav, combined, clavicleMeshes.right);
+  skinBoneLive(bones.clav_l, joints.left.clav, combined, clavicleMeshes.left);
+  skinBoneLive(bones.scap_r, joints.right.scap, combined, scapulaMeshes.right);
+  skinBoneLive(bones.scap_l, joints.left.scap, combined, scapulaMeshes.left);
+  skinBoneLive(bones.hum_r, joints.right.hum, combined, humerusMeshes.right);
+  skinBoneLive(bones.hum_l, joints.left.hum, combined, humerusMeshes.left);
+
+  // Origin markers (gold dots + text labels, shown when guides are on) —
+  // updateOriginLabels() already runs every frame and reads whatever world
+  // position these markers currently hold, so just moving them here is
+  // enough to keep guides tracking the live joint positions too. Thorax's
+  // origin is always (0,0,0), never needs updating.
+  if (originMarkers.clavicle.right) originMarkers.clavicle.right.position.set(...joints.right.scJoint);
+  if (originMarkers.clavicle.left)  originMarkers.clavicle.left.position.set(...joints.left.scJoint);
+  if (originMarkers.scapula.right) originMarkers.scapula.right.position.set(...joints.right.acJoint);
+  if (originMarkers.scapula.left)  originMarkers.scapula.left.position.set(...joints.left.acJoint);
+  if (originMarkers.humerus.right) originMarkers.humerus.right.position.set(...joints.right.ghJoint);
+  if (originMarkers.humerus.left)  originMarkers.humerus.left.position.set(...joints.left.ghJoint);
+
+  return true;
+}
+
 // Sends the current PC weights to the backend for reconstruction (~0.7s
 // round trip — the backend replays the new mesh onto a frozen reference
 // skeleton rather than re-solving joints, see server.py). Bound to slider
@@ -1282,11 +1697,23 @@ async function updatePcShape() {
   isPcUpdating.value = false;
 }
 
-// Debounces slider @input (which fires on every drag tick) down to one
-// update per ~120ms of continuous dragging, so the mesh visibly follows the
-// slider without spamming the backend once per pixel of movement.
+// While dragging: if the client-side preview data (fetchPcClientData) has
+// finished loading, just mark the mesh dirty — the animate() loop applies
+// it once per rendered frame (see there for why: 'input' events can fire
+// much faster than the screen redraws, and applying on every single one
+// was still recomputing normals over ~107k vertices far more often than
+// necessary, which is what made even the client-side path feel laggy).
+// Otherwise fall back to the original debounced-backend path so dragging
+// before the one-time fetch completes still does something. Either way,
+// @change on the same <input> (see template) fires the accurate backend
+// call once on release, correcting the client path's frozen-joint
+// approximation and refreshing joint markers/guides.
 let pcInputTimer: ReturnType<typeof setTimeout> | undefined;
 function onPcSliderInput() {
+  if (pcClientMeta && pcInfo.value) {
+    pcLiveDirty = true;
+    return;
+  }
   if (pcInputTimer) clearTimeout(pcInputTimer);
   pcInputTimer = setTimeout(() => { pcInputTimer = undefined; updatePcShape(); }, 120);
 }
@@ -1403,7 +1830,7 @@ function selectModel(mode: ViewMode) {
               <button v-if="SHOW_KINEMATICS_TAB" @click="isPanelOpen = true; isKinematicVisible = true; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
               </button>
-              <button @click="isPanelOpen = true; isPcVisible = true; isKinematicVisible = false; isSettingsVisible = false; fetchPcInfo()" class="tool-btn" title="Shape (PCA)" aria-label="Shape (PCA)">
+              <button @click="isPanelOpen = true; isPcVisible = true; isKinematicVisible = false; isSettingsVisible = false; fetchPcInfo(); fetchPcClientData()" class="tool-btn" title="Shape (PCA)" aria-label="Shape (PCA)">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"></line><circle cx="14" cy="6" r="2" fill="currentColor"></circle><line x1="4" y1="12" x2="20" y2="12"></line><circle cx="8" cy="12" r="2" fill="currentColor"></circle><line x1="4" y1="18" x2="20" y2="18"></line><circle cx="16" cy="18" r="2" fill="currentColor"></circle></svg>
               </button>
               <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false; isPcVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
@@ -1661,6 +2088,7 @@ function selectModel(mode: ViewMode) {
                       :max="PC_SD_RANGE"
                       :step="0.05"
                       @input="onPcSliderInput"
+                      @change="updatePcShape"
                     />
                   </div>
                 </div>

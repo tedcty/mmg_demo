@@ -25,6 +25,7 @@ class Clavicle(BoneBase):
 
         self.sc_joint: np.ndarray = np.zeros(3)   # World SC joint (= thorax SC)
         self.ac_joint: np.ndarray = np.zeros(3)   # World AC joint
+        self._sync_rot: R = R.identity()          # set by sync_to_scapula; see its docstring
 
     # ── Loading ───────────────────────────────────────────────────────────────
 
@@ -79,9 +80,14 @@ class Clavicle(BoneBase):
         self.ac_joint = self.transform_mesh([ac_pt], ij, c_mat)[0] + sc_offset
         self.origin   = self.sc_joint.copy()
 
-        # Store for sync_to_scapula and replay
+        # Store for sync_to_scapula and replay. _sc_offset is the frozen
+        # (reference-shape) version — replay() computes a fresh one each
+        # call instead of using this — kept only for the PC-tab's
+        # client-side live-preview export (server.py's /api/pc_client_meta),
+        # which intentionally always uses the frozen transform.
         self._c_mat     = c_mat
         self._ij        = ij
+        self._sc_offset = sc_offset
         return self
 
     def replay(self, case_arr: np.ndarray, maps_dir: str, thorax: Thorax) -> "Clavicle":
@@ -106,11 +112,22 @@ class Clavicle(BoneBase):
         return self
 
     def sync_to_scapula(self, new_ac: np.ndarray) -> None:
-        """Rotate clavicle mesh around SC joint to follow new AC position."""
+        """Rotate clavicle mesh around SC joint to follow new AC position.
+
+        Stores the applied rotation as _sync_rot (defaulting to identity when
+        the sync is skipped) — kept only for the PC-tab's client-side
+        live-preview export (server.py's /api/pc_client_meta), which needs
+        this rotation to reproduce the same pose from a frozen recipe:
+        without it, the exported clavicle transform reflects the pre-sync
+        seed pose only, which was found (via cross-checking the JS port
+        against this endpoint) to be off by 15-35mm at the AC end.
+        """
         v_old = self.ac_joint - self.sc_joint
         v_new = new_ac         - self.sc_joint
         if np.linalg.norm(v_new) < 1e-6 or np.linalg.norm(v_old) < 1e-6:
+            self._sync_rot = R.identity()
             return
         rot_clav, _ = R.align_vectors([v_new], [v_old])
         self.vertices = rot_clav.apply(self.vertices - self.sc_joint) + self.sc_joint
         self.ac_joint = new_ac.copy()
+        self._sync_rot = rot_clav

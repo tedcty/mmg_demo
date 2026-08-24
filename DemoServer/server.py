@@ -49,6 +49,8 @@ import subprocess
 import threading
 import queue
 import time
+import numpy as np
+import pandas as pd
 
 from flask import Flask, request, jsonify, Response, send_file, send_from_directory
 from flask_cors import CORS
@@ -685,6 +687,166 @@ def pc_info():
         except Exception as e:
             return jsonify({'error': str(e)}), 500
         return jsonify(model['info'])
+
+
+_pc_client_cache = None  # {'meta': {...}, 'mesh_bytes': b'...'}
+
+
+def _get_pc_client_data():
+    """Lazily builds (and caches) the static data package the PC tab's
+    client-side live-preview needs: each bone's frozen rigid-transform
+    recipe (for instant, network-free skinning while dragging — see
+    App.vue's applyPcLive) plus the raw mean mesh + PC modes as a flat
+    binary buffer. Caller must hold _pc_lock. Derived entirely from
+    _get_pc_model()'s already-cached reference — no new heavy computation,
+    just repackaging what's already in memory."""
+    global _pc_client_cache
+    if _pc_client_cache is not None:
+        return _pc_client_cache
+
+    model = _get_pc_model()
+    bones = model['reference']['bones']
+    coupled_pcs = model['coupled_pcs']
+    mean_verts = model['mean_verts']
+    maps_dir = model['reference']['maps_dir']
+
+    def _mat_col_major(m):
+        # THREE.Matrix4.fromArray() expects column-major; numpy's default
+        # flatten() is row-major, so transpose first.
+        return np.asarray(m).T.flatten().tolist()
+
+    def _bone_meta(b, extra):
+        return {
+            'validIds': list(b._valid_ids),
+            'indices':  list(b.indices),
+            'origin':   b.origin.tolist(),
+            **extra,
+        }
+
+    def _idm(filename):
+        # Same vertex-id lists BoneBase.get_landmark/get_sphere_center read
+        # server-side — exported so the client can re-derive fresh joint
+        # centers (landmark mean / sphere fit) from the live-reconstructed
+        # mesh each frame, instead of using a frozen reference joint
+        # position. Static for the process lifetime (same maps_dir CSVs
+        # used to build the reference pose), safe to bake into this cache.
+        fpath = os.path.join(maps_dir, filename)
+        return pd.read_csv(fpath)['idm'].to_list()
+
+    thorax = bones['thorax']
+    clav_r, clav_l = bones['clav_r'], bones['clav_l']
+    scap_r, scap_l = bones['scap_r'], bones['scap_l']
+    hum_r, hum_l   = bones['hum_r'], bones['hum_l']
+
+    def _clavicle_meta(clav, prefix):
+        # scJoint/syncQuat capture sync_to_scapula's rotation (applied every
+        # assembly/replay to snap the clavicle's AC end onto the scapula's
+        # solved AC joint) — without it the exported transform reflects only
+        # the pre-sync seed pose, which cross-checking against
+        # /api/predict_pc showed is off by 15-35mm at the AC end even at the
+        # mean shape (zero PC weight). These are the frozen fallback values;
+        # the client instead recomputes fresh scJoint/syncQuat every frame
+        # from `landmarks` (see Clavicle.replay) — kept for completeness /
+        # as a reference the client formula was cross-checked against.
+        return _bone_meta(clav, {
+            'kind':     'clavicle',
+            'ij':       clav._ij.tolist(),
+            'mat':      _mat_col_major(clav._c_mat),
+            'offset':   clav._sc_offset.tolist(),
+            'scJoint':  clav.sc_joint.tolist(),
+            'syncQuat': clav._sync_rot.as_quat().tolist(),  # [x, y, z, w]
+            'landmarks': {
+                'acIds':       _idm(f'cla_{prefix}_ac.csv'),
+                'scSphereIds': _idm(f'cla_scj_{prefix}.csv'),
+            },
+        })
+
+    def _scapula_meta(scap, prefix):
+        return _bone_meta(scap, {
+            'kind':      'scapula',
+            'ij':        scap._ij.tolist(),
+            'mat':       _mat_col_major(scap._s_mat),
+            'offset':    scap._ac_offset.tolist(),
+            'seed':      scap._ac_seed.tolist(),
+            'quat':      scap.solved_rot.as_quat().tolist(),  # [x, y, z, w]
+            'solvedPos': scap.ac_joint.tolist(),
+            'landmarks': {
+                'aaIds':      _idm(f'sca_{prefix}_aa.csv'),
+                'tsIds':      _idm(f'sca_{prefix}_ts.csv'),
+                'aiIds':      _idm(f'sca_{prefix}_ai.csv'),
+                'cpIds':      _idm(f'sca_{prefix}_cap.csv'),
+                'ghSphereIds': _idm(f'scap_ghj_{prefix}.csv'),
+            },
+        })
+
+    def _humerus_meta(hum, prefix):
+        return _bone_meta(hum, {
+            'kind':   'humerus',
+            'ij':     hum._ij.tolist(),
+            'mat':    _mat_col_major(hum._h_mat),
+            'offset': hum._gh_offset.tolist(),
+            'landmarks': {
+                'ghSphereIds': _idm(f'hum_ghj_{prefix}.csv'),
+            },
+        })
+
+    meta = {
+        'nVerts': int(mean_verts.shape[0]),
+        'nModes': model['info']['n_modes'],
+        'pcStd':  model['info']['std'],
+        'bones': {
+            'thorax': _bone_meta(thorax, {
+                'kind': 'thorax',
+                'ij':   thorax.ij_pt.tolist(),
+                'mat':  _mat_col_major(thorax.jcs_matrix),
+                'landmarks': {
+                    'scRSphereIds': _idm('tho_scj_r.csv'),
+                    'scLSphereIds': _idm('tho_scj_l.csv'),
+                },
+            }),
+            'clav_r': _clavicle_meta(clav_r, 'r'),
+            'clav_l': _clavicle_meta(clav_l, 'l'),
+            'scap_r': _scapula_meta(scap_r, 'r'),
+            'scap_l': _scapula_meta(scap_l, 'l'),
+            'hum_r':  _humerus_meta(hum_r, 'r'),
+            'hum_l':  _humerus_meta(hum_l, 'l'),
+        },
+    }
+
+    # Binary payload: mean verts, then each mode's per-vertex offsets, all
+    # float32, mode-major. Both mean_verts.reshape(-1) and modes[:, i] (or
+    # modes[:, :, i].reshape(-1) for the 3D-modes gias3 variant) already use
+    # the same per-vertex-triplet ordering as pc_shape.reconstruct_mesh's
+    # own `offset.reshape(-1, 3)` — no reordering needed to match it.
+    n_modes = meta['nModes']
+    modes = coupled_pcs.modes
+    parts = [np.asarray(mean_verts, dtype=np.float32).reshape(-1).tobytes()]
+    for i in range(n_modes):
+        mode_i = modes[:, i] if modes.ndim == 2 else modes[:, :, i].reshape(-1)
+        parts.append(np.asarray(mode_i, dtype=np.float32).tobytes())
+
+    _pc_client_cache = {'meta': meta, 'mesh_bytes': b''.join(parts)}
+    return _pc_client_cache
+
+
+@app.route('/api/pc_client_meta')
+def pc_client_meta():
+    with _pc_lock:
+        try:
+            data = _get_pc_client_data()
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        return jsonify(data['meta'])
+
+
+@app.route('/api/pc_client_mesh')
+def pc_client_mesh():
+    with _pc_lock:
+        try:
+            data = _get_pc_client_data()
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    return Response(data['mesh_bytes'], mimetype='application/octet-stream')
 
 
 @app.route('/api/predict_pc', methods=['POST'])
