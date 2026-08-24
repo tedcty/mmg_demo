@@ -13,12 +13,15 @@ from .thorax import Thorax
 
 
 class Clavicle(BoneBase):
-    color = "#C080FF"   # right default; overridden for left in __init__
+    # Right = warm (orange family), left = cool (teal family) — same
+    # right/left hue split used across Clavicle/Scapula/Humerus so a side is
+    # identifiable by color alone regardless of which bone you're looking at.
+    color = "#FFA94D"   # right default; overridden for left in __init__
 
     def __init__(self, side: str):
         super().__init__(side=side)
         self.label = f"{'R' if side == 'right' else 'L'} Clavicle"
-        self.color = "#C080FF" if side == "right" else "#FFB0D0"
+        self.color = "#FFA94D" if side == "right" else "#5EEAD4"
 
         self.sc_joint: np.ndarray = np.zeros(3)   # World SC joint (= thorax SC)
         self.ac_joint: np.ndarray = np.zeros(3)   # World AC joint
@@ -35,9 +38,10 @@ class Clavicle(BoneBase):
         prefix = "r" if s == "right" else "l"
         bone_csv = "R_clav.csv" if s == "right" else "L_clav.csv"
 
-        verts, inds = self.filter_bone_indices(case_arr, all_faces, maps_dir, bone_csv)
+        verts, inds, valid_ids = self.filter_bone_indices(case_arr, all_faces, maps_dir, bone_csv)
         self._raw_verts = verts
         self.indices = inds
+        self._valid_ids = valid_ids
 
         self._sc_pt  = self.get_landmark(case_arr, maps_dir, f"cla_{prefix}_sc.csv")
         self._ac_pt  = self.get_landmark(case_arr, maps_dir, f"cla_{prefix}_ac.csv")
@@ -75,9 +79,30 @@ class Clavicle(BoneBase):
         self.ac_joint = self.transform_mesh([ac_pt], ij, c_mat)[0] + sc_offset
         self.origin   = self.sc_joint.copy()
 
-        # Store for sync_to_scapula
-        self._c_mat   = c_mat
-        self._ij      = ij
+        # Store for sync_to_scapula and replay
+        self._c_mat     = c_mat
+        self._ij        = ij
+        return self
+
+    def replay(self, case_arr: np.ndarray, maps_dir: str, thorax: Thorax) -> "Clavicle":
+        """Recompute the visible mesh AND sc_joint/ac_joint from a new
+        case_arr, reusing this instance's already-solved _ij/_c_mat (the
+        clavicle's ORIENTATION stays frozen) but re-deriving sc_joint/
+        ac_joint from fresh landmarks — via `thorax`'s (already replayed)
+        sc_r/sc_l — so they track the new anatomy instead of leaving a gap
+        at either end. See Thorax's version of this method for context."""
+        prefix = "r" if self.side == "right" else "l"
+        raw_verts = case_arr[self._valid_ids]
+
+        ac_pt  = self.get_landmark(case_arr, maps_dir, f"cla_{prefix}_ac.csv")
+        sc_raw = self.get_sphere_center(case_arr, maps_dir, f"cla_scj_{prefix}.csv")
+        sc_world = thorax.sc_r if self.side == "right" else thorax.sc_l
+        sc_offset = sc_world - (self._c_mat[:3, :3] @ (sc_raw - self._ij))
+
+        self.vertices = self.transform_mesh(raw_verts, self._ij, self._c_mat) + sc_offset
+        self.sc_joint = sc_world.copy()
+        self.ac_joint = self.transform_mesh([ac_pt], self._ij, self._c_mat)[0] + sc_offset
+        self.origin   = self.sc_joint.copy()
         return self
 
     def sync_to_scapula(self, new_ac: np.ndarray) -> None:

@@ -21,6 +21,8 @@ Routes:
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
+  GET  /api/pc_info              → PCA mode count / std-dev / variance% (cached)
+  POST /api/predict_pc           → reconstruct mesh from manual PC weights
   POST /api/save_report          → save refinement report for session X
 
 Usage:
@@ -39,6 +41,7 @@ import os
 import re
 import sys
 import json
+import orjson
 import shutil
 import socket
 import argparse
@@ -69,6 +72,9 @@ ASSETS_DIR  = os.path.join(BASE_DIR, 'resources')   # landing-page assets (logo,
 POSTERS_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'Posters'))  # info/poster PDFs
 DOC_RES_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'Documents', 'resources'))  # shared outreach figures
 SCRIPTS_DIR = os.path.join(SSM_DIR, 'scripts')
+# Needed unconditionally (not just when bones.json is missing) so pc_shape /
+# generate_isb_joints are importable in-process for the Shape (PCA) tab.
+sys.path.insert(0, SCRIPTS_DIR)
 RES_DIR     = os.path.join(SSM_DIR, 'Resources')
 GUI_DIR     = os.path.join(SSM_DIR, 'TauriGUI')
 VITE_DIST   = os.path.join(GUI_DIR, 'dist')
@@ -468,10 +474,21 @@ def predict():
     _cleanup_old_sessions()
 
     sess_dir   = _session_dir(sid)
-    q          = _get_queue(sid)
     out_ply    = os.path.join(sess_dir, 'predicted_model.ply')
     bones_json = os.path.join(sess_dir, 'bones.json')
 
+    if data.get('use_full_solve'):
+        return _predict_full_solve(data, sid, out_ply, bones_json)
+    return _predict_fast(data, out_ply, bones_json)
+
+
+def _predict_full_solve(data, sid, out_ply, bones_json):
+    """Settings > "Solve full per-person joint pose" path: the original
+    subprocess-based pipeline, deriving THIS person's own joint orientation
+    from their own predicted anatomy via a fresh FABRIK search. Slower
+    (~10-30s heavy imports + up to ~90s search) but more individualized than
+    _predict_fast's reused mean-model orientation."""
+    q = _get_queue(sid)
     args = {
         'sex':             str(data.get('sex', '0')),
         'age':             str(data.get('age', '0')),
@@ -527,6 +544,198 @@ def predict():
         bones_data = json.load(f)
 
     return jsonify(bones_data)
+
+
+def _predict_fast(data, out_ply, bones_json):
+    """Default prediction path: reuses the reference skeleton's frozen
+    joint ORIENTATION (see _get_pc_model / generate_isb_joints.replay_shape)
+    instead of running FABRIK for this person — same mechanism the Shape
+    (PCA) tab uses. Joint *positions* still come from this person's own
+    predicted anatomy (fresh landmarks); only the orientation is shared
+    with the mean model. No FABRIK search, so this is fast."""
+    try:
+        import pc_shape
+        from ptb.util.data import VTKMeshUtl
+        from generate_isb_joints import replay_shape
+
+        with _pc_lock:
+            model = _get_pc_model()
+
+        case_data = [
+            float(data.get('sex', 0)), float(data.get('age', 0)), float(data.get('height', 0)),
+            float(data.get('weight', 0)), float(data.get('r_clav_len', 0)),
+            float(data.get('r_hum_len', 0)), float(data.get('r_hum_epi_width', 0)),
+        ]
+        pred_weights = pc_shape.predict_weights_from_anthro(model['coupled_pcs'], ANTHRO_CSV, case_data)
+
+        mesh = pc_shape.reconstruct_mesh(
+            model['coupled_pcs'], model['mesh_data'], model['mean_verts'], pred_weights,
+        )
+        VTKMeshUtl.write(out_ply, mesh)
+        payload = replay_shape(model['reference'], out_ply, bones_json)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return Response(orjson.dumps(payload), mimetype='application/json')
+
+
+# ---------------------------------------------------------------------------
+# PC (Shape) adjustment endpoints — run in-process, unlike /api/predict.
+#
+# /api/predict spawns predict_headless.py as a subprocess, which re-imports
+# gias3/sklearn/vtk/pandas from scratch every call (~10-30s) — fine for a
+# one-shot "Run Prediction" click, but too slow for a slider dragged
+# repeatedly. So this loads the PCA model and mean mesh once (lazily, on
+# first use) and keeps them warm in memory.
+#
+# The bigger cost turned out to be downstream of that: generate_isb_joints's
+# FABRIK scapula solve runs a ~90s Nelder-Mead multi-start search (Step 4) to
+# fine-tune each scapula against the ribcage surface, PLUS every bone's
+# landmark/JCS derivation. None of that actually needs to rerun for a shape
+# preview — the whole joint pose (every bone's position/orientation) can
+# stay exactly as solved once for the mean shape, with only each bone's
+# *mesh surface* following the new PC weights. So _get_pc_model() solves the
+# real joint pose exactly once (reusing a disk-cached Step-4 correction when
+# available — see _PC_CORRECTIONS_PATH — so even that only ever happens once
+# per SSM model, not once per server restart), and every later PC update
+# calls generate_isb_joints.replay_shape() to re-skin the new mesh onto that
+# frozen skeleton — no landmark/JCS/FABRIK work at all.
+# ---------------------------------------------------------------------------
+
+_pc_model_cache = None   # {'coupled_pcs', 'mesh_data', 'mean_verts', 'info', 'reference'}
+_pc_lock = threading.Lock()  # serializes access to the shared vtk mesh_data
+# Persisted so the ~90-120s reference search only ever runs once per SSM
+# model, not once per server restart. Stale if SSM_MODEL's mean mesh changes
+# underneath it — nothing here detects that, matching bones.json's own
+# lack of cache-invalidation elsewhere in this file.
+_PC_CORRECTIONS_PATH = os.path.join(PUBLIC_DIR, 'pc_corrections.json')
+
+
+def _get_pc_model():
+    """Lazily loads (and caches) the PCA model, mean mesh, and a one-time
+    reference joint-pose solve on the mean shape. Caller must hold _pc_lock."""
+    global _pc_model_cache
+    if _pc_model_cache is None:
+        import pc_shape
+        from generate_isb_joints import process_and_export
+
+        coupled_pcs       = pc_shape.load_pca_model(SSM_MODEL)
+        mesh_data, mean_v = pc_shape.load_mean_mesh(SSM_MODEL)
+        mean_ply_path     = pc_shape.find_mean_mesh_path(SSM_MODEL)
+
+        cached_corrections = None
+        if os.path.exists(_PC_CORRECTIONS_PATH):
+            try:
+                with open(_PC_CORRECTIONS_PATH) as f:
+                    cached = json.load(f)
+                cached_corrections = {'right': tuple(cached['right']), 'left': tuple(cached['left'])}
+            except Exception as e:
+                print(f'[WARN] Ignoring corrupt pc_corrections.json: {e}')
+
+        # Full assembly on the untouched mean shape — reuses the disk-cached
+        # Step-4 correction when available (fast, a few seconds) or solves it
+        # fresh the very first time (~90-120s), persisting it afterward
+        # either way. export_path is a scratch file, not the shared
+        # BONES_JSON, so this doesn't affect the default mean-model view
+        # shown before any prediction. The returned `reference` (fully-placed
+        # skeleton + payload) is what every later PC update replays its mesh
+        # onto via replay_shape().
+        ref_bones_path = os.path.join(SESSIONS_DIR, '_pc_reference_bones.json')
+        reference = process_and_export(mean_ply_path, fabrik_step=4, export_path=ref_bones_path,
+                                        corrections=cached_corrections)
+
+        if cached_corrections is None:
+            with open(_PC_CORRECTIONS_PATH, 'w') as f:
+                json.dump(reference['corrections'], f)
+
+        _pc_model_cache = {
+            'coupled_pcs': coupled_pcs,
+            'mesh_data':   mesh_data,
+            'mean_verts':  mean_v,
+            'info':        pc_shape.compute_pc_info(coupled_pcs),
+            'reference':   reference,
+        }
+    return _pc_model_cache
+
+
+def _warm_pc_model_background():
+    """Kicks off _get_pc_model()'s one-time load (heavy library imports +
+    a reference assembly pass) in a background thread as soon as the server
+    starts, instead of waiting for the first /api/pc_info request. Runs in
+    a thread rather than blocking _startup_init() itself so this one
+    sub-feature of the SSM demo doesn't delay the whole demo hub (EMG game,
+    segmenter, etc.) from becoming reachable. Uses the same _pc_lock as the
+    routes, so a request that arrives before this finishes just waits on
+    the same in-progress load instead of racing a second one."""
+    def _run():
+        try:
+            with _pc_lock:
+                _get_pc_model()
+            print('[OK]   Shape (PCA) tab model pre-warmed.', flush=True)
+        except Exception as e:
+            print(f'[WARN] Shape (PCA) tab pre-warm failed (will retry on first request): {e}', flush=True)
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@app.route('/api/pc_info')
+def pc_info():
+    with _pc_lock:
+        try:
+            model = _get_pc_model()
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        return jsonify(model['info'])
+
+
+@app.route('/api/predict_pc', methods=['POST'])
+def predict_pc():
+    data = request.get_json(force=True)
+    sid  = data.get('session_id', '').strip()
+    if not _valid_sid(sid):
+        return jsonify({'error': 'invalid or missing session_id'}), 400
+
+    _cleanup_old_sessions()
+
+    sess_dir   = _session_dir(sid)
+    out_ply    = os.path.join(sess_dir, 'predicted_model.ply')
+    bones_json = os.path.join(sess_dir, 'bones.json')
+
+    try:
+        import pc_shape
+        from ptb.util.data import VTKMeshUtl
+        from generate_isb_joints import replay_shape
+
+        # Only the lazy first-time load (and the ~90-120s reference solve it
+        # may trigger) needs the lock. reconstruct_mesh deep-copies the
+        # cached mesh before mutating it, and replay_shape deep-copies the
+        # cached reference bones before mutating them, so different
+        # sessions' requests run this part concurrently instead of queueing
+        # behind each other — multiple tablets can use the Shape tab at once.
+        with _pc_lock:
+            model = _get_pc_model()
+
+        mesh = pc_shape.reconstruct_mesh(
+            model['coupled_pcs'], model['mesh_data'], model['mean_verts'],
+            data.get('pc_weights', []),
+        )
+        VTKMeshUtl.write(out_ply, mesh)
+        # Re-skins the new mesh onto the reference skeleton's frozen joint
+        # pose (see _get_pc_model) instead of re-deriving placement — no
+        # landmark/JCS/FABRIK work at all, so this is fast enough for
+        # near-live slider dragging.
+        #
+        # replay_shape returns the payload directly (it also writes
+        # bones_json to disk, but this route has no reason to read that
+        # back) — with the mesh math itself down to a few ms, the response's
+        # ~10MB of JSON was the biggest remaining cost. Serializing once with
+        # orjson instead of round-tripping through json.dump+json.load+
+        # Flask's stdlib-json jsonify() (three full passes over the same
+        # data) is what actually moved the needle.
+        payload = replay_shape(model['reference'], out_ply, bones_json)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return Response(orjson.dumps(payload), mimetype='application/json')
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +1113,6 @@ def _startup_init():
     if not os.path.exists(BONES_JSON):
         print('[INFO] Generating initial bones.json from mean model...')
         try:
-            sys.path.insert(0, SCRIPTS_DIR)
             from generate_isb_joints import process_and_export
             process_and_export()
             print('[OK]   Initial bones.json generated.')
@@ -913,6 +1121,11 @@ def _startup_init():
 
     # Clean up any leftover session dirs from a previous run
     _cleanup_old_sessions()
+
+    # Start warming the Shape (PCA) tab's model now, in the background, so
+    # it's ready (or close to it) by the time anyone actually reaches that
+    # tab instead of them paying for it as a UI delay.
+    _warm_pc_model_background()
 
 
 if __name__ == '__main__':

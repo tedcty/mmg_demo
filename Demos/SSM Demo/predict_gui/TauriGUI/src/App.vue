@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import * as THREE from 'three';
 
 // Unique ID for this browser tab — isolates predictions and progress from other sessions.
@@ -139,7 +139,26 @@ const PIPELINE_STAGES: { match: string; pct: number }[] = [
 ];
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
+// Kinematics tab is kept fully working but hidden from the toolbar while the
+// PC (Shape) tab is being debugged — flip this back to true to bring it back.
+const SHOW_KINEMATICS_TAB = false;
 const isKinematicVisible = ref(false);
+const isPcVisible = ref(false);
+// PC (Shape) adjustment — sliders over the shape model's principal-component
+// weights, so PC changes can be previewed independently of the anthropometric
+// PLSR prediction. Populated from /api/pc_info in the background as soon as
+// the app mounts (see onMounted's fetchPcInfo() call), so by the time the
+// user opens the tab the one-time server-side model load is likely already
+// done rather than felt as a UI delay.
+const pcInfo = ref<{ n_modes: number; std: number[]; variance_pct: number[] } | null>(null);
+// Sliders are expressed in standard deviations (not raw PC weights) — much
+// easier to read ("1.5 SD from the mean") — and converted to raw weights
+// (sd * std[i]) only when sent to the backend.
+const pcSd = ref<number[]>([]);
+const PC_SD_RANGE = 2;
+const isPcLoading = ref(false);
+const isPcUpdating = ref(false);
+const isPcInfoOpen = ref(false); // "About this tab" popup, toggled by the info-icon button
 // Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
 // full-screen; toggled open with the hamburger button.
 const isPanelOpen = ref(false);
@@ -150,6 +169,14 @@ const isDevMode = ref(localStorage.getItem('ssm_dev_mode') === '1');
 // reloads; only an explicit 'dark' opts out of light.
 const isLightMode = ref(localStorage.getItem('ssm_theme') !== 'dark');
 const SCENE_BG = { light: 0xe8ecf4, dark: 0x0c0c48 };
+
+// Off (default) = fast prediction: reuses the mean model's joint
+// orientation, only joint *positions* are re-derived from this person's
+// anatomy (see server.py's _predict_fast). On = the original full per-person
+// FABRIK solve — slower but derives this person's own joint orientation
+// too. Persisted so the choice survives reloads.
+const useFullJointSolve = ref(localStorage.getItem('ssm_full_joint_solve') === '1');
+watch(useFullJointSolve, (v) => localStorage.setItem('ssm_full_joint_solve', v ? '1' : '0'));
 
 function toggleTheme() {
   isLightMode.value = !isLightMode.value;
@@ -249,9 +276,15 @@ let ghostGroup: THREE.Group | null = null; // Group for the mean "ghost" overlap
 let isFirstLoad = true;
 
 // Comparison State
-const isViewingOriginal = ref(true);
+// Three independent model slots can exist at once — the mean model (always
+// available), an anthropometric prediction, and a PC-weight shape
+// adjustment — so the user can switch between whichever they've generated
+// without one overwriting the other. viewMode picks which is currently shown.
+type ViewMode = 'mean' | 'predicted' | 'pcShape';
+const viewMode = ref<ViewMode>('mean');
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
-const hasPrediction = ref(false);
+const hasPrediction = ref(false); // an anthropometric prediction has been run
+const hasPcShape = ref(false);    // a PC-weight shape adjustment has been made
 // Viewport model picker — the label doubles as a dropdown to switch models.
 const isModelListOpen = ref(false);
 const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
@@ -259,10 +292,12 @@ const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
 const isLabelsEnabled = ref(true); // Control for coordinate labels
-let highlightsGroup: THREE.Group | null = null; 
-let scapularPlaneGroup: THREE.Group | null = null; 
+const isMusclePointsEnabled = ref(false); // Control for subscapularis muscle point cloud — off by default (clutters the view)
+let highlightsGroup: THREE.Group | null = null;
+let scapularPlaneGroup: THREE.Group | null = null;
 let meanModelData: any = null;
 let predictedModelData: any = null;
+let pcShapeModelData: any = null;
 
 // Reference storage for ghost meshes
 const ghostMeshes = {
@@ -272,7 +307,13 @@ const ghostMeshes = {
     humerus: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null }
 };
 
-async function loadBones(externalData: any = null) {
+// `kind` says which slot a freshly-received `externalData` belongs to, so
+// this can store an anthropometric prediction and a PC-shape adjustment
+// independently instead of one overwriting the other. Omitted (or called
+// with no externalData at all — e.g. a guide-toggle re-render) means "just
+// re-render whatever viewMode currently points at from its existing data",
+// falling back to a fresh /bones.json fetch only for the mean model.
+async function loadBones(externalData: any = null, kind: 'predicted' | 'pcShape' | null = null) {
   if (!globalScene) return;
 
   try {
@@ -280,6 +321,10 @@ async function loadBones(externalData: any = null) {
     if (externalData) {
       data = externalData;
       console.log("Loading bones from injected Rust data...");
+    } else if (viewMode.value === 'predicted' && predictedModelData) {
+      data = predictedModelData;
+    } else if (viewMode.value === 'pcShape' && pcShapeModelData) {
+      data = pcShapeModelData;
     } else {
       // Add cache-busting timestamp to ensure we get the fresh bones.json
       const response = await fetch(`/bones.json?t=${Date.now()}`);
@@ -290,13 +335,22 @@ async function loadBones(externalData: any = null) {
     if (!meanModelData) {
       meanModelData = JSON.parse(JSON.stringify(data));
     }
-    predictedModelData = data;
-    hasPrediction.value = true;
-    
-    const activeData = isViewingOriginal.value ? meanModelData : predictedModelData;
+    if (externalData && kind === 'predicted') {
+      predictedModelData = data;
+      hasPrediction.value = true;
+      viewMode.value = 'predicted';
+    } else if (externalData && kind === 'pcShape') {
+      pcShapeModelData = data;
+      hasPcShape.value = true;
+      viewMode.value = 'pcShape';
+    }
+
+    const activeData = viewMode.value === 'mean' ? meanModelData
+      : viewMode.value === 'predicted' ? predictedModelData
+      : pcShapeModelData;
     const center = activeData.center;
     const spread = activeData.spread || 500;
-    
+
     if (isFirstLoad && globalCamera && globalControls) {
       const sceneCenter = new THREE.Vector3(center[0], center[1], center[2]);
       globalControls.target.copy(sceneCenter);
@@ -352,7 +406,7 @@ async function loadBones(externalData: any = null) {
             geom.computeVertexNormals();
             const opac = bone.label === "Thorax" ? 0.1 : 0.55;
             const mat = new THREE.MeshStandardMaterial({
-              color: isViewingOriginal.value ? "#88aaff" : bone.color,
+              color: viewMode.value === 'mean' ? "#88aaff" : bone.color,
               roughness: 0.5, metalness: 0.1, transparent: true, opacity: opac, side: THREE.DoubleSide
             });
             mesh = new THREE.Mesh(geom, mat);
@@ -392,8 +446,8 @@ async function loadBones(externalData: any = null) {
         else if (bone.label === "L Clavicle") { clavicleMeshes.left = mesh as THREE.Mesh; originMarkers.clavicle.left = originSphere; originLabels.clavicle.left = sprite; initialQuats.clavicle.left.copy(mesh.quaternion); initialPositions.clavicle.left.copy(mesh.position); }
         else if (bone.label === "R Scapula") { scapulaMeshes.right = mesh as THREE.Mesh; originMarkers.scapula.right = originSphere; originLabels.scapula.right = sprite; initialQuats.scapula.right.copy(mesh.quaternion); initialPositions.scapula.right.copy(mesh.position); }
         else if (bone.label === "L Scapula") { scapulaMeshes.left = mesh as THREE.Mesh; originMarkers.scapula.left = originSphere; originLabels.scapula.left = sprite; initialQuats.scapula.left.copy(mesh.quaternion); initialPositions.scapula.left.copy(mesh.position); }
-        else if (bone.label === "R Subscapularis") { subscapMeshes.right = mesh as THREE.Points; }
-        else if (bone.label === "L Subscapularis") { subscapMeshes.left = mesh as THREE.Points; }
+        else if (bone.label === "R Subscapularis") { subscapMeshes.right = mesh as THREE.Points; mesh.visible = isMusclePointsEnabled.value; }
+        else if (bone.label === "L Subscapularis") { subscapMeshes.left = mesh as THREE.Points; mesh.visible = isMusclePointsEnabled.value; }
         else if (bone.label === "R Humerus") { humerusMeshes.right = mesh as THREE.Mesh; originMarkers.humerus.right = originSphere; originLabels.humerus.right = sprite; initialQuats.humerus.right.copy(mesh.quaternion); initialPositions.humerus.right.copy(mesh.position); }
         else if (bone.label === "L Humerus") { humerusMeshes.left = mesh as THREE.Mesh; originMarkers.humerus.left = originSphere; originLabels.humerus.left = sprite; initialQuats.humerus.left.copy(mesh.quaternion); initialPositions.humerus.left.copy(mesh.position); }
       });
@@ -413,7 +467,7 @@ async function loadBones(externalData: any = null) {
               posAttr.needsUpdate = true;
               mesh.geometry.computeVertexNormals();
               if (mesh.material instanceof THREE.MeshStandardMaterial) {
-                  mesh.material.color.set(isViewingOriginal.value ? "#88aaff" : bone.color);
+                  mesh.material.color.set(viewMode.value === 'mean' ? "#88aaff" : bone.color);
                   mesh.material.opacity = bone.label === "Thorax" ? 0.1 : 0.55;
               }
           }
@@ -779,6 +833,14 @@ async function loadBones(externalData: any = null) {
 }
 
 onMounted(async () => {
+  // Pre-warm the Shape (PCA) tab's model in the background as soon as the
+  // page loads, rather than waiting for the user to open that tab — by the
+  // time they click it, the one-time server-side load (heavy library
+  // imports + one reference assembly pass, a few seconds) is likely already
+  // done or well underway. Fire-and-forget; fetchPcInfo already guards
+  // against duplicate/overlapping calls.
+  fetchPcInfo();
+
   // Stream progress messages from the Python pipeline via SSE
   const evtSource = new EventSource(`/api/progress?session=${sessionId}`);
   evtSource.onmessage = (event) => {
@@ -1140,7 +1202,8 @@ async function runPrediction() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        fabrik_step: 4
+        fabrik_step: 4,
+        use_full_solve: useFullJointSolve.value,
       })
     });
 
@@ -1149,9 +1212,7 @@ async function runPrediction() {
     predictionProgress.value = 100;
     statusMessage.value = "Prediction Complete! Rendering...";
     statusColor.value = "#48c774";
-    hasPrediction.value = true;
-    isViewingOriginal.value = false;
-    loadBones(boneData);
+    loadBones(boneData, 'predicted');
   } catch (error) {
     statusMessage.value = "Failed: " + error;
     statusColor.value = "#f14668";
@@ -1160,6 +1221,80 @@ async function runPrediction() {
   }
 
   isPredicting.value = false;
+}
+
+// Lazily loads PCA mode metadata (std dev + variance% per mode) the first
+// time the Shape (PCA) tab is opened, then initializes one weight slider per
+// mode at 0 (= mean shape). Cached in pcInfo so re-opening the tab is instant.
+async function fetchPcInfo() {
+  if (pcInfo.value || isPcLoading.value) return;
+  isPcLoading.value = true;
+  statusMessage.value = "Loading shape model (first time can take ~1-2 min)...";
+  statusColor.value = "#ffffff";
+  try {
+    const response = await fetch("/api/pc_info");
+    if (!response.ok) throw await response.text();
+    pcInfo.value = await response.json();
+    pcSd.value = new Array(pcInfo.value!.n_modes).fill(0);
+    statusMessage.value = "Shape model loaded.";
+    statusColor.value = "#48c774";
+  } catch (error) {
+    statusMessage.value = "Failed to load shape model: " + error;
+    statusColor.value = "#f14668";
+  }
+  isPcLoading.value = false;
+}
+
+// Sends the current PC weights to the backend for reconstruction (~0.7s
+// round trip — the backend replays the new mesh onto a frozen reference
+// skeleton rather than re-solving joints, see server.py). Bound to slider
+// @input (fires continuously while dragging) via onPcSliderInput's debounce
+// below, so this itself just needs to (a) never run two requests at once,
+// since predict_pc mutates this session's own out_ply/bones.json files, and
+// (b) not silently drop a slider move that arrived while a request was
+// in flight — the `pending` loop below re-sends once more with the latest
+// position when that happens, instead of queuing one request per move.
+let pcUpdatePending = false;
+async function updatePcShape() {
+  if (isPcUpdating.value) { pcUpdatePending = true; return; }
+  isPcUpdating.value = true;
+  do {
+    pcUpdatePending = false;
+    statusMessage.value = "Updating shape...";
+    statusColor.value = "#ffffff";
+    try {
+      const pcWeights = pcSd.value.map((sd, i) => sd * (pcInfo.value?.std[i] ?? 0));
+      const response = await fetch("/api/predict_pc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, pc_weights: pcWeights }),
+      });
+      if (!response.ok) throw await response.text();
+      const boneData = await response.json();
+      statusMessage.value = "Shape updated.";
+      statusColor.value = "#48c774";
+      loadBones(boneData, 'pcShape');
+    } catch (error) {
+      statusMessage.value = "Shape update failed: " + error;
+      statusColor.value = "#f14668";
+    }
+  } while (pcUpdatePending);
+  isPcUpdating.value = false;
+}
+
+// Debounces slider @input (which fires on every drag tick) down to one
+// update per ~120ms of continuous dragging, so the mesh visibly follows the
+// slider without spamming the backend once per pixel of movement.
+let pcInputTimer: ReturnType<typeof setTimeout> | undefined;
+function onPcSliderInput() {
+  if (pcInputTimer) clearTimeout(pcInputTimer);
+  pcInputTimer = setTimeout(() => { pcInputTimer = undefined; updatePcShape(); }, 120);
+}
+
+function resetPcShape() {
+  if (!pcInfo.value) return;
+  pcSd.value = new Array(pcInfo.value.n_modes).fill(0);
+  updatePcShape();
 }
 
 async function saveReport() {
@@ -1215,7 +1350,10 @@ async function runFabrikStep() {
         r_clav_len: r_clav_len.value,
         r_hum_len: r_hum_len.value,
         r_hum_epi_width: r_hum_epi_width.value,
-        fabrik_step: 4
+        fabrik_step: 4,
+        // Always a real solve — this dev-only button exists specifically to
+        // test FABRIK, regardless of the fast-prediction Settings toggle.
+        use_full_solve: true,
       })
     });
 
@@ -1224,9 +1362,7 @@ async function runFabrikStep() {
     predictionProgress.value = 100;
     statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
-    hasPrediction.value = true;
-    isViewingOriginal.value = false;
-    loadBones(boneData);
+    loadBones(boneData, 'predicted');
   } catch (error) {
     statusMessage.value = "FABRIK Failed: " + error;
     statusColor.value = "#f14668";
@@ -1235,22 +1371,17 @@ async function runFabrikStep() {
   isPredicting.value = false;
 }
 
-function toggleComparison() {
-  isViewingOriginal.value = !isViewingOriginal.value;
-  // Re-render from data already in memory. Calling loadBones() with no argument
-  // would re-fetch /bones.json (the shared mean model) and overwrite
-  // predictedModelData, so every later toggle would show the mean for both
-  // views. Passing the stored predicted data keeps both models intact — the
-  // render still picks meanModelData vs predictedModelData via isViewingOriginal.
-  loadBones(predictedModelData);
-}
-
-// Pick a model from the viewport dropdown. `viewOriginal` true = mean model,
-// false = predicted mesh. Re-renders only when the choice actually changes.
-function selectModel(viewOriginal: boolean) {
+// Pick a model from the viewport dropdown — mean, the anthropometric
+// prediction, or the PC-shape adjustment, whichever are available. Each
+// keeps its own data slot (see loadBones), so switching between them never
+// discards the others. Re-renders only when the choice actually changes;
+// loadBones() with no args re-renders from the slot viewMode now points at
+// (or re-fetches /bones.json for 'mean').
+function selectModel(mode: ViewMode) {
   isModelListOpen.value = false;
-  if (isViewingOriginal.value === viewOriginal) return;
-  toggleComparison();
+  if (viewMode.value === mode) return;
+  viewMode.value = mode;
+  loadBones();
 }
 </script>
 
@@ -1266,13 +1397,16 @@ function selectModel(viewOriginal: boolean) {
            <div v-show="!isPanelOpen" class="viewport-tools">
               <!-- Blender-style axis gizmo — click an axis to snap the view. -->
               <canvas ref="gizmoCanvas" class="view-gizmo" title="Click an axis to orient the view"></canvas>
-              <button @click="isPanelOpen = true; isKinematicVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
+              <button @click="isPanelOpen = true; isKinematicVisible = false; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
               </button>
-              <button @click="isPanelOpen = true; isKinematicVisible = true; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
+              <button v-if="SHOW_KINEMATICS_TAB" @click="isPanelOpen = true; isKinematicVisible = true; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
               </button>
-              <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
+              <button @click="isPanelOpen = true; isPcVisible = true; isKinematicVisible = false; isSettingsVisible = false; fetchPcInfo()" class="tool-btn" title="Shape (PCA)" aria-label="Shape (PCA)">
+                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"></line><circle cx="14" cy="6" r="2" fill="currentColor"></circle><line x1="4" y1="12" x2="20" y2="12"></line><circle cx="8" cy="12" r="2" fill="currentColor"></circle><line x1="4" y1="18" x2="20" y2="18"></line><circle cx="16" cy="18" r="2" fill="currentColor"></circle></svg>
+              </button>
+              <button @click="isPanelOpen = true; isSettingsVisible = true; isKinematicVisible = false; isPcVisible = false" class="tool-btn" title="Application Settings" aria-label="Application Settings">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
               </button>
            </div>
@@ -1280,22 +1414,26 @@ function selectModel(viewOriginal: boolean) {
            <!-- Viewport Overlay Label — doubles as a model picker dropdown -->
            <div class="model-selector animate-in">
               <button class="viewport-label" :class="{ open: isModelListOpen }" @click="isModelListOpen = !isModelListOpen" title="Switch model">
-                 <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
+                 <div class="status-indicator" :class="{ active: viewMode !== 'mean' }"></div>
                  <span class="label-text">
-                   {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? 'Predicted Patient-Specific Mesh' : 'Initial Model') }}
+                   {{ viewMode === 'mean' ? 'Mean Anatomical Model' : (viewMode === 'predicted' ? 'Predicted Patient-Specific Mesh' : 'Shape-Adjusted Mesh') }}
                  </span>
                  <svg class="chevron" :class="{ flipped: isModelListOpen }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
               </button>
               <div v-if="isModelListOpen" class="model-list">
-                 <button class="model-option" :class="{ active: isViewingOriginal }" @click="selectModel(true)">
+                 <button class="model-option" :class="{ active: viewMode === 'mean' }" @click="selectModel('mean')">
                     <div class="status-indicator"></div>
                     <span>Mean Anatomical Model</span>
                  </button>
-                 <button v-if="hasPrediction" class="model-option" :class="{ active: !isViewingOriginal }" @click="selectModel(false)">
+                 <button v-if="hasPrediction" class="model-option" :class="{ active: viewMode === 'predicted' }" @click="selectModel('predicted')">
                     <div class="status-indicator active"></div>
                     <span>Predicted Patient-Specific Mesh</span>
                  </button>
-                 <div v-else class="model-empty">Run a prediction to add a patient-specific mesh.</div>
+                 <button v-if="hasPcShape" class="model-option" :class="{ active: viewMode === 'pcShape' }" @click="selectModel('pcShape')">
+                    <div class="status-indicator active"></div>
+                    <span>Shape-Adjusted Mesh</span>
+                 </button>
+                 <div v-if="!hasPrediction && !hasPcShape" class="model-empty">Run a prediction or adjust PC sliders to add more models.</div>
               </div>
            </div>
            <!-- Click-away catcher for the model dropdown -->
@@ -1312,13 +1450,22 @@ function selectModel(viewOriginal: boolean) {
       <div class="viewer-wrapper">
          <div class="floating-frame right-content">
             <div class="pane-header">
-              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : 'Shoulder Predictor') }}</h2>
+              <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : (isPcVisible ? 'Shape (PCA) Adjustment' : 'Shoulder Predictor')) }}</h2>
               <div class="header-actions">
+                <div v-if="isPcVisible" class="pc-header-row">
+                  <button class="icon-btn pc-info-btn" @click="isPcInfoOpen = !isPcInfoOpen" title="About this tab" aria-label="About this tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                  </button>
+                  <div v-if="isPcInfoOpen" class="pc-info-popup">
+                    <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — every joint stays fixed exactly as placed on the mean shape; only the bone surfaces themselves follow the sliders.</p>
+                  </div>
+                </div>
                 <button @click="isPanelOpen = false" class="icon-btn" title="Close panel" aria-label="Close panel">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
             </div>
+            <div v-if="isPcInfoOpen" class="dropdown-backdrop" @pointerdown="isPcInfoOpen = false"></div>
 
             <div v-if="isSettingsVisible" class="settings-view animate-in">
               <div class="card transparent-card">
@@ -1352,6 +1499,19 @@ function selectModel(viewOriginal: boolean) {
                   <input type="checkbox" v-model="isLabelsEnabled" :disabled="!showGuides" id="labelsToggle" />
                   <label for="labelsToggle">Show Coordinate Labels</label>
                 </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isMusclePointsEnabled" @change="loadBones()" id="musclePointsToggle" />
+                  <label for="musclePointsToggle">Show Muscle Points</label>
+                </div>
+              </div>
+              <div class="card transparent-card">
+                <h3 style="color: #00caef">🦴 Prediction Accuracy</h3>
+                <p class="hint">Choose how the anthropometric prediction's joint pose is solved.</p>
+                <div class="toggle-group" style="color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="useFullJointSolve" id="fullSolveToggle" />
+                  <label for="fullSolveToggle">Solve full per-person joint pose (slower)</label>
+                </div>
+                <p class="hint" style="margin-top: 6px;">Off (default): fast — reuses the mean model's joint orientation, only joint positions are personalized. On: derives this person's own joint orientation too, via a full solve that can take significantly longer.</p>
               </div>
               <div class="card transparent-card">
                 <h3 style="color: #3d49d8">📂 Backend Path Configuration</h3>
@@ -1484,6 +1644,36 @@ function selectModel(viewOriginal: boolean) {
               </div>
 
               <button @click="isKinematicVisible = false" class="secondary-btn">Close</button>
+            </div>
+
+            <div v-else-if="isPcVisible" class="settings-view animate-in kinematic-scroll">
+              <div class="card transparent-card">
+                <div v-if="isPcLoading" class="hint">Loading shape model (first time can take ~1-2 min)...</div>
+                <div v-else-if="!pcInfo" class="hint">Failed to load shape model. Re-open this tab to retry.</div>
+
+                <div v-else class="sub-group">
+                  <div v-for="(sd, i) in pcSd" :key="i" class="slider-row">
+                    <label><span>PC{{ i + 1 }} ({{ pcInfo.variance_pct[i].toFixed(1) }}% variance)</span> <span>{{ sd.toFixed(2) }} SD</span></label>
+                    <input
+                      type="range"
+                      v-model.number="pcSd[i]"
+                      :min="-PC_SD_RANGE"
+                      :max="PC_SD_RANGE"
+                      :step="0.05"
+                      @input="onPcSliderInput"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="footer-actions">
+                <button :disabled="!pcInfo || isPcUpdating" @click="resetPcShape" class="run-btn step-btn">
+                  <span v-if="!isPcUpdating">↺ Reset to Mean Shape</span>
+                  <span v-else>🔄 Updating...</span>
+                </button>
+              </div>
+
+              <button @click="isPcVisible = false" class="secondary-btn">Close</button>
             </div>
 
             <div v-else class="main-view animate-in">
@@ -1852,6 +2042,37 @@ label {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.pc-header-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pc-info-btn {
+  padding: 6px;
+}
+.pc-info-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 15;
+  width: min(320px, 80vw);
+  padding: 12px 14px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+  animation: fadeIn 0.15s ease-out;
+}
+.pc-info-popup .hint {
+  margin: 0;
+}
+.light-mode .pc-info-popup {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(0, 0, 0, 0.1);
 }
 /* Floating toolbar — stacks over the full-screen viewport to open the panel. */
 .viewport-tools {
