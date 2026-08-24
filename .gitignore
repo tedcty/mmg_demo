@@ -16,7 +16,6 @@ dist
 *.ntvs*
 *.njsproj
 *.sln
-Demos/SSM Demo/predict_gui/TauriGUI/public/bones.json
 Demos/SSM Demo/predict_gui/TauriGUI/public/pc_corrections.json
 
 # DemoServer runtime output (per-session prediction artifacts)
