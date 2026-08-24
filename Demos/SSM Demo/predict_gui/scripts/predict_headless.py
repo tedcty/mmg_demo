@@ -23,46 +23,64 @@ def load_pca_model(ssm_fpath):
 def run_prediction(json_args_str):
     try:
         args = json.loads(json_args_str)
-        # Validate keys
-        keys = ['sex', 'age', 'height', 'weight', 'r_clav_len', 'r_hum_len', 'r_hum_epi_width', 
-                'anthro_path', 'ssm_path', 'out_path']
-        for k in keys:
+
+        # Always required, regardless of prediction mode
+        for k in ['ssm_path', 'out_path']:
             if k not in args:
                 raise ValueError(f"Missing required argument: {k}")
 
-        case_data = [
-            float(args['sex']), float(args['age']), float(args['height']),
-            float(args['weight']), float(args['r_clav_len']),
-            float(args['r_hum_len']), float(args['r_hum_epi_width'])
-        ]
+        if args.get('pc_weights') is not None:
+            # Manual PC-weight mode (Shape/PCA tab): skip anthro/PLSR entirely
+            # and use the user-supplied weights directly.
+            print("STATUS|Using manual PC weights...", flush=True)
+            print("STATUS|Loading PCA shape model...", flush=True)
+            coupled_pcs = load_pca_model(args['ssm_path'])
+            n_modes_total = coupled_pcs.modes.shape[-1]
+            supplied = np.array([float(w) for w in args['pc_weights']])
+            pred_weights = np.zeros(n_modes_total)
+            n = min(len(supplied), n_modes_total)
+            pred_weights[:n] = supplied[:n]
+        else:
+            # Validate keys
+            keys = ['sex', 'age', 'height', 'weight', 'r_clav_len', 'r_hum_len', 'r_hum_epi_width',
+                    'anthro_path']
+            for k in keys:
+                if k not in args:
+                    raise ValueError(f"Missing required argument: {k}")
 
-        print("STATUS|Starting PLSR training...", flush=True)
+            case_data = [
+                float(args['sex']), float(args['age']), float(args['height']),
+                float(args['weight']), float(args['r_clav_len']),
+                float(args['r_hum_len']), float(args['r_hum_epi_width'])
+            ]
 
-        P = pd.read_csv(args['anthro_path'], header=None)
-        # Assuming the CSV structure is fixed as per the project requirements
-        predictors_train = P.iloc[:, [0, 1, 2, 3, 4, 5, 8, 9]].copy()
-        predictors_train.drop([0], axis=0, inplace=True)
-        predictors_train.drop([0], axis=1, inplace=True)
+            print("STATUS|Starting PLSR training...", flush=True)
 
-        print("STATUS|Loading PCA shape model...", flush=True)
-        coupled_pcs = load_pca_model(args['ssm_path'])
-        
-        # projectedWeights might be (n_samples, n_modes). We need (n_samples, n_modes) for fit.
-        # Check orientation
-        Y = coupled_pcs.projectedWeights
-        if Y.shape[0] != predictors_train.shape[0]:
-            Y = Y.T
-            
-        print(f"STATUS|Running PLSR with {Y.shape[1]} modes...", flush=True)
-        # n_components must be <= min(n_samples, n_features)
-        n_comp = min(10, Y.shape[1], predictors_train.shape[1], predictors_train.shape[0])
-        pls2 = PLSRegression(n_components=n_comp, scale=True)
-        pls2.fit(predictors_train, Y)
-        pred_weights = pls2.predict([case_data])[0]
+            P = pd.read_csv(args['anthro_path'], header=None)
+            # Assuming the CSV structure is fixed as per the project requirements
+            predictors_train = P.iloc[:, [0, 1, 2, 3, 4, 5, 8, 9]].copy()
+            predictors_train.drop([0], axis=0, inplace=True)
+            predictors_train.drop([0], axis=1, inplace=True)
 
-        # Use the PCA object's weights (eigenvalues) for normalization if needed
-        # In this workflow, pred_weights are the absolute weights
-        
+            print("STATUS|Loading PCA shape model...", flush=True)
+            coupled_pcs = load_pca_model(args['ssm_path'])
+
+            # projectedWeights might be (n_samples, n_modes). We need (n_samples, n_modes) for fit.
+            # Check orientation
+            Y = coupled_pcs.projectedWeights
+            if Y.shape[0] != predictors_train.shape[0]:
+                Y = Y.T
+
+            print(f"STATUS|Running PLSR with {Y.shape[1]} modes...", flush=True)
+            # n_components must be <= min(n_samples, n_features)
+            n_comp = min(10, Y.shape[1], predictors_train.shape[1], predictors_train.shape[0])
+            pls2 = PLSRegression(n_components=n_comp, scale=True)
+            pls2.fit(predictors_train, Y)
+            pred_weights = pls2.predict([case_data])[0]
+
+            # Use the PCA object's weights (eigenvalues) for normalization if needed
+            # In this workflow, pred_weights are the absolute weights
+
         print("STATUS|Reconstructing 3D Mesh...", flush=True)
         mean_mesh_files = [f for f in os.listdir(args['ssm_path']) if 'mean' in f.lower() and f.endswith('.ply') and not f.startswith('._')]
         if not mean_mesh_files:
