@@ -21,6 +21,8 @@ Routes:
   GET  /bones.json               → default mean-model bones.json
   GET  /api/progress?session=X   → SSE stream for session X
   POST /api/predict              → run SSM pipeline for session X
+  GET  /api/pc_info              → PCA mode count / std-dev / variance% (cached)
+  POST /api/predict_pc           → reconstruct mesh from manual PC weights
   POST /api/save_report          → save refinement report for session X
 
 Usage:
@@ -496,6 +498,98 @@ def predict():
     # env that has the SSM stack (it imports generate_isb_joints at startup),
     # so sys.executable has every dependency. This avoids depending on `conda`
     # being on PATH — it usually isn't (WinError 2), which 500'd the request.
+    proc = subprocess.Popen(
+        [sys.executable, script, json_args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=SCRIPTS_DIR,
+    )
+
+    def _stream_stdout(p):
+        for line in p.stdout:
+            line = line.strip()
+            if line:
+                q.put(line)
+
+    t = threading.Thread(target=_stream_stdout, args=(proc,), daemon=True)
+    t.start()
+    t.join()
+    proc.wait()
+
+    if proc.returncode != 0:
+        err = proc.stderr.read().strip()
+        q.put(f'ERROR|{err}')
+        return jsonify({'error': err}), 500
+
+    if not os.path.exists(bones_json):
+        return jsonify({'error': 'Pipeline succeeded but bones.json was not written'}), 500
+
+    with open(bones_json) as f:
+        bones_data = json.load(f)
+
+    return jsonify(bones_data)
+
+
+# ---------------------------------------------------------------------------
+# PC (Shape) adjustment endpoints
+# ---------------------------------------------------------------------------
+
+# Cached across requests — loading the PCA model pays the same ~10-30s heavy
+# scientific-import cost as a prediction, but the mode count/std/variance% are
+# constant for a given SSM model, so we only need to compute them once.
+_pc_info_cache = None
+
+
+@app.route('/api/pc_info')
+def pc_info():
+    global _pc_info_cache
+    if _pc_info_cache is not None:
+        return jsonify(_pc_info_cache)
+
+    script = os.path.join(SCRIPTS_DIR, 'pc_info.py')
+    proc = subprocess.run(
+        [sys.executable, script, SSM_MODEL],
+        capture_output=True, text=True, cwd=SCRIPTS_DIR,
+    )
+    if proc.returncode != 0:
+        return jsonify({'error': proc.stderr.strip()}), 500
+
+    line = next((l for l in proc.stdout.splitlines() if l.startswith('PCINFO|')), None)
+    if not line:
+        return jsonify({'error': 'pc_info produced no output'}), 500
+
+    _pc_info_cache = json.loads(line[len('PCINFO|'):])
+    return jsonify(_pc_info_cache)
+
+
+@app.route('/api/predict_pc', methods=['POST'])
+def predict_pc():
+    data = request.get_json(force=True)
+    sid  = data.get('session_id', '').strip()
+    if not _valid_sid(sid):
+        return jsonify({'error': 'invalid or missing session_id'}), 400
+
+    _cleanup_old_sessions()
+
+    sess_dir   = _session_dir(sid)
+    q          = _get_queue(sid)
+    out_ply    = os.path.join(sess_dir, 'predicted_model.ply')
+    bones_json = os.path.join(sess_dir, 'bones.json')
+
+    args = {
+        'pc_weights':  data.get('pc_weights', []),
+        'ssm_path':    SSM_MODEL,
+        'out_path':    out_ply,
+        'export_path': bones_json,
+        'fabrik_step': int(data.get('fabrik_step', 4)),
+    }
+
+    json_args = json.dumps(args)
+    script    = os.path.join(SCRIPTS_DIR, 'predict_headless.py')
+
+    q.put('STATUS|Initialising prediction...')
+
     proc = subprocess.Popen(
         [sys.executable, script, json_args],
         stdout=subprocess.PIPE,
