@@ -20,7 +20,9 @@ class Scapula(BoneBase):
     def __init__(self, side: str):
         super().__init__(side=side)
         self.label = f"{'R' if side == 'right' else 'L'} Scapula"
-        self.color = "#FFA040" if side == "right" else "#FFE060"
+        # Right = warm (orange family), left = cool (teal family) — see
+        # Clavicle's color comment for why this split is shared across bones.
+        self.color = "#E8590C" if side == "right" else "#0F9B8E"
 
         # World-space anatomical landmarks (set after assemble)
         self.aa: np.ndarray = np.zeros(3)

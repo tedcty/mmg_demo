@@ -15,7 +15,10 @@ class Humerus(BoneBase):
     def __init__(self, side: str):
         super().__init__(side=side)
         self.label = f"{'R' if side == 'right' else 'L'} Humerus"
-        self.color = "#FF6060"
+        # Right = warm (orange family), left = cool (teal family) — this bone
+        # previously used the same red for both sides with no distinction at
+        # all; see Clavicle's color comment for why this split is shared.
+        self.color = "#FF6B4A" if side == "right" else "#2DD4BF"
         self.gh_joint: np.ndarray = np.zeros(3)   # World GH centre
 
     # ── Loading ───────────────────────────────────────────────────────────────

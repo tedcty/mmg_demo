@@ -13,12 +13,15 @@ from .thorax import Thorax
 
 
 class Clavicle(BoneBase):
-    color = "#C080FF"   # right default; overridden for left in __init__
+    # Right = warm (orange family), left = cool (teal family) — same
+    # right/left hue split used across Clavicle/Scapula/Humerus so a side is
+    # identifiable by color alone regardless of which bone you're looking at.
+    color = "#FFA94D"   # right default; overridden for left in __init__
 
     def __init__(self, side: str):
         super().__init__(side=side)
         self.label = f"{'R' if side == 'right' else 'L'} Clavicle"
-        self.color = "#C080FF" if side == "right" else "#FFB0D0"
+        self.color = "#FFA94D" if side == "right" else "#5EEAD4"
 
         self.sc_joint: np.ndarray = np.zeros(3)   # World SC joint (= thorax SC)
         self.ac_joint: np.ndarray = np.zeros(3)   # World AC joint
