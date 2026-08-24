@@ -146,8 +146,10 @@ const isKinematicVisible = ref(false);
 const isPcVisible = ref(false);
 // PC (Shape) adjustment — sliders over the shape model's principal-component
 // weights, so PC changes can be previewed independently of the anthropometric
-// PLSR prediction. Populated lazily from /api/pc_info the first time the tab
-// is opened, since loading the PCA model is as slow as a full prediction.
+// PLSR prediction. Populated from /api/pc_info in the background as soon as
+// the app mounts (see onMounted's fetchPcInfo() call), so by the time the
+// user opens the tab the one-time server-side model load is likely already
+// done rather than felt as a UI delay.
 const pcInfo = ref<{ n_modes: number; std: number[]; variance_pct: number[] } | null>(null);
 // Sliders are expressed in standard deviations (not raw PC weights) — much
 // easier to read ("1.5 SD from the mean") — and converted to raw weights
@@ -156,6 +158,7 @@ const pcSd = ref<number[]>([]);
 const PC_SD_RANGE = 2;
 const isPcLoading = ref(false);
 const isPcUpdating = ref(false);
+const isPcInfoOpen = ref(false); // "About this tab" popup, toggled by the info-icon button
 // Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
 // full-screen; toggled open with the hamburger button.
 const isPanelOpen = ref(false);
@@ -279,6 +282,7 @@ const isHighlightsEnabled = ref(true); // Control for glide area visualization
 const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
 const isLabelsEnabled = ref(true); // Control for coordinate labels
+const isMusclePointsEnabled = ref(false); // Control for subscapularis muscle point cloud — off by default (clutters the view)
 let highlightsGroup: THREE.Group | null = null; 
 let scapularPlaneGroup: THREE.Group | null = null; 
 let meanModelData: any = null;
@@ -412,8 +416,8 @@ async function loadBones(externalData: any = null) {
         else if (bone.label === "L Clavicle") { clavicleMeshes.left = mesh as THREE.Mesh; originMarkers.clavicle.left = originSphere; originLabels.clavicle.left = sprite; initialQuats.clavicle.left.copy(mesh.quaternion); initialPositions.clavicle.left.copy(mesh.position); }
         else if (bone.label === "R Scapula") { scapulaMeshes.right = mesh as THREE.Mesh; originMarkers.scapula.right = originSphere; originLabels.scapula.right = sprite; initialQuats.scapula.right.copy(mesh.quaternion); initialPositions.scapula.right.copy(mesh.position); }
         else if (bone.label === "L Scapula") { scapulaMeshes.left = mesh as THREE.Mesh; originMarkers.scapula.left = originSphere; originLabels.scapula.left = sprite; initialQuats.scapula.left.copy(mesh.quaternion); initialPositions.scapula.left.copy(mesh.position); }
-        else if (bone.label === "R Subscapularis") { subscapMeshes.right = mesh as THREE.Points; }
-        else if (bone.label === "L Subscapularis") { subscapMeshes.left = mesh as THREE.Points; }
+        else if (bone.label === "R Subscapularis") { subscapMeshes.right = mesh as THREE.Points; mesh.visible = isMusclePointsEnabled.value; }
+        else if (bone.label === "L Subscapularis") { subscapMeshes.left = mesh as THREE.Points; mesh.visible = isMusclePointsEnabled.value; }
         else if (bone.label === "R Humerus") { humerusMeshes.right = mesh as THREE.Mesh; originMarkers.humerus.right = originSphere; originLabels.humerus.right = sprite; initialQuats.humerus.right.copy(mesh.quaternion); initialPositions.humerus.right.copy(mesh.position); }
         else if (bone.label === "L Humerus") { humerusMeshes.left = mesh as THREE.Mesh; originMarkers.humerus.left = originSphere; originLabels.humerus.left = sprite; initialQuats.humerus.left.copy(mesh.quaternion); initialPositions.humerus.left.copy(mesh.position); }
       });
@@ -799,6 +803,14 @@ async function loadBones(externalData: any = null) {
 }
 
 onMounted(async () => {
+  // Pre-warm the Shape (PCA) tab's model in the background as soon as the
+  // page loads, rather than waiting for the user to open that tab — by the
+  // time they click it, the one-time server-side load (heavy library
+  // imports + one reference assembly pass, a few seconds) is likely already
+  // done or well underway. Fire-and-forget; fetchPcInfo already guards
+  // against duplicate/overlapping calls.
+  fetchPcInfo();
+
   // Stream progress messages from the Python pipeline via SSE
   const evtSource = new EventSource(`/api/progress?session=${sessionId}`);
   evtSource.onmessage = (event) => {
@@ -1416,11 +1428,20 @@ function selectModel(viewOriginal: boolean) {
             <div class="pane-header">
               <h2>{{ isSettingsVisible ? 'Application Settings' : (isKinematicVisible ? 'Kinematics' : (isPcVisible ? 'Shape (PCA) Adjustment' : 'Shoulder Predictor')) }}</h2>
               <div class="header-actions">
+                <div v-if="isPcVisible" class="pc-header-row">
+                  <button class="icon-btn pc-info-btn" @click="isPcInfoOpen = !isPcInfoOpen" title="About this tab" aria-label="About this tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                  </button>
+                  <div v-if="isPcInfoOpen" class="pc-info-popup">
+                    <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — every joint stays fixed exactly as placed on the mean shape; only the bone surfaces themselves follow the sliders.</p>
+                  </div>
+                </div>
                 <button @click="isPanelOpen = false" class="icon-btn" title="Close panel" aria-label="Close panel">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
             </div>
+            <div v-if="isPcInfoOpen" class="dropdown-backdrop" @pointerdown="isPcInfoOpen = false"></div>
 
             <div v-if="isSettingsVisible" class="settings-view animate-in">
               <div class="card transparent-card">
@@ -1453,6 +1474,10 @@ function selectModel(viewOriginal: boolean) {
                 <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;" :style="{ opacity: showGuides ? 1 : 0.4 }">
                   <input type="checkbox" v-model="isLabelsEnabled" :disabled="!showGuides" id="labelsToggle" />
                   <label for="labelsToggle">Show Coordinate Labels</label>
+                </div>
+                <div class="toggle-group" style="margin-top: 5px; color: white; display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" v-model="isMusclePointsEnabled" @change="loadBones()" id="musclePointsToggle" />
+                  <label for="musclePointsToggle">Show Muscle Points</label>
                 </div>
               </div>
               <div class="card transparent-card">
@@ -1590,9 +1615,6 @@ function selectModel(viewOriginal: boolean) {
 
             <div v-else-if="isPcVisible" class="settings-view animate-in kinematic-scroll">
               <div class="card transparent-card">
-                <h3 style="color: #a06cd5">🧬 Shape (PCA) Adjustment</h3>
-                <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — every joint stays fixed exactly as placed on the mean shape; only the bone surfaces themselves follow the sliders.</p>
-
                 <div v-if="isPcLoading" class="hint">Loading shape model (first time can take ~1-2 min)...</div>
                 <div v-else-if="!pcInfo" class="hint">Failed to load shape model. Re-open this tab to retry.</div>
 
@@ -1987,6 +2009,37 @@ label {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.pc-header-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pc-info-btn {
+  padding: 6px;
+}
+.pc-info-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 15;
+  width: min(320px, 80vw);
+  padding: 12px 14px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+  animation: fadeIn 0.15s ease-out;
+}
+.pc-info-popup .hint {
+  margin: 0;
+}
+.light-mode .pc-info-popup {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(0, 0, 0, 0.1);
 }
 /* Floating toolbar — stacks over the full-screen viewport to open the panel. */
 .viewport-tools {
