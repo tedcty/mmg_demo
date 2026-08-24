@@ -51,9 +51,10 @@ class Thorax(BoneBase):
             self.get_landmark(case_arr, maps_dir, "tho_t8_r.csv")
             + self.get_landmark(case_arr, maps_dir, "tho_t8_l.csv")
         )
-        verts, inds = self.filter_bone_indices(case_arr, all_faces, maps_dir, "Tho.csv")
+        verts, inds, valid_ids = self.filter_bone_indices(case_arr, all_faces, maps_dir, "Tho.csv")
         self._raw_verts = verts
         self.indices = inds
+        self._valid_ids = valid_ids
 
         # SC joint centres (raw)
         self._sc_r_raw = self.get_sphere_center(case_arr, maps_dir, "tho_scj_r.csv")
@@ -86,6 +87,27 @@ class Thorax(BoneBase):
         # Store axes for children
         self.yt = yt
         self.origin = np.zeros(3)
+        return self
+
+    def replay(self, case_arr: np.ndarray, maps_dir: str) -> "Thorax":
+        """Recompute the visible mesh AND joint centres (sc_r/sc_l) from a
+        new case_arr, reusing this instance's already-solved ij_pt/
+        jcs_matrix/_valid_ids — i.e. the thorax's ORIENTATION stays frozen
+        (that's the part a JCS derivation could get subtly wrong on extreme
+        shapes), but sc_r/sc_l are re-derived from fresh landmarks on the
+        new mesh so they track the new anatomy instead of leaving a gap
+        where the clavicle no longer quite reaches. `self.indices` (the
+        bone-local face list) is untouched: it's purely a function of mesh
+        topology, which never changes across PC weights. Used by
+        generate_isb_joints.replay_shape for the PC-adjustment tab."""
+        raw_verts = case_arr[self._valid_ids]
+        self.vertices = self.transform_mesh(raw_verts, self.ij_pt, self.jcs_matrix)
+
+        sc_r_raw = self.get_sphere_center(case_arr, maps_dir, "tho_scj_r.csv")
+        sc_l_raw = self.get_sphere_center(case_arr, maps_dir, "tho_scj_l.csv")
+        rot3 = self.jcs_matrix[:3, :3]
+        self.sc_r = rot3 @ (sc_r_raw - self.ij_pt)
+        self.sc_l = rot3 @ (sc_l_raw - self.ij_pt)
         return self
 
     # ── Scapula projection ────────────────────────────────────────────────────

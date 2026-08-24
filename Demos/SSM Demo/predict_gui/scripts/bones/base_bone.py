@@ -75,11 +75,16 @@ class BoneBase:
         all_faces: list[tuple[int, int, int]],
         maps_dir: str,
         filename: str,
-    ) -> tuple[list, list]:
-        """Extract per-bone vertices and remapped triangle indices."""
+    ) -> tuple[list, list, list]:
+        """Extract per-bone vertices, remapped triangle indices, and the
+        original full-mesh vertex ids used (`valid_ids`) — the latter is
+        purely a function of the landmark-mapping CSV, never of `all_verts`/
+        `all_faces`, so callers can cache it and later slice a *different*
+        mesh's vertices by the same ids without re-scanning faces at all
+        (see replay_vertices on each bone subclass)."""
         fpath = os.path.join(maps_dir, filename)
         if not os.path.exists(fpath):
-            return [], []
+            return [], [], []
         idm_set = set(pd.read_csv(fpath)['idm'].to_list())
         valid_ids = sorted(idm_set)
         old_to_new = {v: i for i, v in enumerate(valid_ids)}
@@ -88,7 +93,7 @@ class BoneBase:
         for f in all_faces:
             if f[0] in idm_set and f[1] in idm_set and f[2] in idm_set:
                 bone_faces.extend([old_to_new[f[0]], old_to_new[f[1]], old_to_new[f[2]]])
-        return bone_verts, bone_faces
+        return bone_verts, bone_faces, valid_ids
 
     @staticmethod
     def load_muscle_cloud(case_verts: np.ndarray, fpath: str) -> list | None:

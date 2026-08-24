@@ -105,7 +105,8 @@ class FabrikScapulaSolver:
 
     def solve_alignment(self, initial_ac, initial_centroid, lms_local,
                         scap_mesh_local, p_proj, subscap_seed=None,
-                        initial_rot=None, c7=None, t8=None, max_step=4):
+                        initial_rot=None, c7=None, t8=None, max_step=4,
+                        correction=None):
         """
         FABRIK alignment pipeline (Steps 0-4).
 
@@ -126,6 +127,27 @@ class FabrikScapulaSolver:
                       anatomical position while the geometric ST-contact terms
                       are free to nudge it for thorax-collision avoidance.
         max_step    : 0=seed only, 1-4=run up to that step.
+        correction  : optional (tilt_deg, roll_deg, t_push, t_slide) from a
+                      previous full Step-4 solve (e.g. on the mean shape).
+                      When given, Step 4 skips the Nelder-Mead search entirely
+                      and just reapplies these numbers against THIS call's own
+                      freshly-computed push_dir/slide_dir/tilt_axis/roll_axis —
+                      i.e. "same correction, new geometry" rather than a stale
+                      cached pose. Steps 1-3 (seed, tangency, bubble
+                      translation) always run fresh regardless, since they're
+                      cheap and shape-dependent. This trades Step 4's ~90s
+                      multi-start search for a single direct evaluation
+                      (<10ms), at the cost of not re-verifying that the
+                      correction is still collision-free on this specific
+                      geometry — fine for previewing nearby shapes, not a
+                      substitute for a real solve on far-off geometry.
+
+        Returns
+        -------
+        (ac, cen, rot, correction_used) — correction_used is the
+        (tilt_deg, roll_deg, t_push, t_slide) actually applied at Step 4
+        (freshly solved or reused), or None if Step 4 didn't run at all
+        (max_step < 4, or no subscap cloud).
         """
         # ── Segment lengths (preserved throughout) ────────────────────────────
         l1 = float(np.linalg.norm(np.asarray(initial_ac) - self.sc_joint))
@@ -259,7 +281,7 @@ class FabrikScapulaSolver:
 
         # ── Step 0: Seed ──────────────────────────────────────────────────────
         if max_step <= 0:
-            return ac, cen, rot
+            return ac, cen, rot, None
 
         # ══════════════════════════════════════════════════════════════════════
         # STEP 1 – Initial placement
@@ -284,7 +306,7 @@ class FabrikScapulaSolver:
               f"standoff={standoff:.1f}mm (d_close={d_close_local:.1f}mm)")
 
         if max_step <= 1:
-            return ac, cen, rot
+            return ac, cen, rot, None
 
         # ══════════════════════════════════════════════════════════════════════
         # STEP 2 – Initial orientation: AA-TS-AI tangency (anatomical plane guess)
@@ -321,7 +343,7 @@ class FabrikScapulaSolver:
         print(f"  FABRIK Step 2: AA-TS-AI tangency. Centroid [{cen[0]:.1f},{cen[1]:.1f},{cen[2]:.1f}]")
 
         if max_step <= 2:
-            return ac, cen, rot
+            return ac, cen, rot, None
 
         # ══════════════════════════════════════════════════════════════════════
         # STEP 3 – Bubble translation
@@ -336,7 +358,7 @@ class FabrikScapulaSolver:
             print(f"  FABRIK Step 3: landmark clearance={d_before:.1f}mm")
 
         if max_step <= 3:
-            return ac, cen, rot
+            return ac, cen, rot, None
 
         # ══════════════════════════════════════════════════════════════════════
         # STEP 4 – Joint rotation + translation fine-tuning
@@ -370,11 +392,12 @@ class FabrikScapulaSolver:
         # not a free shift of AC; tilt/roll then apply an additional local
         # reorientation on top, same as before.
         # ══════════════════════════════════════════════════════════════════════
+        correction_used = None
         if has_subscap:
             roll_axis = cen - ac
             rlen = np.linalg.norm(roll_axis)
             if rlen < 1e-6:
-                return ac, cen, rot
+                return ac, cen, rot, None
             roll_axis /= rlen
 
             tilt_axis = np.cross(roll_axis, n_scap_world())
@@ -693,52 +716,61 @@ class FabrikScapulaSolver:
 
                 return cost
 
-            # Multi-start: Nelder-Mead is a local search, sensitive to where it
-            # begins, and this cost landscape is rugged (several steep,
-            # competing penalty terms). A single run from the all-zero seed
-            # left one side (right, on the SSM_103 mean-anthropometry case)
-            # essentially stuck at its starting point while the other made
-            # real progress from the same seed on a structurally identical
-            # problem — evidence of a poor local minimum, not a harder
-            # geometry.
-            #
-            # TRIED: cutting this to 3 slide-only seeds (origin + t_slide
-            # ±20), on the theory that splitting push into its own DOF
-            # (t_push vs t_slide, above) already fixed the underlying
-            # capacity problem that motivated multi-start in the first
-            # place. Verified empirically that it does NOT — left regressed
-            # from cost=9545 (CP_dist=0.0mm, clean) to cost=65325
-            # (CP_dist=-6.8mm, actively penetrating) because none of the
-            # slide-only seeds reach the basin its real solution lives in
-            # (push=-32.8mm, slide=-31.0mm — needs a push-biased seed to find
-            # it). Multi-start across BOTH axes is load-bearing, not padding.
-            # Reverted to the full seed set. The one real win kept from that
-            # attempt: early-exit once a seed already lands a good-enough
-            # cost, so the common/easy side doesn't pay for seeds it doesn't
-            # need — this is safe because it only stops after finding a
-            # result at least as good as the threshold, never trades quality
-            # for speed.
-            starts = [
-                [0., 0., 0., 0.],
-                [0., 0., 20., 0.], [0., 0., -20., 0.],
-                [0., 0., 0., 20.], [0., 0., 0., -20.],
-                [0., 0., 15., 15.], [0., 0., 15., -15.],
-            ]
-            GOOD_ENOUGH_COST = 2000.0
-            best_res = None
-            best_idx = -1
-            for i, x0 in enumerate(starts):
-                r = minimize(joint_cost, x0=x0, method='Nelder-Mead',
-                             options={'xatol': 0.05, 'fatol': 0.01, 'maxiter': 3000})
-                if best_res is None or r.fun < best_res.fun:
-                    best_res = r
-                    best_idx = i
-                if best_res.fun < GOOD_ENOUGH_COST:
-                    break
-            res = best_res
-            print(f"  FABRIK Step 4: {best_idx + 1}/{len(starts)} seed(s) tried, "
-                  f"winning seed={starts[best_idx]}, cost={res.fun:.2f}")
-            bt, br, t_push_f, t_slide_f = res.x
+            if correction is not None:
+                # Reuse a previously-solved correction (e.g. from the mean
+                # shape) instead of re-running the search below — see the
+                # `correction` parameter docstring above for the trade-off.
+                bt, br, t_push_f, t_slide_f = correction
+                cost_label = "n/a (reused, not re-searched)"
+            else:
+                # Multi-start: Nelder-Mead is a local search, sensitive to where it
+                # begins, and this cost landscape is rugged (several steep,
+                # competing penalty terms). A single run from the all-zero seed
+                # left one side (right, on the SSM_103 mean-anthropometry case)
+                # essentially stuck at its starting point while the other made
+                # real progress from the same seed on a structurally identical
+                # problem — evidence of a poor local minimum, not a harder
+                # geometry.
+                #
+                # TRIED: cutting this to 3 slide-only seeds (origin + t_slide
+                # ±20), on the theory that splitting push into its own DOF
+                # (t_push vs t_slide, above) already fixed the underlying
+                # capacity problem that motivated multi-start in the first
+                # place. Verified empirically that it does NOT — left regressed
+                # from cost=9545 (CP_dist=0.0mm, clean) to cost=65325
+                # (CP_dist=-6.8mm, actively penetrating) because none of the
+                # slide-only seeds reach the basin its real solution lives in
+                # (push=-32.8mm, slide=-31.0mm — needs a push-biased seed to find
+                # it). Multi-start across BOTH axes is load-bearing, not padding.
+                # Reverted to the full seed set. The one real win kept from that
+                # attempt: early-exit once a seed already lands a good-enough
+                # cost, so the common/easy side doesn't pay for seeds it doesn't
+                # need — this is safe because it only stops after finding a
+                # result at least as good as the threshold, never trades quality
+                # for speed.
+                starts = [
+                    [0., 0., 0., 0.],
+                    [0., 0., 20., 0.], [0., 0., -20., 0.],
+                    [0., 0., 0., 20.], [0., 0., 0., -20.],
+                    [0., 0., 15., 15.], [0., 0., 15., -15.],
+                ]
+                GOOD_ENOUGH_COST = 2000.0
+                best_res = None
+                best_idx = -1
+                for i, x0 in enumerate(starts):
+                    r = minimize(joint_cost, x0=x0, method='Nelder-Mead',
+                                 options={'xatol': 0.05, 'fatol': 0.01, 'maxiter': 3000})
+                    if best_res is None or r.fun < best_res.fun:
+                        best_res = r
+                        best_idx = i
+                    if best_res.fun < GOOD_ENOUGH_COST:
+                        break
+                res = best_res
+                print(f"  FABRIK Step 4: {best_idx + 1}/{len(starts)} seed(s) tried, "
+                      f"winning seed={starts[best_idx]}, cost={res.fun:.2f}")
+                bt, br, t_push_f, t_slide_f = res.x
+                cost_label = f"{res.fun:.2f}"
+
             ac, trial_final = _translate_and_rotate(t_push_f, t_slide_f, bt, br)
             rot = trial_final
             cen = rot.apply(centroid_loc) + ac
@@ -764,15 +796,17 @@ class FabrikScapulaSolver:
                 ts_trap_fin = world_lm(ts_loc)
                 trap_msg_s4 += f", trap_lower={np.linalg.norm(ts_trap_fin - t8):.1f}mm(rest={trap_lower_L0:.1f})"
 
-            print(f"  FABRIK Step 4 (joint): tilt={bt:.1f}°, roll={br:.1f}°, "
+            step4_mode = "cached" if correction is not None else "joint"
+            print(f"  FABRIK Step 4 ({step4_mode}): tilt={bt:.1f}°, roll={br:.1f}°, "
                   f"push={t_push_f:.1f}mm (dorsal), slide={t_slide_f:.1f}mm (lateral), "
-                  f"Cost={res.fun:.2f}, d_min={np.min(df):.1f}mm, AI_dist={ai_dist_fin:.1f}mm{cp_msg}{trap_msg_s4}")
+                  f"Cost={cost_label}, d_min={np.min(df):.1f}mm, AI_dist={ai_dist_fin:.1f}mm{cp_msg}{trap_msg_s4}")
+            correction_used = (bt, br, t_push_f, t_slide_f)
         else:
             # Legacy: single-axis roll sweep for medial clearance
             p_c4, n_t4 = self.get_surface_info(cen)
             roll_axis = cen - ac
             rlen = np.linalg.norm(roll_axis)
-            if rlen < 1e-6: return ac, cen, rot
+            if rlen < 1e-6: return ac, cen, rot, None
             roll_axis /= rlen
             best_deg, best_err = 0, float('inf')
             for deg in range(-45, 46, 1):
@@ -790,7 +824,7 @@ class FabrikScapulaSolver:
             print(f"  FABRIK Step 4 (legacy): AI={np.dot(ai_w-p_c4,n_t4):.1f}mm, "
                   f"TS={np.dot(ts_w-p_c4,n_t4):.1f}mm (roll={best_deg}°)")
 
-        return ac, cen, rot
+        return ac, cen, rot, correction_used
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -810,7 +844,7 @@ def apply_fabrik_alignment(side, thorax_mesh, sc_joint, ac_joint,
     if p_proj is None:
         p_proj, _ = solver.get_surface_info(centroid)
 
-    ac_sol, cen_sol, rot_sol = solver.solve_alignment(
+    ac_sol, cen_sol, rot_sol, _correction = solver.solve_alignment(
         ac_joint, centroid, lms_local, None, p_proj,
         subscap_seed=subscap_seed,
         initial_rot=initial_rot,

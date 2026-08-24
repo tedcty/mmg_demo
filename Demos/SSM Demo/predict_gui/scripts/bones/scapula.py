@@ -34,6 +34,9 @@ class Scapula(BoneBase):
         # Solved rotation (used by Humerus to follow GH)
         self.solved_rot: R = R.identity()
         self._ac_seed: np.ndarray = np.zeros(3)   # AC before FABRIK
+        # Step-4 (tilt_deg, roll_deg, t_push, t_slide) actually applied —
+        # set by assemble_fabrik, reusable via its `correction` param later.
+        self.fabrik_correction: tuple | None = None
 
         # Subscapularis cloud
         self.subscapularis: np.ndarray | None = None
@@ -51,9 +54,10 @@ class Scapula(BoneBase):
         prefix = "r" if s == "right" else "l"
         bone_csv = "R_scap.csv" if s == "right" else "L_scap.csv"
 
-        verts, inds = self.filter_bone_indices(case_arr, all_faces, maps_dir, bone_csv)
+        verts, inds, valid_ids = self.filter_bone_indices(case_arr, all_faces, maps_dir, bone_csv)
         self._raw_verts = verts
         self.indices    = inds
+        self._valid_ids = valid_ids
 
         self._aa_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_aa.csv")
         self._ai_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_ai.csv")
@@ -64,6 +68,7 @@ class Scapula(BoneBase):
         # Subscapularis cloud (ID 69)
         subscap_dir  = "Scapula_right" if s == "right" else "Scapula_left"
         subscap_path = os.path.join(res_dir, "MAS_103", subscap_dir, "69_NodeNo_2.csv")
+        self._subscap_path = subscap_path
         self._subscap_raw = self.load_muscle_cloud(case_arr, subscap_path)
         return self
 
@@ -126,8 +131,17 @@ class Scapula(BoneBase):
         thorax: Thorax,
         clavicle: Clavicle,
         fabrik_step: int = 4,
+        correction: tuple | None = None,
     ) -> "Scapula":
-        """Full FABRIK pipeline assembly (used for the right scapula)."""
+        """Full FABRIK pipeline assembly (used for the right scapula).
+
+        `correction`, when given, is a previously-solved Step-4
+        (tilt_deg, roll_deg, t_push, t_slide) reused instead of re-running
+        the ~90s Nelder-Mead search — see solve_alignment's docstring. The
+        actually-applied correction (freshly solved, reused, or None if
+        Step 4 didn't run) ends up on self.fabrik_correction either way, so
+        a caller can capture it from a full solve and pass it back in later.
+        """
         # Import here to keep the module dependency explicit
         from fabrik_solver import FabrikScapulaSolver
 
@@ -206,12 +220,13 @@ class Scapula(BoneBase):
         # (seed_rot_L ≠ identity) while accidentally working for the right side
         # (seed_rot_R ≈ identity because the right JCS aligns with world axes).
         rot_seed = R.identity()
-        ac_sol, cen_sol, rot_sol = solver.solve_alignment(
+        ac_sol, cen_sol, rot_sol, self.fabrik_correction = solver.solve_alignment(
             ac_seed, centroid_seed, lms_local, None, p_proj,
             subscap_seed=subscap_seed,
             initial_rot=rot_seed,
             c7=c7_g, t8=t8_g,
             max_step=fabrik_step,
+            correction=correction,
         )
 
         # SANITY CLAMP: FABRIK should never move AC more than 100 mm in Y or
@@ -243,6 +258,16 @@ class Scapula(BoneBase):
         self._ac_seed  = ac_seed
         self.solved_rot = rot_sol
 
+        # Store for replay_vertices — the seed-stage transform (ij/s_mat/
+        # ac_offset) plus the solved correction stage (_ac_seed/solved_rot/
+        # ac_sol, the last set below as self.ac_joint) together fully define
+        # how raw mesh vertices become world-space ones. Freezing all of
+        # these lets a later call re-derive .vertices from a *different*
+        # mesh's raw vertices while reusing this exact joint pose.
+        self._ij        = ij
+        self._s_mat      = s_mat
+        self._ac_offset  = ac_offset
+
         def _apply(pt: np.ndarray) -> np.ndarray:
             return rot_sol.apply(pt - ac_seed) + ac_sol
 
@@ -271,6 +296,67 @@ class Scapula(BoneBase):
 
         if subscap_seed is not None:
             self.subscapularis = rot_sol.apply(subscap_seed - ac_seed) + ac_sol
+
+        self._compute_plane_normal()
+        return self
+
+    def replay(self, case_arr: np.ndarray, maps_dir: str, clavicle: Clavicle) -> "Scapula":
+        """Recompute the visible mesh AND all scapula landmarks (aa/ts/ai/
+        cp/ac_joint/gh_joint_seed/subscapularis) from a new case_arr,
+        reusing this instance's already-solved _ij/_s_mat (seed JCS
+        orientation) and solved_rot (the FABRIK Step-4 orientation) — the
+        scapula's ORIENTATION stays frozen — but re-deriving every position
+        from fresh landmarks on the new mesh via `clavicle`'s (already
+        replayed) ac_joint as the new seed anchor.
+
+        The FABRIK correction is reused as a *relative* displacement
+        (self.ac_joint - self._ac_seed, i.e. how far Step 4 moved AC from
+        its seed) rather than an absolute world point, so it still makes
+        sense once the seed itself has moved — e.g. because this PC weight
+        made the scapula a different size. No search re-runs; this is a
+        direct evaluation. See Thorax's version of this method for more
+        context on the general freeze-rotation/recompute-position approach.
+        """
+        prefix = "r" if self.side == "right" else "l"
+        raw_verts = case_arr[self._valid_ids]
+
+        aa_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_aa.csv")
+        ai_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_ai.csv")
+        ts_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_ts.csv")
+        cp_raw = self.get_landmark(case_arr, maps_dir, f"sca_{prefix}_cap.csv")
+        gh_raw = self.get_sphere_center(case_arr, maps_dir, f"scap_ghj_{prefix}.csv")
+
+        ij, s_mat = self._ij, self._s_mat
+        ac_seed = clavicle.ac_joint.copy()
+        ac_offset = ac_seed - (s_mat[:3, :3] @ (aa_raw - ij))
+
+        def _seed(pt: np.ndarray) -> np.ndarray:
+            return (s_mat[:3, :3] @ (pt - ij)) + ac_offset
+
+        mesh_seed = self.transform_mesh(raw_verts, ij, s_mat) + ac_offset
+        aa_seed, ts_seed, ai_seed, cp_seed, gh_seed = (
+            _seed(aa_raw), _seed(ts_raw), _seed(ai_raw), _seed(cp_raw), _seed(gh_raw)
+        )
+
+        rot_sol = self.solved_rot
+        ac_sol = ac_seed + (self.ac_joint - self._ac_seed)  # frozen delta, fresh seed
+
+        def _apply(pt: np.ndarray) -> np.ndarray:
+            return rot_sol.apply(pt - ac_seed) + ac_sol
+
+        self.vertices      = rot_sol.apply(mesh_seed - ac_seed) + ac_sol
+        self.aa            = _apply(aa_seed)
+        self.ts            = _apply(ts_seed)
+        self.ai            = _apply(ai_seed)
+        self.cp            = _apply(cp_seed)
+        self.ac_joint      = ac_sol.copy()
+        self.origin        = ac_sol.copy()
+        self.gh_joint_seed = _apply(gh_seed)
+
+        subscap_raw = self.load_muscle_cloud(case_arr, self._subscap_path)
+        if subscap_raw is not None:
+            subscap_seed = self.transform_mesh(subscap_raw, ij, s_mat) + ac_offset
+            self.subscapularis = rot_sol.apply(np.array(subscap_seed) - ac_seed) + ac_sol
 
         self._compute_plane_normal()
         return self
