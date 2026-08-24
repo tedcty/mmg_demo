@@ -149,7 +149,11 @@ const isPcVisible = ref(false);
 // PLSR prediction. Populated lazily from /api/pc_info the first time the tab
 // is opened, since loading the PCA model is as slow as a full prediction.
 const pcInfo = ref<{ n_modes: number; std: number[]; variance_pct: number[] } | null>(null);
-const pcWeights = ref<number[]>([]);
+// Sliders are expressed in standard deviations (not raw PC weights) — much
+// easier to read ("1.5 SD from the mean") — and converted to raw weights
+// (sd * std[i]) only when sent to the backend.
+const pcSd = ref<number[]>([]);
+const PC_SD_RANGE = 2;
 const isPcLoading = ref(false);
 const isPcUpdating = ref(false);
 // Side panel (Shoulder Predictor) — hidden by default so the 3D viewport is
@@ -1185,13 +1189,13 @@ async function runPrediction() {
 async function fetchPcInfo() {
   if (pcInfo.value || isPcLoading.value) return;
   isPcLoading.value = true;
-  statusMessage.value = "Loading shape model (first time can take ~30s)...";
+  statusMessage.value = "Loading shape model (first time can take ~1-2 min)...";
   statusColor.value = "#ffffff";
   try {
     const response = await fetch("/api/pc_info");
     if (!response.ok) throw await response.text();
     pcInfo.value = await response.json();
-    pcWeights.value = new Array(pcInfo.value!.n_modes).fill(0);
+    pcSd.value = new Array(pcInfo.value!.n_modes).fill(0);
     statusMessage.value = "Shape model loaded.";
     statusColor.value = "#48c774";
   } catch (error) {
@@ -1201,38 +1205,58 @@ async function fetchPcInfo() {
   isPcLoading.value = false;
 }
 
-// Sends the current PC weights to the backend for reconstruction. Bound to
-// slider @change (fires on release, not per drag-pixel) so dragging doesn't
-// flood the backend with subprocess spawns.
+// Sends the current PC weights to the backend for reconstruction (~0.7s
+// round trip — the backend replays the new mesh onto a frozen reference
+// skeleton rather than re-solving joints, see server.py). Bound to slider
+// @input (fires continuously while dragging) via onPcSliderInput's debounce
+// below, so this itself just needs to (a) never run two requests at once,
+// since predict_pc mutates this session's own out_ply/bones.json files, and
+// (b) not silently drop a slider move that arrived while a request was
+// in flight — the `pending` loop below re-sends once more with the latest
+// position when that happens, instead of queuing one request per move.
+let pcUpdatePending = false;
 async function updatePcShape() {
-  if (isPcUpdating.value) return;
+  if (isPcUpdating.value) { pcUpdatePending = true; return; }
   isPcUpdating.value = true;
-  statusMessage.value = "Updating shape...";
-  statusColor.value = "#ffffff";
-  try {
-    const response = await fetch("/api/predict_pc", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, pc_weights: pcWeights.value }),
-    });
-    if (!response.ok) throw await response.text();
-    const boneData = await response.json();
-    statusMessage.value = "Shape updated.";
-    statusColor.value = "#48c774";
-    hasPrediction.value = true;
-    isPcShapeMesh.value = true;
-    isViewingOriginal.value = false;
-    loadBones(boneData);
-  } catch (error) {
-    statusMessage.value = "Shape update failed: " + error;
-    statusColor.value = "#f14668";
-  }
+  do {
+    pcUpdatePending = false;
+    statusMessage.value = "Updating shape...";
+    statusColor.value = "#ffffff";
+    try {
+      const pcWeights = pcSd.value.map((sd, i) => sd * (pcInfo.value?.std[i] ?? 0));
+      const response = await fetch("/api/predict_pc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, pc_weights: pcWeights }),
+      });
+      if (!response.ok) throw await response.text();
+      const boneData = await response.json();
+      statusMessage.value = "Shape updated.";
+      statusColor.value = "#48c774";
+      hasPrediction.value = true;
+      isPcShapeMesh.value = true;
+      isViewingOriginal.value = false;
+      loadBones(boneData);
+    } catch (error) {
+      statusMessage.value = "Shape update failed: " + error;
+      statusColor.value = "#f14668";
+    }
+  } while (pcUpdatePending);
   isPcUpdating.value = false;
+}
+
+// Debounces slider @input (which fires on every drag tick) down to one
+// update per ~120ms of continuous dragging, so the mesh visibly follows the
+// slider without spamming the backend once per pixel of movement.
+let pcInputTimer: ReturnType<typeof setTimeout> | undefined;
+function onPcSliderInput() {
+  if (pcInputTimer) clearTimeout(pcInputTimer);
+  pcInputTimer = setTimeout(() => { pcInputTimer = undefined; updatePcShape(); }, 120);
 }
 
 function resetPcShape() {
   if (!pcInfo.value) return;
-  pcWeights.value = new Array(pcInfo.value.n_modes).fill(0);
+  pcSd.value = new Array(pcInfo.value.n_modes).fill(0);
   updatePcShape();
 }
 
@@ -1567,21 +1591,21 @@ function selectModel(viewOriginal: boolean) {
             <div v-else-if="isPcVisible" class="settings-view animate-in kinematic-scroll">
               <div class="card transparent-card">
                 <h3 style="color: #a06cd5">🧬 Shape (PCA) Adjustment</h3>
-                <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — joint pose is not recalculated live.</p>
+                <p class="hint">Adjust individual shape-model principal components to see how each one deforms the mesh. This is a debug view — every joint stays fixed exactly as placed on the mean shape; only the bone surfaces themselves follow the sliders.</p>
 
-                <div v-if="isPcLoading" class="hint">Loading shape model (first time can take ~30s)...</div>
+                <div v-if="isPcLoading" class="hint">Loading shape model (first time can take ~1-2 min)...</div>
                 <div v-else-if="!pcInfo" class="hint">Failed to load shape model. Re-open this tab to retry.</div>
 
                 <div v-else class="sub-group">
-                  <div v-for="(weight, i) in pcWeights" :key="i" class="slider-row">
-                    <label><span>PC{{ i + 1 }} ({{ pcInfo.variance_pct[i].toFixed(1) }}% variance)</span> <span>{{ weight.toFixed(2) }}</span></label>
+                  <div v-for="(sd, i) in pcSd" :key="i" class="slider-row">
+                    <label><span>PC{{ i + 1 }} ({{ pcInfo.variance_pct[i].toFixed(1) }}% variance)</span> <span>{{ sd.toFixed(2) }} SD</span></label>
                     <input
                       type="range"
-                      v-model.number="pcWeights[i]"
-                      :min="-3 * pcInfo.std[i]"
-                      :max="3 * pcInfo.std[i]"
-                      :step="pcInfo.std[i] / 50"
-                      @change="updatePcShape"
+                      v-model.number="pcSd[i]"
+                      :min="-PC_SD_RANGE"
+                      :max="PC_SD_RANGE"
+                      :step="0.05"
+                      @input="onPcSliderInput"
                     />
                   </div>
                 </div>
