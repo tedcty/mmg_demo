@@ -614,6 +614,25 @@ def _get_pc_model():
     return _pc_model_cache
 
 
+def _warm_pc_model_background():
+    """Kicks off _get_pc_model()'s one-time load (heavy library imports +
+    a reference assembly pass) in a background thread as soon as the server
+    starts, instead of waiting for the first /api/pc_info request. Runs in
+    a thread rather than blocking _startup_init() itself so this one
+    sub-feature of the SSM demo doesn't delay the whole demo hub (EMG game,
+    segmenter, etc.) from becoming reachable. Uses the same _pc_lock as the
+    routes, so a request that arrives before this finishes just waits on
+    the same in-progress load instead of racing a second one."""
+    def _run():
+        try:
+            with _pc_lock:
+                _get_pc_model()
+            print('[OK]   Shape (PCA) tab model pre-warmed.', flush=True)
+        except Exception as e:
+            print(f'[WARN] Shape (PCA) tab pre-warm failed (will retry on first request): {e}', flush=True)
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @app.route('/api/pc_info')
 def pc_info():
     with _pc_lock:
@@ -1058,6 +1077,11 @@ def _startup_init():
 
     # Clean up any leftover session dirs from a previous run
     _cleanup_old_sessions()
+
+    # Start warming the Shape (PCA) tab's model now, in the background, so
+    # it's ready (or close to it) by the time anyone actually reaches that
+    # tab instead of them paying for it as a UI delay.
+    _warm_pc_model_background()
 
 
 if __name__ == '__main__':
