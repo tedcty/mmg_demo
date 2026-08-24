@@ -268,13 +268,15 @@ let ghostGroup: THREE.Group | null = null; // Group for the mean "ghost" overlap
 let isFirstLoad = true;
 
 // Comparison State
-const isViewingOriginal = ref(true);
+// Three independent model slots can exist at once — the mean model (always
+// available), an anthropometric prediction, and a PC-weight shape
+// adjustment — so the user can switch between whichever they've generated
+// without one overwriting the other. viewMode picks which is currently shown.
+type ViewMode = 'mean' | 'predicted' | 'pcShape';
+const viewMode = ref<ViewMode>('mean');
 const isOverlapEnabled = ref(false); // New: Overlap Mode state
-const hasPrediction = ref(false);
-// Distinguishes the two ways the non-mean mesh can be produced, so the
-// viewport label doesn't call a raw PC-weight exploration a "prediction".
-const isPcShapeMesh = ref(false);
-const predictedMeshLabel = computed(() => isPcShapeMesh.value ? 'Shape-Adjusted Mesh' : 'Predicted Patient-Specific Mesh');
+const hasPrediction = ref(false); // an anthropometric prediction has been run
+const hasPcShape = ref(false);    // a PC-weight shape adjustment has been made
 // Viewport model picker — the label doubles as a dropdown to switch models.
 const isModelListOpen = ref(false);
 const showGuides = ref(false); // Master toggle: spheres, triangles, muscle/glide areas, labels
@@ -283,10 +285,11 @@ const isNormalsEnabled = ref(false); // Control for surface normals
 const isScapularPlaneEnabled = ref(false); // Control for scapular plane
 const isLabelsEnabled = ref(true); // Control for coordinate labels
 const isMusclePointsEnabled = ref(false); // Control for subscapularis muscle point cloud — off by default (clutters the view)
-let highlightsGroup: THREE.Group | null = null; 
-let scapularPlaneGroup: THREE.Group | null = null; 
+let highlightsGroup: THREE.Group | null = null;
+let scapularPlaneGroup: THREE.Group | null = null;
 let meanModelData: any = null;
 let predictedModelData: any = null;
+let pcShapeModelData: any = null;
 
 // Reference storage for ghost meshes
 const ghostMeshes = {
@@ -296,7 +299,13 @@ const ghostMeshes = {
     humerus: { right: null as THREE.Mesh | null, left: null as THREE.Mesh | null }
 };
 
-async function loadBones(externalData: any = null) {
+// `kind` says which slot a freshly-received `externalData` belongs to, so
+// this can store an anthropometric prediction and a PC-shape adjustment
+// independently instead of one overwriting the other. Omitted (or called
+// with no externalData at all — e.g. a guide-toggle re-render) means "just
+// re-render whatever viewMode currently points at from its existing data",
+// falling back to a fresh /bones.json fetch only for the mean model.
+async function loadBones(externalData: any = null, kind: 'predicted' | 'pcShape' | null = null) {
   if (!globalScene) return;
 
   try {
@@ -304,6 +313,10 @@ async function loadBones(externalData: any = null) {
     if (externalData) {
       data = externalData;
       console.log("Loading bones from injected Rust data...");
+    } else if (viewMode.value === 'predicted' && predictedModelData) {
+      data = predictedModelData;
+    } else if (viewMode.value === 'pcShape' && pcShapeModelData) {
+      data = pcShapeModelData;
     } else {
       // Add cache-busting timestamp to ensure we get the fresh bones.json
       const response = await fetch(`/bones.json?t=${Date.now()}`);
@@ -314,13 +327,22 @@ async function loadBones(externalData: any = null) {
     if (!meanModelData) {
       meanModelData = JSON.parse(JSON.stringify(data));
     }
-    predictedModelData = data;
-    hasPrediction.value = true;
-    
-    const activeData = isViewingOriginal.value ? meanModelData : predictedModelData;
+    if (externalData && kind === 'predicted') {
+      predictedModelData = data;
+      hasPrediction.value = true;
+      viewMode.value = 'predicted';
+    } else if (externalData && kind === 'pcShape') {
+      pcShapeModelData = data;
+      hasPcShape.value = true;
+      viewMode.value = 'pcShape';
+    }
+
+    const activeData = viewMode.value === 'mean' ? meanModelData
+      : viewMode.value === 'predicted' ? predictedModelData
+      : pcShapeModelData;
     const center = activeData.center;
     const spread = activeData.spread || 500;
-    
+
     if (isFirstLoad && globalCamera && globalControls) {
       const sceneCenter = new THREE.Vector3(center[0], center[1], center[2]);
       globalControls.target.copy(sceneCenter);
@@ -376,7 +398,7 @@ async function loadBones(externalData: any = null) {
             geom.computeVertexNormals();
             const opac = bone.label === "Thorax" ? 0.1 : 0.55;
             const mat = new THREE.MeshStandardMaterial({
-              color: isViewingOriginal.value ? "#88aaff" : bone.color,
+              color: viewMode.value === 'mean' ? "#88aaff" : bone.color,
               roughness: 0.5, metalness: 0.1, transparent: true, opacity: opac, side: THREE.DoubleSide
             });
             mesh = new THREE.Mesh(geom, mat);
@@ -437,7 +459,7 @@ async function loadBones(externalData: any = null) {
               posAttr.needsUpdate = true;
               mesh.geometry.computeVertexNormals();
               if (mesh.material instanceof THREE.MeshStandardMaterial) {
-                  mesh.material.color.set(isViewingOriginal.value ? "#88aaff" : bone.color);
+                  mesh.material.color.set(viewMode.value === 'mean' ? "#88aaff" : bone.color);
                   mesh.material.opacity = bone.label === "Thorax" ? 0.1 : 0.55;
               }
           }
@@ -1181,10 +1203,7 @@ async function runPrediction() {
     predictionProgress.value = 100;
     statusMessage.value = "Prediction Complete! Rendering...";
     statusColor.value = "#48c774";
-    hasPrediction.value = true;
-    isPcShapeMesh.value = false;
-    isViewingOriginal.value = false;
-    loadBones(boneData);
+    loadBones(boneData, 'predicted');
   } catch (error) {
     statusMessage.value = "Failed: " + error;
     statusColor.value = "#f14668";
@@ -1245,10 +1264,7 @@ async function updatePcShape() {
       const boneData = await response.json();
       statusMessage.value = "Shape updated.";
       statusColor.value = "#48c774";
-      hasPrediction.value = true;
-      isPcShapeMesh.value = true;
-      isViewingOriginal.value = false;
-      loadBones(boneData);
+      loadBones(boneData, 'pcShape');
     } catch (error) {
       statusMessage.value = "Shape update failed: " + error;
       statusColor.value = "#f14668";
@@ -1334,10 +1350,7 @@ async function runFabrikStep() {
     predictionProgress.value = 100;
     statusMessage.value = "FABRIK Complete!";
     statusColor.value = "#48c774";
-    hasPrediction.value = true;
-    isPcShapeMesh.value = false;
-    isViewingOriginal.value = false;
-    loadBones(boneData);
+    loadBones(boneData, 'predicted');
   } catch (error) {
     statusMessage.value = "FABRIK Failed: " + error;
     statusColor.value = "#f14668";
@@ -1346,22 +1359,17 @@ async function runFabrikStep() {
   isPredicting.value = false;
 }
 
-function toggleComparison() {
-  isViewingOriginal.value = !isViewingOriginal.value;
-  // Re-render from data already in memory. Calling loadBones() with no argument
-  // would re-fetch /bones.json (the shared mean model) and overwrite
-  // predictedModelData, so every later toggle would show the mean for both
-  // views. Passing the stored predicted data keeps both models intact — the
-  // render still picks meanModelData vs predictedModelData via isViewingOriginal.
-  loadBones(predictedModelData);
-}
-
-// Pick a model from the viewport dropdown. `viewOriginal` true = mean model,
-// false = predicted mesh. Re-renders only when the choice actually changes.
-function selectModel(viewOriginal: boolean) {
+// Pick a model from the viewport dropdown — mean, the anthropometric
+// prediction, or the PC-shape adjustment, whichever are available. Each
+// keeps its own data slot (see loadBones), so switching between them never
+// discards the others. Re-renders only when the choice actually changes;
+// loadBones() with no args re-renders from the slot viewMode now points at
+// (or re-fetches /bones.json for 'mean').
+function selectModel(mode: ViewMode) {
   isModelListOpen.value = false;
-  if (isViewingOriginal.value === viewOriginal) return;
-  toggleComparison();
+  if (viewMode.value === mode) return;
+  viewMode.value = mode;
+  loadBones();
 }
 </script>
 
@@ -1394,22 +1402,26 @@ function selectModel(viewOriginal: boolean) {
            <!-- Viewport Overlay Label — doubles as a model picker dropdown -->
            <div class="model-selector animate-in">
               <button class="viewport-label" :class="{ open: isModelListOpen }" @click="isModelListOpen = !isModelListOpen" title="Switch model">
-                 <div class="status-indicator" :class="{ active: !isViewingOriginal }"></div>
+                 <div class="status-indicator" :class="{ active: viewMode !== 'mean' }"></div>
                  <span class="label-text">
-                   {{ isViewingOriginal ? 'Mean Anatomical Model' : (hasPrediction ? predictedMeshLabel : 'Initial Model') }}
+                   {{ viewMode === 'mean' ? 'Mean Anatomical Model' : (viewMode === 'predicted' ? 'Predicted Patient-Specific Mesh' : 'Shape-Adjusted Mesh') }}
                  </span>
                  <svg class="chevron" :class="{ flipped: isModelListOpen }" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
               </button>
               <div v-if="isModelListOpen" class="model-list">
-                 <button class="model-option" :class="{ active: isViewingOriginal }" @click="selectModel(true)">
+                 <button class="model-option" :class="{ active: viewMode === 'mean' }" @click="selectModel('mean')">
                     <div class="status-indicator"></div>
                     <span>Mean Anatomical Model</span>
                  </button>
-                 <button v-if="hasPrediction" class="model-option" :class="{ active: !isViewingOriginal }" @click="selectModel(false)">
+                 <button v-if="hasPrediction" class="model-option" :class="{ active: viewMode === 'predicted' }" @click="selectModel('predicted')">
                     <div class="status-indicator active"></div>
-                    <span>{{ predictedMeshLabel }}</span>
+                    <span>Predicted Patient-Specific Mesh</span>
                  </button>
-                 <div v-else class="model-empty">Run a prediction to add a patient-specific mesh.</div>
+                 <button v-if="hasPcShape" class="model-option" :class="{ active: viewMode === 'pcShape' }" @click="selectModel('pcShape')">
+                    <div class="status-indicator active"></div>
+                    <span>Shape-Adjusted Mesh</span>
+                 </button>
+                 <div v-if="!hasPrediction && !hasPcShape" class="model-empty">Run a prediction or adjust PC sliders to add more models.</div>
               </div>
            </div>
            <!-- Click-away catcher for the model dropdown -->
