@@ -111,7 +111,7 @@ class Clavicle(BoneBase):
         self.origin   = self.sc_joint.copy()
         return self
 
-    def sync_to_scapula(self, new_ac: np.ndarray) -> None:
+    def sync_to_scapula(self, new_ac: np.ndarray, rotation_override: R | None = None) -> None:
         """Rotate clavicle mesh around SC joint to follow new AC position.
 
         Stores the applied rotation as _sync_rot (defaulting to identity when
@@ -121,13 +121,22 @@ class Clavicle(BoneBase):
         without it, the exported clavicle transform reflects the pre-sync
         seed pose only, which was found (via cross-checking the JS port
         against this endpoint) to be off by 15-35mm at the AC end.
+
+        `rotation_override`, when given, is used in place of the normal
+        align_vectors solve — used by generate_isb_joints.process_and_export
+        to force the left clavicle's SC joint angle to match the right
+        side's (see its _mirror_left_joint_rotation) instead of this side's
+        own independently-derived sync rotation.
         """
         v_old = self.ac_joint - self.sc_joint
         v_new = new_ac         - self.sc_joint
-        if np.linalg.norm(v_new) < 1e-6 or np.linalg.norm(v_old) < 1e-6:
+        if rotation_override is not None:
+            rot_clav = rotation_override
+        elif np.linalg.norm(v_new) < 1e-6 or np.linalg.norm(v_old) < 1e-6:
             self._sync_rot = R.identity()
             return
-        rot_clav, _ = R.align_vectors([v_new], [v_old])
+        else:
+            rot_clav, _ = R.align_vectors([v_new], [v_old])
         self.vertices = rot_clav.apply(self.vertices - self.sc_joint) + self.sc_joint
         self.ac_joint = new_ac.copy()
         self._sync_rot = rot_clav

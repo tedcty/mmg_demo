@@ -302,6 +302,46 @@ class Scapula(BoneBase):
         self._compute_plane_normal()
         return self
 
+    def apply_solved_rotation(self, new_rot: R) -> "Scapula":
+        """Override this (already assemble_fabrik'd) scapula's FABRIK-
+        correction rotation with `new_rot`, re-deriving vertices/landmarks
+        from the already-stored seed-stage data — but NOT ac_joint/origin,
+        which stay this side's own FABRIK-solved *position* (only the
+        *orientation* changes). Used by generate_isb_joints.process_and_export
+        to force the left scapula's GH joint angle to match the right side's
+        (see its _mirror_left_joint_rotation), instead of the left side's own
+        independently-solved FABRIK correction, which generally differs by a
+        few degrees since it's optimized against different (real, slightly
+        asymmetric) anatomy each side."""
+        ij, s_mat, ac_offset = self._ij, self._s_mat, self._ac_offset
+        ac_seed, ac_sol = self._ac_seed, self.ac_joint
+
+        def _seed(pt: np.ndarray) -> np.ndarray:
+            return (s_mat[:3, :3] @ (pt - ij)) + ac_offset
+
+        mesh_seed = self.transform_mesh(self._raw_verts, ij, s_mat) + ac_offset
+        aa_seed, ts_seed, ai_seed, cp_seed, gh_seed = (
+            _seed(self._aa_raw), _seed(self._ts_raw), _seed(self._ai_raw),
+            _seed(self._cp_raw), _seed(self._gh_raw),
+        )
+        subscap_seed = None
+        if self._subscap_raw is not None:
+            subscap_seed = self.transform_mesh(self._subscap_raw, ij, s_mat) + ac_offset
+
+        self.solved_rot = new_rot
+
+        def _apply(pt: np.ndarray) -> np.ndarray:
+            return new_rot.apply(pt - ac_seed) + ac_sol
+
+        self.vertices = new_rot.apply(mesh_seed - ac_seed) + ac_sol
+        self.aa, self.ts, self.ai, self.cp = _apply(aa_seed), _apply(ts_seed), _apply(ai_seed), _apply(cp_seed)
+        self.gh_joint_seed = _apply(gh_seed)
+        if subscap_seed is not None:
+            self.subscapularis = new_rot.apply(np.array(subscap_seed) - ac_seed) + ac_sol
+
+        self._compute_plane_normal()
+        return self
+
     def replay(self, case_arr: np.ndarray, maps_dir: str, clavicle: Clavicle) -> "Scapula":
         """Recompute the visible mesh AND all scapula landmarks (aa/ts/ai/
         cp/ac_joint/gh_joint_seed/subscapularis) from a new case_arr,

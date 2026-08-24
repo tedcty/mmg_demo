@@ -14,9 +14,65 @@ import copy
 import orjson
 import vtk
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from ptb.util.data import VTKMeshUtl
 from bones import Thorax, Clavicle, Scapula, Humerus
 from bones.base_bone import BoneBase
+
+
+def compute_joint_angles(sync_rot: R, solved_rot: R, side: str) -> dict:
+    """Decomposes a side's clavicle sync rotation (= its SC joint angle
+    directly) and scapula FABRIK-correction rotation into SC/AC/GH joint
+    angles, in App.vue's Kinematics-tab convention (its qSC/qAC/qGH
+    construction: 'YXZ' Euler order, angles named per axis, sign flipped by
+    a per-side jointSide so a positive slider means the same anatomical
+    motion on both shoulders). AC is not an independent quantity here — it's
+    derived as clavicle_world^-1 @ scapula_world, i.e. SC^-1 @ GH^-1's
+    inverse — so it's a *consequence* of SC and GH, not separately solvable.
+    Used both to report the current angles (server.py's
+    /api/pc_reference_angles) and by _mirror_left_joint_rotation below."""
+    js = 1 if side == 'right' else -1
+
+    e = sync_rot.as_euler('YXZ', degrees=True)
+    sc = {'abduction': e[0] / js, 'elevation': -e[1] / js, 'upward_rot': -e[2] / js}
+
+    gh_rot = solved_rot.inv()
+    e = gh_rot.as_euler('YXZ', degrees=True)
+    gh = {'internal': -e[0] / js, 'abduction': e[1] / js, 'flexion': e[2]}
+
+    ac_rot = sync_rot.inv() * solved_rot
+    e = ac_rot.as_euler('YXZ', degrees=True)
+    ac = {'internal': -e[0] / js, 'upward': -e[1] / js, 'posterior': -e[2] / js}
+
+    return {'sc': sc, 'ac': ac, 'gh': gh}
+
+
+def _mirror_left_joint_rotation(scap_r_solved_rot: R, clav_r_sync_rot: R) -> tuple[R, R]:
+    """Given the RIGHT side's already-solved scapula FABRIK-correction
+    rotation and clavicle sync-to-scapula rotation, returns the LEFT-side
+    equivalents that produce numerically identical SC and GH joint *angles*
+    (see compute_joint_angles) once decomposed for the opposite side's sign
+    convention. AC then improves (since it's a consequence of SC+GH, not an
+    independent parameter — see compute_joint_angles' docstring) but isn't
+    forced to match exactly.
+
+    Joint *positions* are untouched by this — only orientation. Right's
+    rotations are independently solved from real (slightly asymmetric)
+    anatomy each side; this makes left's orientation match right's rather
+    than its own independent solve, which was found to differ by a few
+    degrees (up to ~4° on some axes) even at the mean shape.
+    """
+    angles = compute_joint_angles(clav_r_sync_rot, scap_r_solved_rot, 'right')
+    sc, gh = angles['sc'], angles['gh']
+
+    # Recompose for LEFT (jointSide = -1) using RIGHT's SAME angle values.
+    js = -1
+    sync_rot_l = R.from_euler(
+        'YXZ', [js * sc['abduction'], -js * sc['elevation'], -js * sc['upward_rot']], degrees=True)
+    qgh_l = R.from_euler(
+        'YXZ', [-js * gh['internal'], js * gh['abduction'], gh['flexion']], degrees=True)
+    solved_rot_l = qgh_l.inv()
+    return solved_rot_l, sync_rot_l
 
 
 def _extract_faces(polydata) -> list:
@@ -94,7 +150,15 @@ def process_and_export(target_ply: str | None = None, fabrik_step: int = 1,
         .load(case_arr, all_faces, maps_dir, res_dir)
         .assemble_fabrik(thorax, clav_l, fabrik_step, correction=(corrections or {}).get('left'))
     )
-    clav_l.sync_to_scapula(scap_l.ac_joint)
+
+    # Force left's joint *angles* (GH/SC, and consequently AC) to match
+    # right's rather than left's own independent solve — see
+    # _mirror_left_joint_rotation's docstring. Joint *positions* (ac_seed/
+    # ac_sol/sc_joint, all derived from this side's own real landmarks)
+    # are untouched.
+    solved_rot_l, sync_rot_l = _mirror_left_joint_rotation(scap_r.solved_rot, clav_r._sync_rot)
+    scap_l.apply_solved_rotation(solved_rot_l)
+    clav_l.sync_to_scapula(scap_l.ac_joint, rotation_override=sync_rot_l)
     hum_l  = Humerus("left").load(case_arr, all_faces, maps_dir).assemble(thorax, scap_l)
 
     payload = _build_payload(thorax, clav_r, clav_l, scap_r, scap_l, hum_r, hum_l)
