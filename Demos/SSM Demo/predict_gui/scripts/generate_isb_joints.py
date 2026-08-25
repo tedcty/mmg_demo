@@ -10,6 +10,7 @@ Bone-specific logic lives in scripts/bones/:
   Humerus  → humerus.py
 """
 import os
+import json
 import copy
 import orjson
 import vtk
@@ -326,4 +327,27 @@ def replay_shape(reference: dict, target_ply: str, export_path: str) -> dict:
 
 
 if __name__ == "__main__":
-    process_and_export()
+    # fabrik_step defaults to 1 (coarse centroid placement only — Steps 2-4,
+    # which do the actual thorax-surface tangency fit and tilt/roll/push/
+    # slide correction, never run) unless explicitly requested. server.py's
+    # _get_pc_model() always passes fabrik_step=4; this CLI entry point
+    # must match it, or a standalone run silently produces a scapula that
+    # isn't properly seated against the thorax (previously the case here —
+    # this is what caused a visibly "floating" scapula after a manual
+    # regeneration).
+    #
+    # Also auto-load the cached FABRIK correction if one exists, same as
+    # _get_pc_model() does — otherwise this CLI invocation re-solves Step 4
+    # fresh, and since that Nelder-Mead search isn't fully deterministic,
+    # running this script standalone can silently produce a *different*
+    # (though individually valid/symmetric) pose than whatever the live
+    # server is using for predictions. Reusing the cached correction keeps
+    # them bit-for-bit consistent instead.
+    _corrections_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', 'TauriGUI', 'public', 'pc_corrections.json')
+    _corrections = None
+    if os.path.exists(_corrections_path):
+        with open(_corrections_path) as _f:
+            _cached = json.load(_f)
+        _corrections = {'right': tuple(_cached['right']), 'left': tuple(_cached['left'])}
+    process_and_export(fabrik_step=4, corrections=_corrections)

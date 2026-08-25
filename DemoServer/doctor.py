@@ -43,6 +43,8 @@ EMG_SCORES = os.path.join(HERE, "emg_scores.json")    # mirrors server.py EMG_SC
 EMG_CONFIG = os.path.join(HERE, "emg_config.json")    # mirrors server.py EMG_CONFIG_FILE
 EMG_CONFIG_DEFAULT = {"tour_desktop": True, "tour_reset_on_info": True,   # mirrors server.py
                        "sfx_enabled": False, "music_enabled": True}
+SSM_CONFIG = os.path.join(HERE, "ssm_config.json")    # mirrors server.py SSM_CONFIG_FILE
+SSM_CONFIG_DEFAULT = {"show_kinematics_tab": False}   # mirrors server.py SSM_CONFIG_DEFAULT
 
 # Other served demos (static — no build step) + their key assets.
 GUI_SRC   = os.path.join(GUI_DIR, "src")

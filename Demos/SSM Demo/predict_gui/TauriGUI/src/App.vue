@@ -139,9 +139,11 @@ const PIPELINE_STAGES: { match: string; pct: number }[] = [
 ];
 const isSavingReport = ref(false);
 const isSettingsVisible = ref(false);
-// Kinematics tab is kept fully working but hidden from the toolbar while the
-// PC (Shape) tab is being debugged — flip this back to true to bring it back.
-const SHOW_KINEMATICS_TAB = false;
+// Kinematics tab is a debug view of the joint-assembly pipeline — shown or
+// hidden from the toolbar via the dashboard's Demo Control tab (server.py's
+// /api/ssm/config), not a build-time constant, so it can be toggled without
+// a rebuild. Defaults to hidden until the fetch resolves.
+const isKinematicsTabEnabled = ref(false);
 const isKinematicVisible = ref(false);
 const isPcVisible = ref(false);
 // PC (Shape) adjustment — sliders over the shape model's principal-component
@@ -257,13 +259,13 @@ function toggleTheme() {
 // directly; sliders remain available for refinement.
 const r_joint_coords = ref({
   sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
-  ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
-  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
+  ac_internal: -20.5, ac_upward: -3.5, ac_posterior: -30.0,
+  gh_flexion: -30.0, gh_abduction: 1.5, gh_internal: 10.0
 });
 const l_joint_coords = ref({
   sc_abduction: 8.0, sc_elevation: 15.0, sc_upward: 2.0,
-  ac_internal: 11.5, ac_upward: 9.5, ac_posterior: 2.5,
-  gh_flexion: 11.5, gh_abduction: 20.0, gh_internal: 17.0
+  ac_internal: -20.5, ac_upward: -3.5, ac_posterior: -30.0,
+  gh_flexion: -30.0, gh_abduction: 1.5, gh_internal: 10.0
 });
 
 // Mesh References for dynamic updates
@@ -390,10 +392,16 @@ async function loadBones(externalData: any = null, kind: 'predicted' | 'pcShape'
     } else if (viewMode.value === 'pcShape' && pcShapeModelData) {
       data = pcShapeModelData;
     } else {
-      // Add cache-busting timestamp to ensure we get the fresh bones.json
-      const response = await fetch(`/bones.json?t=${Date.now()}`);
+      // Fetch from the server's own in-memory reference (server.py's
+      // _get_pc_model) rather than the static bones.json file — the static
+      // file is a separately-solved FABRIK snapshot that can drift from
+      // what every prediction actually uses, since that search isn't fully
+      // deterministic. Fetching from here means there's exactly one source
+      // of truth and no possibility of the "mean" view disagreeing with a
+      // zero-weight PC-shape prediction again.
+      const response = await fetch(`/api/pc_mean_bones?t=${Date.now()}`);
       data = await response.json();
-      console.log("Loading bones from public/bones.json...");
+      console.log("Loading bones from /api/pc_mean_bones (server's live reference)...");
     }
 
     if (!meanModelData) {
@@ -907,6 +915,7 @@ onMounted(async () => {
   // Also pre-warm the client-side live-preview data (~16MB one-time
   // download) so it's likely ready by the time the user starts dragging.
   fetchPcClientData();
+  fetchSsmConfig();
 
   // Stream progress messages from the Python pipeline via SSE
   const evtSource = new EventSource(`/api/progress?session=${sessionId}`);
@@ -1099,27 +1108,43 @@ onMounted(async () => {
       // motion on both shoulders; defaults are symmetric L/R.
       const jointSide = side === 'right' ? 1 : -1;
 
+      // sc_upward's Z component and ac_posterior's Z component below are
+      // deliberately NOT jointSide-mirrored, unlike every other axis here —
+      // verified by simulating each rotation against a real (mirrored)
+      // clavicle/scapula direction vector and checking the result against
+      // its own Z-mirror: rotations about X or Y (elevation, protraction,
+      // ac_upward, ac_internal) need the jointSide flip to compose
+      // correctly with a Z-mirrored input, but rotations about Z itself
+      // (the mirrored axis) don't — keeping the flip on these two produced
+      // opposite, not mirrored, results between sides (confirmed both by
+      // this simulation and by manually testing GH abduction's structurally
+      // identical bug).
       const qSC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
         THREE.MathUtils.degToRad(-jointSide * coords.sc_elevation),  // X (elevation/depression)
         THREE.MathUtils.degToRad( jointSide * coords.sc_abduction),  // Y (protraction/retraction)
-        THREE.MathUtils.degToRad(-jointSide * coords.sc_upward),     // Z (axial rotation)
+        THREE.MathUtils.degToRad(-coords.sc_upward),                 // Z (axial rotation)
         'YXZ'
       ));
 
       const qAC = new THREE.Quaternion().setFromEuler(new THREE.Euler(
         THREE.MathUtils.degToRad(-jointSide * coords.ac_upward),     // X (upward rotation)
         THREE.MathUtils.degToRad(-jointSide * coords.ac_internal),   // Y (internal/external rotation)
-        THREE.MathUtils.degToRad(-jointSide * coords.ac_posterior),  // Z (posterior tilt)
+        THREE.MathUtils.degToRad(-coords.ac_posterior),              // Z (posterior tilt)
         'YXZ'
       ));
 
       // GH rotates about anatomical axes (humerus hangs along -Y at neutral;
-      // world X=anterior, Y=superior, Z=lateral):
+      // world X=anterior, Y=superior, Z=lateral, right side = +Z):
       //   flexion   → mediolateral (Z)      forward swing, same sign both arms
       //   abduction → anteroposterior (X)    lateral raise, mirrored per side
       //   internal  → humeral long axis (Y)  axial spin, mirrored per side
+      // abduction's X sign was flipped here — the previous sign moved the
+      // arm toward the midline (adduction) instead of away from the body,
+      // confirmed by simulating this exact Euler composition against a
+      // hanging-down humerus and checking it against +Z=lateral for the
+      // right side (established from landmark data this session).
       const qGH = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(jointSide * coords.gh_abduction),   // X
+        THREE.MathUtils.degToRad(-jointSide * coords.gh_abduction),  // X
         THREE.MathUtils.degToRad(-jointSide * coords.gh_internal),   // Y
         THREE.MathUtils.degToRad(coords.gh_flexion),                // Z
         'YXZ'
@@ -1298,6 +1323,20 @@ async function runPrediction() {
   }
 
   isPredicting.value = false;
+}
+
+// Whether the Kinematics debug tab shows in the toolbar — toggled from the
+// dashboard's Demo Control tab (server.py's /api/ssm/config), not baked
+// into the build. Silently keeps the tab hidden (its default) on failure.
+async function fetchSsmConfig() {
+  try {
+    const response = await fetch("/api/ssm/config");
+    if (!response.ok) throw await response.text();
+    const cfg = await response.json();
+    isKinematicsTabEnabled.value = !!cfg.show_kinematics_tab;
+  } catch (error) {
+    console.error("Failed to load SSM config:", error);
+  }
 }
 
 // Lazily loads PCA mode metadata (std dev + variance% per mode) the first
@@ -1827,7 +1866,7 @@ function selectModel(mode: ViewMode) {
               <button @click="isPanelOpen = true; isKinematicVisible = false; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Open Shoulder Predictor" aria-label="Open Shoulder Predictor">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
               </button>
-              <button v-if="SHOW_KINEMATICS_TAB" @click="isPanelOpen = true; isKinematicVisible = true; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
+              <button v-if="isKinematicsTabEnabled" @click="isPanelOpen = true; isKinematicVisible = true; isPcVisible = false; isSettingsVisible = false" class="tool-btn" title="Kinematics" aria-label="Kinematics">
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h15.5a2.5 2.5 0 0 1 0 5H6"></path><path d="M10 11v8a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-8"></path><path d="M10 11h4"></path></svg>
               </button>
               <button @click="isPanelOpen = true; isPcVisible = true; isKinematicVisible = false; isSettingsVisible = false; fetchPcInfo(); fetchPcClientData()" class="tool-btn" title="Shape (PCA)" aria-label="Shape (PCA)">

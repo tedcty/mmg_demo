@@ -1000,8 +1000,24 @@ class Dashboard(QtWidgets.QWidget):
             lambda checked: self._set_emg_config_flag("tour_reset_on_info", checked, "info-popup tour re-run"))
         el.addWidget(self.tour_info_chk)
 
-        angles = QtWidgets.QGroupBox("SSM shoulder model — joint angles"); _shadow(angles)
+        angles = QtWidgets.QGroupBox("SSM shoulder model"); _shadow(angles)
         al = QtWidgets.QVBoxLayout(angles)
+
+        ssm_cfg = self._load_ssm_config()
+        self.kinematics_chk = QtWidgets.QCheckBox("Show the Kinematics tab (SC/AC/GH angle sliders)")
+        self.kinematics_chk.setToolTip("A debug view of the joint-assembly pipeline, not meant for the "
+                                       "outreach/kiosk audience — hide it once you're done checking "
+                                       "joint angles manually.")
+        self.kinematics_chk.blockSignals(True)
+        self.kinematics_chk.setChecked(ssm_cfg.get("show_kinematics_tab", True))
+        self.kinematics_chk.blockSignals(False)
+        self.kinematics_chk.toggled.connect(
+            lambda checked: self._set_ssm_config_flag("show_kinematics_tab", checked, "Kinematics tab"))
+        al.addWidget(self.kinematics_chk)
+
+        adiv = QtWidgets.QFrame(); adiv.setFrameShape(QtWidgets.QFrame.HLine)
+        al.addWidget(adiv)
+
         anote = QtWidgets.QLabel(
             "Current SC/AC/GH joint angles for the reference (mean) shape — the "
             "left side is forced to match the right side's SC and GH angles; AC "
@@ -1727,6 +1743,36 @@ class Dashboard(QtWidgets.QWidget):
             cfg[key] = checked
             try:
                 with open(doctor.EMG_CONFIG, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f)
+                ok = True
+            except OSError as e:
+                ok = False
+                self._append_log(f"[dashboard] {log_label} setting update failed: {e}")
+        self._append_log(f"[dashboard] {log_label} {'enabled' if checked else 'disabled'}"
+                         f"{'' if ok else ' (save FAILED)'}")
+
+    def _load_ssm_config(self):
+        try:
+            with open(doctor.SSM_CONFIG, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {**doctor.SSM_CONFIG_DEFAULT, **data}
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+        return dict(doctor.SSM_CONFIG_DEFAULT)
+
+    def _set_ssm_config_flag(self, key, checked, log_label):
+        if self._running_now():
+            code, detail = doctor._get(f"https://localhost:{doctor.HTTPS_PORT}/api/ssm/config",
+                                       method="PUT", json_body={key: checked})
+            ok = code == 200
+            if not ok:
+                self._append_log(f"[dashboard] {log_label} setting update failed: {detail or code}")
+        else:
+            cfg = self._load_ssm_config()
+            cfg[key] = checked
+            try:
+                with open(doctor.SSM_CONFIG, "w", encoding="utf-8") as f:
                     json.dump(cfg, f)
                 ok = True
             except OSError as e:

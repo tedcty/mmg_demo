@@ -577,8 +577,8 @@ class FabrikScapulaSolver:
 
                 if ai_dist < 0: # Inside ribs
                     cost += abs(ai_dist) * 10000.0
-                elif ai_dist > 30.0: # Excessive lift-off
-                    cost += (ai_dist - 30.0) * 1000.0
+                elif ai_dist > 15.0: # Excessive lift-off (EXPERIMENTAL: was 30.0)
+                    cost += (ai_dist - 15.0) * 1000.0
 
                 # 4B. CORACOID CLEARANCE: DISABLED.
                 #
