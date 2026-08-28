@@ -146,7 +146,7 @@ The `.exe` itself isn't tracked in git (it's a machine-built binary — see
 ```bash
 conda run -n base pip install pyinstaller
 cd DemoServer
-conda run -n base python -m PyInstaller --onefile --name "MMG Demo Launcher" launch_dashboard.py
+conda run -n base python -m PyInstaller --onefile --name "MMG Demo Launcher" --icon resources/app.ico launch_dashboard.py
 cp "dist/MMG Demo Launcher.exe" .    # or: copy "dist\MMG Demo Launcher.exe" .
 ```
 

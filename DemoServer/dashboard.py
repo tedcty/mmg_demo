@@ -603,10 +603,11 @@ class Dashboard(QtWidgets.QWidget):
         self._stop_t0 = 0.0
         self._busy_steps = None               # step markers for the current busy op, if any
         self._start_step = -1                 # index of the last START_STEPS marker matched
-        # Debounce for the displayed mDNS state: a single flaky multicast
-        # round-trip shouldn't visibly flip the Name row / banner between
-        # polls (see _apply_status) — only adopt a new reading once it's
-        # shown up twice in a row.
+        # Debounce for the displayed mDNS state (see _apply_status). A
+        # successful lookup is unambiguous — one is enough, switch right
+        # away. A failure could just be one flaky multicast round-trip, so
+        # that direction still needs two in a row before it's shown, to
+        # avoid visibly flipping the Name row / banner on a single blip.
         self._mdns_display_ok = None
         self._mdns_last_raw = None
         self._mdns_streak = 0
@@ -625,6 +626,7 @@ class Dashboard(QtWidgets.QWidget):
         self._autostart = autostart
         self._autostart_done = False
         self._was_running = False             # previous observed running state
+        self._running_since = None            # time.time() a run last started (any server)
         self._adopted_pid = None              # PID of a server we didn't start
         self._exit_handled = False            # de-dupe crash handling per run
         self._last_rc = None                  # exit code from the pump, if known
@@ -1396,6 +1398,14 @@ class Dashboard(QtWidgets.QWidget):
         self.alert.setText(f"⚠  {msg}   (click to dismiss)")
         self.alert.setVisible(True)
 
+    # A fresh mDNS announcement needs a probe-then-announce dance (RFC 6762
+    # §8.1: ~3 probes 250ms apart, then the announcement) before the name is
+    # even queryable — call it ~1s minimum, plus slack for OS resolver
+    # quirks. Inside this window after a server (re)start, a still-failing
+    # mDNS check is shown as "setting up" rather than the alarming "not
+    # resolving" warning.
+    MDNS_GRACE_SECONDS = 6
+
     # ---- status value that auto-fits the card width ---------------------
     MAX_STATUS_PX, MIN_STATUS_PX = 24, 13
 
@@ -1448,23 +1458,31 @@ class Dashboard(QtWidgets.QWidget):
         running = s["running"]
 
         # Debounce the displayed mDNS state (see _mdns_display_ok in
-        # __init__): only adopt a new True/False reading once it repeats,
-        # so one flaky multicast round-trip doesn't visibly flip the UI.
+        # __init__). Asymmetric on purpose: a successful connect is adopted
+        # immediately (switches to the .local name as soon as it's really
+        # working, not a poll cycle or two later), while a failure needs to
+        # repeat once before it's shown, so one flaky multicast round-trip
+        # doesn't visibly flip the UI.
         raw_mdns = s.get("mdns_ok")
         if raw_mdns is None:
             self._mdns_streak = 0
             self._mdns_display_ok = None
+        elif raw_mdns:
+            self._mdns_streak = 0
+            self._mdns_last_raw = True
+            self._mdns_display_ok = True
         else:
-            self._mdns_streak = self._mdns_streak + 1 if raw_mdns == self._mdns_last_raw else 1
-            self._mdns_last_raw = raw_mdns
+            self._mdns_streak = self._mdns_streak + 1 if self._mdns_last_raw is False else 1
+            self._mdns_last_raw = False
             if self._mdns_display_ok is None or self._mdns_streak >= 2:
-                self._mdns_display_ok = raw_mdns
+                self._mdns_display_ok = False
 
         # --- monitor any server, even one this instance didn't start ---------
         if running and not self._was_running:
             # a fresh run appeared → (re)arm crash detection
             self._exit_handled = False
             self._last_rc = None
+            self._running_since = time.time()   # starts the mDNS grace window
             # Also try showing current joint angles without the operator
             # needing to click Refresh. The PC model can take up to ~1-2 min
             # to warm up after startup (first request blocks on it), so this
@@ -1479,6 +1497,7 @@ class Dashboard(QtWidgets.QWidget):
                                  f"monitoring it; Stop / Restart will control it")
         if not running:
             self._adopted_pid = None
+            self._running_since = None
         # Unexpected exit (covers adopted servers, and self-started ones if the
         # pump is slow): running → stopped without us asking. Intentional stops
         # are excluded by the transition guards below.
@@ -1543,10 +1562,17 @@ class Dashboard(QtWidgets.QWidget):
                 f'{doctor.HTTP_PORT_DEFAULT} free</span>')
             self.health_lbl.setText(f'<span style="color:{GREY}">—</span>')
 
+        in_mdns_grace = (self._running_since is not None
+                        and time.time() - self._running_since < self.MDNS_GRACE_SECONDS)
         if not running:
             self.mdns_lbl.setText(f'<span style="color:{GREY}">—</span>')
         elif self._mdns_display_ok:
             self.mdns_lbl.setText(f"{_dot(GREEN)} mmg-demo.local resolves")
+        elif in_mdns_grace:
+            # A fresh mDNS announcement isn't queryable instantly (see
+            # MDNS_GRACE_SECONDS) — don't alarm the operator with "not
+            # resolving" for what's very likely just still warming up.
+            self.mdns_lbl.setText(f"{_dot(AZURE)} mmg-demo.local — setting up mDNS…")
         else:
             hint = s.get("mdns_hint")
             self.mdns_lbl.setText(
@@ -1568,7 +1594,9 @@ class Dashboard(QtWidgets.QWidget):
         # .local URL, but that's only useful if mDNS is actually resolving —
         # fall back to the IP automatically once the (debounced) health
         # probe reports it isn't, so tablets aren't handed a dead address.
-        mdns_failing = self._mdns_display_ok is False
+        # Held off during the startup grace window too, so this doesn't
+        # jump to the IP-fallback look a beat before the Name row does.
+        mdns_failing = self._mdns_display_ok is False and not in_mdns_grace
         self._tablet_primary_url = self._tablet_ip_url if mdns_failing else self._tablet_url
         self.tablet_big.setText(self._tablet_primary_url)
         if not running:
@@ -2119,6 +2147,11 @@ def main():
         QtCore.Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QtWidgets.QApplication(sys.argv)
+    # Window/taskbar icon — SVG so it stays crisp at any DPI/scale (Qt
+    # renders it via the SVG icon engine rather than one fixed-size bitmap).
+    icon_path = os.path.join(doctor.HERE, "resources", "wifi-alt.svg")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QtGui.QIcon(icon_path))
     try:
         from qt_material import apply_stylesheet
         apply_stylesheet(app, theme="light_blue.xml")
