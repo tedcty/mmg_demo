@@ -182,6 +182,49 @@ def lan_ip():
     finally:
         s.close()
 
+
+def zeroconf_available():
+    """Whether the `zeroconf` package server.py needs to advertise
+    mmg-demo.local is importable in this interpreter."""
+    try:
+        import zeroconf  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+_MDNS_HINT = {"checked": False, "hint": None}
+
+
+def mdns_blocked_hint():
+    """When mDNS isn't resolving, work out whether Windows Firewall is the
+    likely cause: it blocks inbound mDNS (UDP 5353) by default on network
+    profiles categorised 'Public' — the classic "laptop and tablet are on the
+    same router, IP works, the name doesn't" symptom. Read-only —
+    Get-NetConnectionProfile needs no elevation — and cached for the process
+    lifetime since a laptop's network category doesn't change mid-event.
+    Returns a short cause string, or None if inconclusive (not Windows,
+    PowerShell unavailable, or the network isn't Public)."""
+    if _MDNS_HINT["checked"]:
+        return _MDNS_HINT["hint"]
+    _MDNS_HINT["checked"] = True
+    if sys.platform != "win32":
+        return None
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-NetConnectionProfile).NetworkCategory"],
+            capture_output=True, text=True, timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        cats = out.stdout.split()
+        if cats and all(c == "Public" for c in cats):
+            _MDNS_HINT["hint"] = (
+                "this network is set to Public — Windows Firewall blocks mDNS "
+                "here by default; switch it to Private in Settings, or use the IP")
+    except Exception:
+        pass
+    return _MDNS_HINT["hint"]
+
 def port_free(port):
     # Set SO_REUSEADDR to match how the real server binds: this still fails if a
     # live process is listening (a genuine conflict) but succeeds over lingering

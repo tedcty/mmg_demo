@@ -106,6 +106,21 @@ Two problems it exists to solve:
   | `http://<host>:8443`  | ❌ reset (plain HTTP on the TLS port) |
   | `https://<host>:8000` | ❌ reset (TLS on the plain-HTTP port) |
 
+- **`mmg-demo.local` won't resolve, even though the tablet and laptop are on
+  the same router (the IP works fine)** — almost always **Windows Firewall
+  blocking mDNS (UDP 5353)**, which it does by default whenever the network's
+  category is **Public** (common for venue/guest WiFi — Windows defaults new
+  networks to Public unless told otherwise). The dashboard's **Name**
+  diagnostics row detects this (read-only, no admin needed) and names it
+  directly when it's the cause. Two fixes, either works:
+  - Settings → Network & internet → \<your network\> → set to **Private**, or
+  - Allow mDNS through the firewall explicitly (elevated PowerShell, once):
+    `New-NetFirewallRule -DisplayName "mDNS" -Direction Inbound -Protocol UDP -LocalPort 5353 -Action Allow`
+
+  If neither is possible on-site (e.g. a locked-down venue laptop), tablets
+  can always fall back to the IP address — the dashboard's banner, QR code,
+  and Copy button switch to it automatically once mDNS is confirmed down.
+
 ### GUI dashboard
 
 Prefer a window over the command line? Run the Material-styled control panel:
@@ -113,6 +128,34 @@ Prefer a window over the command line? Run the Material-styled control panel:
 ```bash
 conda run -n demo python DemoServer/dashboard.py
 ```
+
+#### Double-click launcher (Windows)
+
+`MMG Demo Launcher.exe` is a double-click alternative for non-technical
+operators (e.g. an outreach event laptop) that needs no terminal and no conda
+knowledge: it runs a **quick setup check** — skipping the conda env creation
+if `demo` already exists, and the frontend `vite build` if `TauriGUI/dist`
+is already up to date (same staleness check as the dashboard's own **Rebuild
+frontend** button) — then opens the dashboard. A fresh clone (env or dist
+missing) gets the full `setup_demo_server.py` run first; an already-set-up
+checkout opens in a couple of seconds.
+
+The `.exe` itself isn't tracked in git (it's a machine-built binary — see
+`.gitignore`); build it after cloning, or after editing `launch_dashboard.py`:
+
+```bash
+conda run -n base pip install pyinstaller
+cd DemoServer
+conda run -n base python -m PyInstaller --onefile --name "MMG Demo Launcher" launch_dashboard.py
+cp "dist/MMG Demo Launcher.exe" .    # or: copy "dist\MMG Demo Launcher.exe" .
+```
+
+It builds from `base` (not `demo`) since `launch_dashboard.py` only needs the
+standard library — it shells out to `setup_demo_server.py`/`doctor.py` as
+real on-disk scripts rather than importing them, so their own repo-relative
+paths keep working once frozen. Drop the built exe anywhere inside
+`DemoServer/` — it locates conda itself and finds the other scripts next to
+its own path.
 
 It shows live status (running state, PID, uptime, port/prereq/protocol
 indicators, and CPU/GPU load with a **server-process** breakdown — the whole

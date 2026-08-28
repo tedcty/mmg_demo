@@ -39,6 +39,12 @@ DemoServer/certs/
 DemoServer/run_demo_server.bat
 DemoServer/run_demo_server.sh
 
+# PyInstaller output for MMG Demo Launcher.exe (rebuild with the command in
+# README.md — the .spec is tracked, the built binary and work dirs aren't)
+DemoServer/build/
+DemoServer/dist/
+DemoServer/MMG Demo Launcher.exe
+
 Demos/Spikerbox/.venv
 Demos/SSM Demo/predict_gui/debug
 .theia

@@ -327,8 +327,8 @@ class StatusWorker(QtCore.QThread):
                 "ip": "127.0.0.1", "https_code": None, "http_code": None,
                 "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
                 "srv_cpu": None, "srv_gpu": None, "clients": None, "gpu": None,
-                "gpu_used": None, "gpu_total": None, "mdns_ok": None, "demos": [],
-                "error": str(e),
+                "gpu_used": None, "gpu_total": None, "mdns_ok": None, "mdns_hint": None,
+                "demos": [], "error": str(e),
             }
         self.done.emit(s)
 
@@ -355,7 +355,7 @@ class StatusWorker(QtCore.QThread):
             "create_time": None, "cpu": None, "mem_pct": None, "srv_mb": None,
             "srv_cpu": None, "srv_gpu": None,
             "clients": None, "gpu": None, "gpu_used": None, "gpu_total": None,
-            "mdns_ok": None,
+            "mdns_ok": None, "mdns_hint": None,
         }
 
         # Build the server process tree (listener PIDs + their children) — SSM
@@ -436,6 +436,7 @@ class StatusWorker(QtCore.QThread):
                     s["mdns_ok"] = True
             except Exception:
                 s["mdns_ok"] = False
+                s["mdns_hint"] = doctor.mdns_blocked_hint()
         return s
 
 
@@ -522,7 +523,7 @@ class Dashboard(QtWidgets.QWidget):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("MMG Demo Server — Control Panel")
-        self.resize(1200, 760)
+        self.resize(1200, 860)
         self.setMinimumSize(880, 560)         # fits small 13" portable screens
         self.proc = None
         self._polling = False
@@ -539,6 +540,7 @@ class Dashboard(QtWidgets.QWidget):
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = self._url
         self._tablet_ip_url = self._url
+        self._tablet_primary_url = self._url
         self._trust_url = f"http://localhost:{doctor.HTTP_PORT}/trust"
         self._rebuilding = False
         self._keepalive = keepalive           # auto-restart on unexpected exit
@@ -772,7 +774,7 @@ class Dashboard(QtWidgets.QWidget):
         # Scan-to-open QR (white tile so it stays scannable on the dark banner);
         # click it for a large pop-up version.
         self.banner_qr = QtWidgets.QLabel(); self.banner_qr.setObjectName("qrTile")
-        self.banner_qr.setFixedSize(84, 84); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
+        self.banner_qr.setFixedSize(132, 132); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
         self._make_qr_clickable(self.banner_qr)
         scan = QtWidgets.QLabel("SCAN · CLICK TO ENLARGE"); scan.setObjectName("accessCap")
         scan.setAlignment(QtCore.Qt.AlignCenter)
@@ -1414,7 +1416,9 @@ class Dashboard(QtWidgets.QWidget):
         elif s.get("mdns_ok"):
             self.mdns_lbl.setText(f"{_dot(GREEN)} mmg-demo.local resolves")
         else:
+            hint = s.get("mdns_hint")
             self.mdns_lbl.setText(
+                f"{_dot(AMBER)} mmg-demo.local not resolving — {hint}" if hint else
                 f"{_dot(AMBER)} mmg-demo.local not resolving — tablets use the IP")
 
         self.deps_lbl.setText(
@@ -1427,10 +1431,23 @@ class Dashboard(QtWidgets.QWidget):
         self._url = f"https://localhost:{doctor.HTTPS_PORT}"
         self._tablet_url = f"https://{doctor.MDNS_FQDN}:{doctor.HTTPS_PORT}"
         self._tablet_ip_url = f"https://{ip}:{doctor.HTTPS_PORT}"
-        self.tablet_big.setText(self._tablet_url)
-        self.access_hint.setText(
-            f"Open in the tablet browser · use {self._tablet_ip_url} if the name won't resolve"
-            if running else "Start the server, then open this on the tablet")
+
+        # The banner's big text/QR/copy target normally point at the named
+        # .local URL, but that's only useful if mDNS is actually resolving —
+        # fall back to the IP automatically once the health probe (mdns_ok)
+        # reports it isn't, so tablets aren't handed a dead address.
+        mdns_failing = s.get("mdns_ok") is False
+        self._tablet_primary_url = self._tablet_ip_url if mdns_failing else self._tablet_url
+        self.tablet_big.setText(self._tablet_primary_url)
+        if not running:
+            self.access_hint.setText("Start the server, then open this on the tablet")
+        elif mdns_failing:
+            self.access_hint.setText(
+                f'<span style="color:{AMBER}">Name not resolving — showing the IP instead.</span> '
+                "Open in the tablet browser.")
+        else:
+            self.access_hint.setText(
+                f"Open in the tablet browser · use {self._tablet_ip_url} if the name won't resolve")
         self.url_lbl.setText(
             f"This device &nbsp;<b>{self._url}</b><br>"
             f"Tablets &nbsp;&nbsp;&nbsp;&nbsp;<b>{self._tablet_url}</b> "
@@ -1865,7 +1882,7 @@ class Dashboard(QtWidgets.QWidget):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._url))
 
     def _copy_url(self):
-        QtWidgets.QApplication.clipboard().setText(self._tablet_url)
+        QtWidgets.QApplication.clipboard().setText(self._tablet_primary_url)
         self._append_log("[dashboard] tablet URL copied to clipboard")
         self._flash_copied(self.sender())
 
@@ -1896,6 +1913,31 @@ class Dashboard(QtWidgets.QWidget):
                 e.ignore(); return
             if r == QtWidgets.QMessageBox.Yes:
                 self.proc.terminate()
+
+        # A frontend rebuild (npm/vite) can run tens of seconds — don't let a
+        # close mid-build tear the QThread down under it and risk a half
+        # written dist/. The short pollers below are bounded to a few seconds
+        # each, so a plain wait() is fine for those.
+        rw = getattr(self, "_rw", None)
+        if rw is not None and rw.isRunning():
+            QtWidgets.QMessageBox.information(
+                self, "Rebuild in progress",
+                "A frontend rebuild is still running — wait for it to finish "
+                "(see the console) before closing the panel.")
+            e.ignore(); return
+
+        # Deleting a QThread while its run() is still executing prints
+        # "QThread: Destroyed while thread '' is still running" and can make
+        # the process exit non-zero — harmless in practice, but `conda run`
+        # then reports the whole launch as "failed" even though nothing
+        # actually went wrong. Stop the poll timer so nothing new starts,
+        # then let anything already in flight finish before we tear down.
+        self.timer.stop()
+        for w in (getattr(self, "worker", None), getattr(self, "_dw", None),
+                  getattr(self, "angles_worker", None)):
+            if w is not None and w.isRunning():
+                w.wait(3000)
+
         e.accept()
 
 
@@ -1930,7 +1972,7 @@ def main():
     # so the larger type never pushes content off-screen.
     scr = app.primaryScreen().availableGeometry()
     w = min(1200, int(scr.width() * 0.94))
-    h = min(760, int(scr.height() * 0.94))
+    h = min(860, int(scr.height() * 0.94))
     win.resize(w, h)
     win.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
 
