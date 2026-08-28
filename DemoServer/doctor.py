@@ -214,7 +214,7 @@ def mdns_blocked_hint():
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
              "(Get-NetConnectionProfile).NetworkCategory"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=2,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         cats = out.stdout.split()
         if cats and all(c == "Public" for c in cats):

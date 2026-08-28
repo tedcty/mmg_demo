@@ -14,8 +14,10 @@ custom stylesheet layered on top. Run it in the `demo` conda env so it can
 launch the server with the right interpreter.
 """
 
+import concurrent.futures
 import io
 import json
+import math
 import os
 import shutil
 import socket
@@ -63,7 +65,6 @@ QLabel#sideFoot {{ color: rgba(255,255,255,0.4); font-size: 11px; }}
 
 /* Header */
 QLabel#h1 {{ color: {INK}; font-size: 23px; font-weight: 800; }}
-QLabel#chip {{ font-size: 14px; font-weight: 700; border-radius: 14px; padding: 6px 15px; }}
 
 /* Cards */
 QFrame#stat, QGroupBox {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 16px; }}
@@ -91,6 +92,8 @@ QPushButton:disabled {{ color: #b3bac6; background: #f4f6fa; }}
 QPushButton#primary {{ background: {AZURE}; color: white; border: none; }}
 QPushButton#primary:hover {{ background: #1a24b0; }}
 QPushButton#primary:disabled {{ background: #b9bdec; }}
+/* Header icon buttons — Full screen / Refresh */
+QPushButton#iconBtn {{ padding: 0px; border-radius: 10px; }}
 QPushButton#danger {{ background: #fdecea; color: {RED}; border: 1px solid #f6c9c7; }}
 QPushButton#danger:hover {{ background: #fadedb; }}
 
@@ -118,11 +121,12 @@ QCheckBox {{ color: {INK}; font-size: 14px; font-weight: 600; }}
 QCheckBox::indicator {{ width: 18px; height: 18px; }}
 QSpinBox {{ font-size: 14px; padding: 4px 6px; }}
 
-/* Startup progress (indeterminate) */
+/* Startup / stop-teardown progress (determinate with step markers while
+   starting — see START_STEPS — indeterminate while stopping) */
 QLabel#startupLbl {{ color: {AZURE}; font-size: 13px; font-weight: 700; }}
-QProgressBar#startup {{ background: #e7ecf5; border: none; border-radius: 6px;
-                        min-height: 9px; max-height: 9px; }}
-QProgressBar#startup::chunk {{ background: {AZURE}; border-radius: 6px; }}
+QProgressBar#startup {{ background: #d6dce8; border: 1px solid #c7cee0; border-radius: 8px;
+                        min-height: 14px; max-height: 14px; }}
+QProgressBar#startup::chunk {{ background: {AZURE}; border-radius: 7px; }}
 
 /* Tablet access banner */
 QFrame#access {{ background: {INK}; border-radius: 16px; }}
@@ -200,6 +204,37 @@ def _draw_shape(p, kind, size, color):
             p.drawLine(QtCore.QPointF(c - size * 0.26, y), QtCore.QPointF(c + size * 0.26, y))
             p.setPen(QtCore.Qt.NoPen); p.setBrush(QtGui.QColor(color))
             p.drawEllipse(QtCore.QPointF(c + knob_dx * size, y), size * 0.06, size * 0.06)
+    elif kind == "refresh":  # header Refresh button
+        pen = QtGui.QPen(QtGui.QColor(color), max(1.6, size * 0.1))
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen); p.setBrush(QtCore.Qt.NoBrush)
+        r = QtCore.QRectF(c - size * 0.28, c - size * 0.28, size * 0.56, size * 0.56)
+        p.drawArc(r, 35 * 16, 280 * 16)      # ~280° loop, gap left for the arrowhead
+        ang = math.radians(35)
+        tip = QtCore.QPointF(c + size * 0.28 * math.cos(ang), c - size * 0.28 * math.sin(ang))
+        p.setPen(QtCore.Qt.NoPen); p.setBrush(QtGui.QColor(color))
+        p.drawPolygon(QtGui.QPolygonF([
+            tip + QtCore.QPointF(-size * 0.10, -size * 0.03),
+            tip + QtCore.QPointF(size * 0.05, -size * 0.13),
+            tip + QtCore.QPointF(size * 0.11, size * 0.02)]))
+    elif kind == "expand":  # enter full screen: corner brackets pointing outward
+        pen = QtGui.QPen(QtGui.QColor(color), max(1.6, size * 0.09))
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen); p.setBrush(QtCore.Qt.NoBrush)
+        arm, inset = size * 0.16, size * 0.30
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            x, y = c + sx * inset, c + sy * inset
+            p.drawLine(QtCore.QPointF(x, y), QtCore.QPointF(x + sx * arm, y))
+            p.drawLine(QtCore.QPointF(x, y), QtCore.QPointF(x, y + sy * arm))
+    elif kind == "collapse":  # exit full screen: corner brackets pointing inward
+        pen = QtGui.QPen(QtGui.QColor(color), max(1.6, size * 0.09))
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen); p.setBrush(QtCore.Qt.NoBrush)
+        arm, inset = size * 0.10, size * 0.24
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            x, y = c + sx * inset, c + sy * inset
+            p.drawLine(QtCore.QPointF(x, y), QtCore.QPointF(x - sx * arm, y))
+            p.drawLine(QtCore.QPointF(x, y), QtCore.QPointF(x, y - sy * arm))
 
 
 def _pixmap(kind, color, size=40, bg=None):
@@ -231,6 +266,34 @@ def _qr_pixmap(data, size, dark=INK):
     pm.loadFromData(buf.getvalue(), "PNG")
     # FastTransformation keeps the modules crisp (smooth-scaling blurs QR edges).
     return pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation)
+
+
+# ---- mDNS reachability check ----------------------------------------------
+# socket.create_connection's `timeout` only bounds the TCP connect step, not
+# the DNS/mDNS resolution before it — measured on Windows, resolving a
+# genuinely unreachable .local name can block ~8s regardless of the timeout
+# passed here, since that's the OS resolver's own internal retry/giveup
+# timing. That single blocking call, run every status poll, previously made
+# the whole dashboard sluggish whenever mDNS was down, and could keep a
+# StatusWorker alive well past any reasonable wait() budget on app close.
+# A small persistent thread pool gives the check a real, enforced deadline —
+# on timeout we just abandon that lookup (it finishes on its own eventually
+# and is discarded; nothing awaits it) rather than block on it.
+_MDNS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="mdns-check")
+
+
+def _mdns_reachable(host, port, connect_timeout=2.5, overall_timeout=3.0):
+    def _try():
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return True
+        except Exception:
+            return False
+    try:
+        return _MDNS_EXECUTOR.submit(_try).result(timeout=overall_timeout)
+    except concurrent.futures.TimeoutError:
+        return False
 
 
 # ---- GPU telemetry (best effort: pynvml → nvidia-smi → none) -------------
@@ -430,11 +493,11 @@ class StatusWorker(QtCore.QThread):
             # mDNS reachability: a TCP connect to the advertised name both
             # resolves it (proving the name works from a separate process, a
             # good proxy for the tablets) and confirms the port is open.
-            try:
-                with socket.create_connection(
-                        (doctor.MDNS_FQDN, doctor.HTTPS_PORT), timeout=1.5):
-                    s["mdns_ok"] = True
-            except Exception:
+            # Bounded via _mdns_reachable — see its docstring for why a plain
+            # socket timeout here isn't enough.
+            if _mdns_reachable(doctor.MDNS_FQDN, doctor.HTTPS_PORT):
+                s["mdns_ok"] = True
+            else:
                 s["mdns_ok"] = False
                 s["mdns_hint"] = doctor.mdns_blocked_hint()
         return s
@@ -524,7 +587,11 @@ class Dashboard(QtWidgets.QWidget):
         self.setObjectName("root")
         self.setWindowTitle("MMG Demo Server — Control Panel")
         self.resize(1400, 980)
-        self.setMinimumSize(880, 560)         # fits small 13" portable screens
+        self.setMinimumSize(1280, 560)        # wide enough for the TABLET ACCESS banner
+                                               # row (URL + QR + Copy + Start button) and
+                                               # the 5-across stat-card row without any of
+                                               # them clipping off the right edge (there's
+                                               # no horizontal scrollbar to fall back on)
         self.proc = None
         self._polling = False
         self._angles_polling = False
@@ -534,6 +601,15 @@ class Dashboard(QtWidgets.QWidget):
         self._restart_pending = False
         self._start_t0 = 0.0
         self._stop_t0 = 0.0
+        self._busy_steps = None               # step markers for the current busy op, if any
+        self._start_step = -1                 # index of the last START_STEPS marker matched
+        # Debounce for the displayed mDNS state: a single flaky multicast
+        # round-trip shouldn't visibly flip the Name row / banner between
+        # polls (see _apply_status) — only adopt a new reading once it's
+        # shown up twice in a row.
+        self._mdns_display_ok = None
+        self._mdns_last_raw = None
+        self._mdns_streak = 0
         # Pick up a fallback port from an already-running server (adopted or
         # left over from a previous launch) before the first status poll.
         doctor.refresh_ports()
@@ -557,6 +633,7 @@ class Dashboard(QtWidgets.QWidget):
         if keepalive:
             self.keepalive.setChecked(True)
         self._log_sig.connect(self._append_log)
+        self._log_sig.connect(self._start_progress_line)
         self._exit_sig.connect(self._on_proc_exit)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -610,7 +687,9 @@ class Dashboard(QtWidgets.QWidget):
             self._sync_fs_btn()
 
     def _sync_fs_btn(self):
-        self.fs_btn.setText("Exit full screen" if self.isFullScreen() else "Full screen")
+        fs = self.isFullScreen()
+        self.fs_btn.setIcon(QtGui.QIcon(_pixmap("collapse" if fs else "expand", INK, 18)))
+        self.fs_btn.setToolTip("Exit full screen (Esc)" if fs else "Full screen (F11)")
 
     # ---- UI --------------------------------------------------------------
     def _build_ui(self):
@@ -619,19 +698,30 @@ class Dashboard(QtWidgets.QWidget):
         outer.addWidget(self._sidebar())
 
         right = QtWidgets.QVBoxLayout()
-        right.setContentsMargins(22, 18, 22, 18); right.setSpacing(16)
+        right.setContentsMargins(22, 12, 22, 12); right.setSpacing(12)
 
-        # Header
+        # Header — Full screen / Refresh are icon-only (tooltip carries the
+        # label + shortcut). The RUNNING/STOPPED state used to be duplicated
+        # here as a chip; the Home page's STATUS card is the one place for
+        # that now, so the header stays lean.
         hdr = QtWidgets.QHBoxLayout()
         self.h1 = QtWidgets.QLabel("Dashboard"); self.h1.setObjectName("h1")
-        self.chip = QtWidgets.QLabel("…"); self.chip.setObjectName("chip")
-        hbtn = QtWidgets.QPushButton("Refresh"); hbtn.clicked.connect(self.refresh)
-        hbtn.setToolTip("Refresh status now (F5)")
-        self.fs_btn = QtWidgets.QPushButton("Full screen")
-        self.fs_btn.setToolTip("Toggle full screen (F11 · Esc to exit)")
+        self.fs_btn = QtWidgets.QPushButton(); self.fs_btn.setObjectName("iconBtn")
+        self.fs_btn.setIcon(QtGui.QIcon(_pixmap("expand", INK, 18)))
+        self.fs_btn.setIconSize(QtCore.QSize(18, 18))
+        self.fs_btn.setFixedSize(38, 38)
+        self.fs_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.fs_btn.clicked.connect(self._toggle_fullscreen)
+        hbtn = QtWidgets.QPushButton(); hbtn.setObjectName("iconBtn")
+        hbtn.setIcon(QtGui.QIcon(_pixmap("refresh", INK, 18)))
+        hbtn.setIconSize(QtCore.QSize(18, 18))
+        hbtn.setFixedSize(38, 38)
+        hbtn.setCursor(QtCore.Qt.PointingHandCursor)
+        hbtn.setToolTip("Refresh status now (F5)")
+        hbtn.clicked.connect(self.refresh)
+        self._sync_fs_btn()   # sets the icon + tooltip for the current state
         hdr.addWidget(self.h1); hdr.addStretch(1)
-        hdr.addWidget(self.chip); hdr.addWidget(self.fs_btn); hdr.addWidget(hbtn)
+        hdr.addWidget(self.fs_btn); hdr.addWidget(hbtn)
         right.addLayout(hdr)
 
         # Dismissable alert banner (e.g. unexpected server exit) — hidden by default.
@@ -710,9 +800,31 @@ class Dashboard(QtWidgets.QWidget):
 
     def _page_dashboard(self):
         w = QtWidgets.QWidget()
-        v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(12)
+        v = QtWidgets.QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(8)
 
-        v.addWidget(self._build_access_banner())
+        # Start/Stop sits beside (not inside) the TABLET ACCESS banner — the
+        # first thing you need before the URL/QR in it are of any use, and
+        # unlike the Diagnostics column this row is always on screen without
+        # needing a resize or scroll to reach.
+        banner_row = QtWidgets.QHBoxLayout(); banner_row.setSpacing(14)
+        banner_row.addWidget(self._build_access_banner(), 1)
+        self.power_btn = QtWidgets.QPushButton("Start"); self.power_btn.setObjectName("primary")
+        self.power_btn.setProperty("power", "true")
+        self.power_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 24)))
+        self.power_btn.setIconSize(QtCore.QSize(22, 22))
+        self.power_btn.setMinimumWidth(120)   # floor until the first resizeEvent squares it up
+        # Match the banner's height exactly — a QPushButton is vertically
+        # Fixed by default, so without this it just sits at its own natural
+        # (much shorter) height inside the row instead of filling it. Width
+        # then tracks that same height every resize (see resizeEvent) to
+        # keep it square rather than hardcoding a pixel value that would
+        # drift out of sync with the banner's actual rendered height.
+        self.power_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
+        self.power_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.power_btn.setToolTip("Start / Stop the demo server (Ctrl+S / Ctrl+K)")
+        self.power_btn.clicked.connect(self._on_power_clicked)
+        banner_row.addWidget(self.power_btn)
+        v.addLayout(banner_row)
 
         cards = QtWidgets.QHBoxLayout(); cards.setSpacing(14)
         self.c_status, self.k_status, _, self.status_icon = self._stat_card("status", "STATUS", GREY)
@@ -731,66 +843,62 @@ class Dashboard(QtWidgets.QWidget):
         midrow.addWidget(self._build_demos_box(), 3)
 
         diag = QtWidgets.QGroupBox("Diagnostics"); _shadow(diag)
-        dl = QtWidgets.QVBoxLayout(diag); dl.setSpacing(10)
+        dl = QtWidgets.QVBoxLayout(diag); dl.setSpacing(8)
         self.ports_lbl = self._diag_row(dl, "Ports")
         self.health_lbl = self._diag_row(dl, "Health")
         self.mdns_lbl = self._diag_row(dl, "Name")
         self.deps_lbl = self._diag_row(dl, "Prereqs")
         dl.addStretch(1)
 
-        # Right column: diagnostics, with the big Start/Stop toggle beneath it.
-        right_col = QtWidgets.QVBoxLayout(); right_col.setSpacing(16)
-        right_col.addWidget(diag, 1)
-        self.power_btn = QtWidgets.QPushButton("Start"); self.power_btn.setObjectName("primary")
-        self.power_btn.setProperty("power", "true")
-        self.power_btn.setIcon(QtGui.QIcon(_pixmap("play", "white", 24)))
-        self.power_btn.setIconSize(QtCore.QSize(22, 22))
-        self.power_btn.setMinimumHeight(56)
-        self.power_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.power_btn.setToolTip("Start / Stop the demo server (Ctrl+S / Ctrl+K)")
-        self.power_btn.clicked.connect(self._on_power_clicked)
-        right_col.addWidget(self.power_btn)
-
-        right_box = QtWidgets.QWidget(); right_box.setLayout(right_col)
-        midrow.addWidget(right_box, 2)
+        # Right column: diagnostics. Start/Stop used to live below it here,
+        # but that put the primary action inside the scrollable page — on a
+        # short window it could need a scroll (or get visually cropped) to
+        # even reach. It now lives next to the TABLET ACCESS banner instead
+        # (top of this method), so it's always fully visible regardless of
+        # window height.
+        midrow.addWidget(diag, 2)
         v.addLayout(midrow, 1)
         return w
 
     def _build_access_banner(self):
         """Prominent card showing the address to type into the tablet browser."""
         banner = QtWidgets.QFrame(); banner.setObjectName("access"); _shadow(banner, alpha=40)
-        h = QtWidgets.QHBoxLayout(banner); h.setContentsMargins(22, 16, 18, 16); h.setSpacing(14)
+        h = QtWidgets.QHBoxLayout(banner); h.setContentsMargins(22, 12, 18, 12); h.setSpacing(14)
 
         ic = QtWidgets.QLabel(); ic.setPixmap(_pixmap("link", "white", 46, bg=AZURE))
         ic.setFixedSize(46, 46)
 
         tv = QtWidgets.QVBoxLayout(); tv.setSpacing(2)
         cap = QtWidgets.QLabel("TABLET ACCESS"); cap.setObjectName("accessCap")
+
         self.tablet_big = QtWidgets.QLabel("—"); self.tablet_big.setObjectName("accessUrl")
         self.tablet_big.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        copy = QtWidgets.QPushButton("Copy"); copy.setObjectName("accessCopy")
+        copy.clicked.connect(self._copy_url)
+        # Reserve width for the wider "Copied ✓" flash so the button never resizes.
+        copy.ensurePolished()
+        copy.setFixedWidth(copy.fontMetrics().horizontalAdvance("Copied ✓") + 42)
+        url_row = QtWidgets.QHBoxLayout(); url_row.setSpacing(10)
+        url_row.addWidget(self.tablet_big, 0, QtCore.Qt.AlignVCenter)
+        url_row.addWidget(copy, 0, QtCore.Qt.AlignVCenter)
+        url_row.addStretch(1)
+
         self.access_hint = QtWidgets.QLabel(""); self.access_hint.setObjectName("accessHint")
-        tv.addWidget(cap); tv.addWidget(self.tablet_big); tv.addWidget(self.access_hint)
+        tv.addWidget(cap); tv.addLayout(url_row); tv.addWidget(self.access_hint)
 
         # Scan-to-open QR (white tile so it stays scannable on the dark banner);
         # click it for a large pop-up version.
         self.banner_qr = QtWidgets.QLabel(); self.banner_qr.setObjectName("qrTile")
         self.banner_qr.setFixedSize(132, 132); self.banner_qr.setAlignment(QtCore.Qt.AlignCenter)
         self._make_qr_clickable(self.banner_qr)
-        scan = QtWidgets.QLabel("SCAN · CLICK TO ENLARGE"); scan.setObjectName("accessCap")
+        scan = QtWidgets.QLabel("CLICK TO ENLARGE"); scan.setObjectName("accessCap")
         scan.setAlignment(QtCore.Qt.AlignCenter)
         qv = QtWidgets.QVBoxLayout(); qv.setSpacing(3)
         qv.addWidget(self.banner_qr); qv.addWidget(scan)
 
-        copy = QtWidgets.QPushButton("Copy"); copy.setObjectName("accessCopy")
-        copy.clicked.connect(self._copy_url)
-        # Reserve width for the wider "Copied ✓" flash so the button never resizes.
-        copy.ensurePolished()
-        copy.setFixedWidth(copy.fontMetrics().horizontalAdvance("Copied ✓") + 42)
-
         h.addWidget(ic, 0, QtCore.Qt.AlignVCenter); h.addSpacing(4)
         h.addLayout(tv); h.addStretch(1)
-        h.addLayout(qv); h.addSpacing(8)
-        h.addWidget(copy, 0, QtCore.Qt.AlignVCenter)
+        h.addLayout(qv)
         return banner
 
     def _stat_card_add(self, row, icon, caption, color):
@@ -884,9 +992,20 @@ class Dashboard(QtWidgets.QWidget):
         ("built in",               100, "Build complete"),
     ]
 
+    # same idea, matched against server.py's own startup stdout (see _pump).
+    # "serving http" catches both "Serving HTTPS on..." and "Serving HTTP
+    # on..." — the last real step; 100% is only ever set once the readiness
+    # poll actually gets a 200, in _finish_startup.
+    START_STEPS = [
+        ("mmg outreach demo server", 10, "Starting server…"),
+        ("preflight check",          30, "Running preflight checks…"),
+        ("advertising",              60, "Advertising on the network…"),
+        ("serving http",             85, "Binding to port…"),
+    ]
+
     def _build_demos_box(self):
         box = QtWidgets.QGroupBox("Demos"); _shadow(box)
-        v = QtWidgets.QVBoxLayout(box); v.setSpacing(10)
+        v = QtWidgets.QVBoxLayout(box); v.setSpacing(8)
         self.demo_rows = []   # [(chip_label, detail_label)] in demo_status() order
         try:
             demos = doctor.demo_status()
@@ -916,7 +1035,7 @@ class Dashboard(QtWidgets.QWidget):
 
     def _demo_item(self, name):
         item = QtWidgets.QFrame(); item.setObjectName("demoItem")
-        v = QtWidgets.QVBoxLayout(item); v.setContentsMargins(14, 10, 14, 10); v.setSpacing(3)
+        v = QtWidgets.QVBoxLayout(item); v.setContentsMargins(14, 7, 14, 7); v.setSpacing(3)
         top = QtWidgets.QHBoxLayout()
         n = QtWidgets.QLabel(name); n.setObjectName("demoName")
         chip = QtWidgets.QLabel("…"); chip.setObjectName("demoChip")
@@ -1141,8 +1260,9 @@ class Dashboard(QtWidgets.QWidget):
 
     def _control_bar(self):
         ctl = QtWidgets.QHBoxLayout(); ctl.setSpacing(10)
-        # Start/Stop live in the big power toggle (Diagnostics column). The bar
-        # keeps the secondary controls.
+        # Start/Stop lives in the TABLET ACCESS banner now (see
+        # _build_access_banner) — always on screen, never inside the
+        # scrollable page, and right next to the URL it makes live.
         self.restart_btn = QtWidgets.QPushButton("Restart")
         self.reset_btn = QtWidgets.QPushButton("Reset ports"); self.reset_btn.setObjectName("danger")
         self.restart_btn.clicked.connect(self.restart_server)
@@ -1307,6 +1427,10 @@ class Dashboard(QtWidgets.QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._refit_status()               # keep the status word fitting the card
+        # Keep the Start/Stop button square: its height already tracks the
+        # banner's (Expanding size policy), so just match width to that.
+        if hasattr(self, "power_btn"):
+            self.power_btn.setFixedWidth(self.power_btn.height())
 
     # ---- status refresh --------------------------------------------------
     def refresh(self):
@@ -1322,6 +1446,19 @@ class Dashboard(QtWidgets.QWidget):
         if s.get("error"):
             self._append_log(f"[dashboard] status check failed, retrying: {s['error']}")
         running = s["running"]
+
+        # Debounce the displayed mDNS state (see _mdns_display_ok in
+        # __init__): only adopt a new True/False reading once it repeats,
+        # so one flaky multicast round-trip doesn't visibly flip the UI.
+        raw_mdns = s.get("mdns_ok")
+        if raw_mdns is None:
+            self._mdns_streak = 0
+            self._mdns_display_ok = None
+        else:
+            self._mdns_streak = self._mdns_streak + 1 if raw_mdns == self._mdns_last_raw else 1
+            self._mdns_last_raw = raw_mdns
+            if self._mdns_display_ok is None or self._mdns_streak >= 2:
+                self._mdns_display_ok = raw_mdns
 
         # --- monitor any server, even one this instance didn't start ---------
         if running and not self._was_running:
@@ -1359,11 +1496,6 @@ class Dashboard(QtWidgets.QWidget):
         self._was_running = running
 
         col = GREEN if running else GREY
-
-        self.chip.setText("● RUNNING" if running else "○ STOPPED")
-        self.chip.setStyleSheet(
-            f"background:{'#e6f7f0' if running else '#eef0f3'};color:{col};"
-            f"font-size:12px;font-weight:700;border-radius:13px;padding:5px 14px")
 
         self._set_status_text("RUNNING" if running else "STOPPED", col)
         self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=col))
@@ -1413,7 +1545,7 @@ class Dashboard(QtWidgets.QWidget):
 
         if not running:
             self.mdns_lbl.setText(f'<span style="color:{GREY}">—</span>')
-        elif s.get("mdns_ok"):
+        elif self._mdns_display_ok:
             self.mdns_lbl.setText(f"{_dot(GREEN)} mmg-demo.local resolves")
         else:
             hint = s.get("mdns_hint")
@@ -1434,9 +1566,9 @@ class Dashboard(QtWidgets.QWidget):
 
         # The banner's big text/QR/copy target normally point at the named
         # .local URL, but that's only useful if mDNS is actually resolving —
-        # fall back to the IP automatically once the health probe (mdns_ok)
-        # reports it isn't, so tablets aren't handed a dead address.
-        mdns_failing = s.get("mdns_ok") is False
+        # fall back to the IP automatically once the (debounced) health
+        # probe reports it isn't, so tablets aren't handed a dead address.
+        mdns_failing = self._mdns_display_ok is False
         self._tablet_primary_url = self._tablet_ip_url if mdns_failing else self._tablet_url
         self.tablet_big.setText(self._tablet_primary_url)
         if not running:
@@ -1481,10 +1613,6 @@ class Dashboard(QtWidgets.QWidget):
                 self._finish_startup(ready)
             else:
                 # Keep the "starting" affordances until the server truly answers.
-                self.chip.setText("◌ STARTING")
-                self.chip.setStyleSheet(
-                    f"background:#fff2df;color:{AMBER};font-size:12px;"
-                    f"font-weight:700;border-radius:13px;padding:5px 14px")
                 self._set_status_text("STARTING", AMBER)
                 self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                 self.power_btn.setText("Starting…"); self.power_btn.setEnabled(False)
@@ -1508,10 +1636,6 @@ class Dashboard(QtWidgets.QWidget):
                 if elapsed > 8 and not self._stop_gave_up:
                     self._give_up_stopping()
                 if not self._stop_gave_up:
-                    self.chip.setText("◌ STOPPING")
-                    self.chip.setStyleSheet(
-                        f"background:#fff2df;color:{AMBER};font-size:12px;"
-                        f"font-weight:700;border-radius:13px;padding:5px 14px")
                     self._set_status_text("STOPPING", AMBER)
                     self.status_icon.setPixmap(_pixmap("status", "white", 44, bg=AMBER))
                     self.power_btn.setText("Stopping…"); self.power_btn.setEnabled(False)
@@ -1555,7 +1679,8 @@ class Dashboard(QtWidgets.QWidget):
         self._stopping = False
         self._starting = True
         self._start_t0 = time.time()
-        self._begin_busy("Starting server…")
+        self._start_step = -1
+        self._begin_busy("Starting server…", steps=self.START_STEPS)
 
     def _finish_startup(self, ok):
         self._starting = False
@@ -1624,8 +1749,15 @@ class Dashboard(QtWidgets.QWidget):
         self.proc = None
 
     # ---- shared busy indicator ------------------------------------------
-    def _begin_busy(self, message):
+    def _begin_busy(self, message, steps=None):
+        """`steps`, if given (see START_STEPS), switches the bar from a plain
+        indeterminate spinner to a determinate one that advances as matching
+        lines come through the log (see _start_progress_line) — stop/reset
+        has no such markers to key off, so those calls just leave it None."""
+        self._busy_steps = steps
         self.busy_lbl.setText(message)
+        self.busy_bar.setRange(0, 100 if steps else 0)
+        self.busy_bar.setValue(0)
         self.busy_lbl.show(); self.busy_bar.show()
         for b in (self.power_btn, self.restart_btn):
             b.setEnabled(False)
@@ -1640,6 +1772,20 @@ class Dashboard(QtWidgets.QWidget):
             self._busy_timer.stop()
         self.busy_lbl.hide(); self.busy_bar.hide()
         self.restart_btn.setEnabled(True)
+        self._busy_steps = None
+
+    def _start_progress_line(self, line):
+        """Advance the startup progress bar as server.py's own stdout (piped
+        in via _pump) passes each marker in START_STEPS, in order."""
+        if not self._starting or not self._busy_steps:
+            return
+        low = line.lower()
+        for i, (needle, pct, label) in enumerate(self._busy_steps):
+            if i > self._start_step and needle in low:
+                self._start_step = i
+                self.busy_bar.setValue(pct)
+                self.busy_lbl.setText(label)
+                break
 
     def restart_server(self):
         self._crash_count = 0                 # manual action = fresh slate
@@ -1927,16 +2073,27 @@ class Dashboard(QtWidgets.QWidget):
             e.ignore(); return
 
         # Deleting a QThread while its run() is still executing prints
-        # "QThread: Destroyed while thread '' is still running" and can make
-        # the process exit non-zero — harmless in practice, but `conda run`
-        # then reports the whole launch as "failed" even though nothing
-        # actually went wrong. Stop the poll timer so nothing new starts,
-        # then let anything already in flight finish before we tear down.
+        # "QThread: Destroyed while thread '' is still running" and risks a
+        # genuine crash (the OS thread can be mid-Python-bytecode when the
+        # interpreter starts tearing down) — not just cosmetic. Stop the poll
+        # timer so nothing new starts, then give anything already in flight
+        # a budget to finish before we tear down. Budgets are sized to each
+        # worker's real worst case, not one guessed number:
+        #   StatusWorker  — while running: two local HTTPS/HTTP checks (2s
+        #                   each) + the bounded mDNS check (~3s) + the
+        #                   Windows-Firewall PowerShell probe (2s) the first
+        #                   time mDNS fails. ~9s worst case.
+        #   DoctorWorker  — two HTTPS/HTTP checks at up to 4s each.
+        #   JointAnglesWorker — can legitimately block up to ~110s on the PC
+        #                   model's one-time warm-up; that can't be waited
+        #                   out on a close without hanging the UI for real,
+        #                   so it only gets a short best-effort grace period.
         self.timer.stop()
-        for w in (getattr(self, "worker", None), getattr(self, "_dw", None),
-                  getattr(self, "angles_worker", None)):
+        for w, budget_ms in ((getattr(self, "worker", None), 9000),
+                             (getattr(self, "_dw", None), 8500),
+                             (getattr(self, "angles_worker", None), 2000)):
             if w is not None and w.isRunning():
-                w.wait(3000)
+                w.wait(budget_ms)
 
         e.accept()
 
