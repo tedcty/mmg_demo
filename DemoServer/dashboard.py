@@ -523,7 +523,7 @@ class Dashboard(QtWidgets.QWidget):
         super().__init__()
         self.setObjectName("root")
         self.setWindowTitle("MMG Demo Server — Control Panel")
-        self.resize(1200, 860)
+        self.resize(1400, 980)
         self.setMinimumSize(880, 560)         # fits small 13" portable screens
         self.proc = None
         self._polling = False
@@ -1968,11 +1968,15 @@ def main():
     app.setStyleSheet(app.styleSheet() + QSS)
     win = Dashboard(autostart=args.autostart, keepalive=args.keep_alive)
 
-    # Size to fit the actual screen (small portable laptops) and centre it,
-    # so the larger type never pushes content off-screen.
+    # Size to fit the actual screen and centre it, so the larger type never
+    # pushes content off-screen. The 94%-of-screen formula is what protects
+    # small 13" portable laptops (1366x768 and similar); the caps below only
+    # exist as a ceiling for large displays and shouldn't bind on anything
+    # 1920x1080 or smaller — a full-HD screen has plenty of room for the
+    # Home page's banner + stat cards + demos/diagnostics without scrolling.
     scr = app.primaryScreen().availableGeometry()
-    w = min(1200, int(scr.width() * 0.94))
-    h = min(860, int(scr.height() * 0.94))
+    w = min(1400, int(scr.width() * 0.94))
+    h = min(980, int(scr.height() * 0.94))
     win.resize(w, h)
     win.move(scr.center().x() - w // 2, scr.center().y() - h // 2)
 
