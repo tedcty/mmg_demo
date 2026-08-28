@@ -34,7 +34,6 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    icon=['resources/app.ico'],
     entitlements_file=None,
-    
+    icon=['resources/app.ico'],
 )
