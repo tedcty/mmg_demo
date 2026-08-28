@@ -2080,6 +2080,7 @@ class Dashboard(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(1500, lambda: btn.setText(btn._orig_text))
 
     def closeEvent(self, e):
+        print("[dashboard] closing…")
         if self.proc and self.proc.poll() is None:
             r = QtWidgets.QMessageBox.question(
                 self, "Server still running",
@@ -2119,13 +2120,60 @@ class Dashboard(QtWidgets.QWidget):
         #                   out on a close without hanging the UI for real,
         #                   so it only gets a short best-effort grace period.
         self.timer.stop()
-        for w, budget_ms in ((getattr(self, "worker", None), 9000),
-                             (getattr(self, "_dw", None), 8500),
-                             (getattr(self, "angles_worker", None), 2000)):
-            if w is not None and w.isRunning():
-                w.wait(budget_ms)
+        pending = [(w, budget_ms) for w, budget_ms in
+                   ((getattr(self, "worker", None), 9000),
+                    (getattr(self, "_dw", None), 8500),
+                    (getattr(self, "angles_worker", None), 2000))
+                   if w is not None and w.isRunning()]
 
+        notice = None
+        if pending:
+            # The wait() calls below block this thread's event loop, so
+            # nothing on screen can update or respond while they run — up to
+            # ~9s in the worst case (see budgets above). Without some visible
+            # sign of that, a close that lands mid-check just looks like the
+            # app hung. Print to the console (visible in the launcher's
+            # window) and put up a small non-interactive notice, painted
+            # once up front since nothing repaints during the wait itself.
+            print("[dashboard] still finishing a background check — "
+                  "this can take a few seconds, hang on…")
+            notice = self._show_closing_notice()
+
+        for w, budget_ms in pending:
+            w.wait(budget_ms)
+
+        if notice is not None:
+            notice.close()
+        print("[dashboard] closed.")
         e.accept()
+
+    def _show_closing_notice(self):
+        """Small non-modal, buttonless popup shown while closeEvent blocks
+        waiting on a background worker — see the call site. A standalone
+        top-level window (no parent) so its lifetime isn't tangled with the
+        main window's, which is mid-closeEvent right when this is called.
+        repaint() forces one immediate paint before the caller starts
+        blocking — nothing repaints on its own during a plain wait()."""
+        dlg = QtWidgets.QDialog(None, QtCore.Qt.FramelessWindowHint)
+        dlg.setModal(False)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        dlg.setStyleSheet(f"QDialog {{ background: {INK}; border-radius: 12px; }}")
+        lay = QtWidgets.QHBoxLayout(dlg); lay.setContentsMargins(20, 16, 22, 16); lay.setSpacing(12)
+        spinner = QtWidgets.QProgressBar(); spinner.setRange(0, 0)
+        spinner.setFixedSize(60, 8)
+        spinner.setStyleSheet(
+            f"QProgressBar {{ background: rgba(255,255,255,0.18); border: none; "
+            f"border-radius: 4px; }} QProgressBar::chunk {{ background: {AZURE}; border-radius: 4px; }}")
+        lbl = QtWidgets.QLabel("Closing — finishing a background check…")
+        lbl.setStyleSheet("color: white; font-size: 13px; font-weight: 700;")
+        lay.addWidget(spinner); lay.addWidget(lbl)
+        dlg.adjustSize()
+        screen = QtWidgets.QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1200, 800)
+        dlg.move(geo.center().x() - dlg.width() // 2, geo.center().y() - dlg.height() // 2)
+        dlg.show()
+        dlg.repaint()
+        return dlg
 
 
 def main():
