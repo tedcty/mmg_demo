@@ -1588,11 +1588,13 @@ class Dashboard(QtWidgets.QWidget):
 
         # Two demo QRs: the named .local URL (iPhone/iPad resolve it via Bonjour)
         # and a direct-IP fallback for tablets — mainly Android — that can't
-        # resolve .local. The small banner QR stays on the IP, since it's the one
-        # code that works on any device. Updated only when the underlying URL
-        # changes (see _set_qr caching).
+        # resolve .local. The small banner QR follows the same debounced
+        # mDNS state as the text/Copy button (_tablet_primary_url) rather
+        # than always encoding the IP, so it shows the friendlier .local
+        # name once that's confirmed working. Updated only when the
+        # underlying URL changes (see _set_qr caching).
         self._trust_url = f"http://{ip}:{doctor.HTTP_PORT}/trust"
-        self._set_qr(self.banner_qr, self._tablet_ip_url)
+        self._set_qr(self.banner_qr, self._tablet_primary_url)
         self._set_qr(self.qr_demo, self._tablet_url)
         self._set_qr(self.qr_demo_ip, self._tablet_ip_url)
         self._set_qr(self.qr_trust, self._trust_url)
